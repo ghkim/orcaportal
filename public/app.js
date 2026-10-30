@@ -1,0 +1,1954 @@
+import { parseMenu, keysForOption, lineKind } from './screen.js'
+import { KEYS } from './keys.js'
+import { createSound } from './sound.js'
+
+const TOKEN = document.querySelector('meta[name="portal-token"]').content
+// group: header filter chips. section: where the session sits in the list view.
+const STATUS = {
+  choice: { label: '선택 필요', rank: 0, group: 'attention', section: 'attention' },
+  waiting: { label: '응답 필요', rank: 0, group: 'attention', section: 'attention' },
+  blocked: { label: '막힘', rank: 1, group: 'attention', section: 'attention' },
+  working: { label: '작업 중', rank: 2, group: 'working', section: 'working' },
+  new: { label: '새 결과', rank: 3, group: 'done', section: 'new' },
+  done: { label: '완료', rank: 4, group: 'done', section: 'done' },
+  idle: { label: '대기', rank: 5, group: 'done', section: 'done' },
+  shell: { label: '셸', rank: 6, group: 'shell', section: 'shell' }
+}
+const SECTIONS = [
+  { id: 'pinned', label: '고정' },
+  { id: 'attention', label: '확인 필요' },
+  { id: 'working', label: '작업 중' },
+  { id: 'new', label: '새 결과' },
+  { id: 'done', label: '완료' },
+  { id: 'shell', label: '셸' }
+]
+const VIEWS = { focus: '목록 보기', galaxy: '은하 보기', grid: '격자 보기' }
+const KEYPAD = ['up', 'down', 'left', 'right', 'enter', 'esc', 'tab', 'shift-tab', 'space', 'backspace', 'ctrl-c']
+const ICONS = {
+  expand: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+  shrink: '<path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/>',
+  close: '<path d="M18 6 6 18M6 6l12 12"/>',
+  open: '<path d="M7 17 17 7M8 7h9v9"/>',
+  keyboard: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M18 13h.01M9 16h6"/>',
+  send: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  doc: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
+  pin: '<path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  sound: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>',
+  mute: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/>'
+}
+// Shown in the ? help dialog. The handlers live in onShortcut.
+const SHORTCUTS = [
+  {
+    title: '세션 옮기기',
+    keys: [
+      [['J', '↓'], '다음 세션'],
+      [['K', '↑'], '이전 세션'],
+      [['N'], '다음 확인 필요 세션 (차례로 돌아요)'],
+      [['B'], '바로 전에 보던 세션 (두 세션을 오가요)'],
+      [['/', '⌘K'], '세션 찾기'],
+      [['P'], '이 세션 고정 / 풀기 (고정한 세션이 맨 위, 자동 이동도 먼저)']
+    ]
+  },
+  {
+    title: '들어가기',
+    keys: [
+      [['Enter', 'R'], '답장 칸으로 들어가기'],
+      [['1–9'], '선택지 고르기'],
+      [['O'], 'Orca 창에서 이 터미널 열기'],
+      [['Esc'], '답장 칸에서 나오기 (쓰던 글은 남아요) · 최대화 끄기 · 은하 보기에서 세션 패널 닫기']
+    ]
+  },
+  {
+    title: '화면',
+    keys: [
+      [['F'], '최대화 / 되돌리기'],
+      [['G'], '보기 바꾸기 (목록 → 은하 → 격자)'],
+      [['V'], '은하 전체 보기 (은하 보기에서)'],
+      [['Z'], '고요 모드: 은하와 소리만 남기기 (아무 키나 누르면 돌아와요)'],
+      [['A'], '자동 이동 켜기 / 끄기'],
+      [['M'], '우주 소리 켜기 / 끄기'],
+      [['?'], '단축키 보기']
+    ]
+  }
+]
+const CHOICE_LOCK_MS = 4000
+// Auto-follow waits this long after the last click, key or scroll before moving the view.
+const FOLLOW_IDLE_MS = 4000
+const ADVANCE_DELAY_MS = 1200
+const NOTICE_MS = 9000
+// Statuses settle over the first screen reads; transitions before this aren't news.
+const SETTLE_MS = 2500
+const DONE_EVENT_TTL_MS = 60_000
+const loadedAt = Date.now()
+
+const sessions = new Map()
+const screens = new Map()
+const menus = new Map()
+const cards = new Map()
+const pendingChoice = new Map() // handle -> { signature, n, until }
+const prevStatus = new Map()
+const prevMenuSig = new Map()
+const attentionSince = new Map()
+const seenAt = new Map() // finished results the user has looked at here
+const flashUntil = new Map()
+const lastActionAt = new Map()
+const prefs = loadPrefs()
+let focusedHandle = null
+// Terminals closed since the galaxy last drew; their planets (and maybe stars) leave with a show.
+const vanished = new Set()
+// Terminals opened since the galaxy last drew; they arrive with a show.
+const born = new Set()
+// Per worktree path: agent tokens, active time, first record, running subagents (from the server).
+let usage = {}
+// Per worktree path: servers listening inside it, each { pid, name, ports } (from the server).
+let servers = {}
+// In the galaxy view the session pane slides in only when a session is picked.
+let paneOpen = false
+// The galaxy's short report: one app's terminals, only what needs a decision and how work is going.
+let report = null // { app, handle } — handle is the terminal the report points at, if any
+const quickDrafts = new Map() // handle -> half-written quick reply, kept across redraws
+// Quiet mode: after a while with nothing to do, everything but the galaxy fades away.
+const ZEN_IDLE_MS = 3 * 60_000
+let zen = false
+let zenMoved = 0
+let expandedHandle = null
+let followQueue = [] // { handle, kind: 'attention' | 'done', at }
+let eventsReady = false
+let lastInteraction = 0
+let displayOrder = []
+let renderQueued = false
+let noticeTimer = null
+let listScrolledTo = null
+let userPicked = false
+let previousHandle = null
+let maximized = false
+let galaxy = null
+let galaxyLoad = null
+let toastTimer = null
+
+const grid = document.querySelector('.grid')
+const list = document.querySelector('.list')
+const paneNotice = document.querySelector('.pane-notice')
+const paneEmpty = document.querySelector('.pane-empty')
+const attention = document.querySelector('.attention')
+const attentionList = document.querySelector('.attention-list')
+const emptyState = document.querySelector('.empty')
+const backdrop = document.querySelector('.backdrop')
+const search = document.querySelector('.search')
+const showShells = document.querySelector('.show-shells')
+const autoFollow = document.querySelector('.auto-follow')
+const conn = document.querySelector('.conn')
+const help = document.querySelector('.help')
+const cosmos = document.querySelector('.cosmos')
+const layoutEl = document.querySelector('.layout')
+const paneEl = document.querySelector('.pane')
+const paneToggle = document.querySelector('.pane-toggle')
+const reportEl = document.querySelector('.gx-report')
+const gxHud = document.querySelector('.gx-hud')
+const gxSignals = document.querySelector('.gx-signals')
+const soundButton = document.querySelector('.sound-btn')
+const paletteEl = document.querySelector('.palette')
+const paletteInput = paletteEl.querySelector('input')
+const paletteResults = paletteEl.querySelector('.palette-results')
+const sound = createSound()
+const palette = { items: [], index: 0, closeTimer: null }
+const toastEl = document.querySelector('.toast')
+let orcaStatus = { ok: true }
+
+// ---------- data ----------
+
+function connect() {
+  const events = new EventSource(`/events?token=${encodeURIComponent(TOKEN)}`)
+  events.addEventListener('open', () => setConn('live'))
+  events.addEventListener('state', (e) => onState(JSON.parse(e.data)))
+  events.addEventListener('screen', (e) => onScreen(JSON.parse(e.data)))
+  events.addEventListener('usage', (e) => {
+    usage = JSON.parse(e.data).paths || {}
+    if (prefs.view === 'galaxy') scheduleRender()
+  })
+  events.addEventListener('servers', (e) => {
+    servers = JSON.parse(e.data).paths || {}
+    if (prefs.view === 'galaxy') scheduleRender()
+  })
+  events.addEventListener('status', (e) => {
+    orcaStatus = JSON.parse(e.data)
+    setConn(orcaStatus.ok ? 'live' : 'orca-down', orcaStatus)
+    renderAll()
+  })
+  events.addEventListener('error', () => {
+    if (events.readyState === EventSource.CLOSED) {
+      // The server restarted with a new token: reload to pick it up.
+      setConn('offline')
+      setTimeout(() => location.reload(), 3000)
+    } else setConn('reconnecting')
+  })
+}
+
+function onState({ sessions: list }) {
+  const firstState = sessions.size === 0 && !eventsReady
+  const seen = new Set()
+  for (const session of list) {
+    seen.add(session.handle)
+    if (!firstState && !sessions.has(session.handle) && prefs.view === 'galaxy') born.add(session.handle)
+    sessions.set(session.handle, session)
+    // The agent's waiting state can turn a plain numbered list into a menu.
+    const card = cards.get(session.handle)
+    if (updateMenu(session.handle) && card) renderMenu(card)
+  }
+  for (const handle of [...sessions.keys()]) {
+    if (!seen.has(handle)) {
+      sessions.delete(handle)
+      if (prefs.view === 'galaxy') vanished.add(handle)
+      screens.delete(handle)
+      menus.delete(handle)
+      cards.get(handle)?.el.remove()
+      cards.delete(handle)
+      if (expandedHandle === handle) collapse()
+      if (focusedHandle === handle) focusedHandle = null
+    }
+  }
+  renderAll()
+  if (firstState) setTimeout(settle, SETTLE_MS)
+}
+
+function onScreen({ handle, lines }) {
+  if (!lines) {
+    screens.delete(handle)
+    return
+  }
+  screens.set(handle, lines)
+  const before = statusOf(handle)
+  const menuChanged = updateMenu(handle)
+  const card = cards.get(handle)
+  if (card) {
+    renderScreen(card)
+    if (menuChanged) renderMenu(card)
+    if (!menus.has(handle)) stopMenuTyping(card)
+  }
+  if (menuChanged || before !== statusOf(handle)) renderAll()
+}
+
+function updateMenu(handle) {
+  const session = sessions.get(handle)
+  const lines = screens.get(handle)
+  const menu = session && lines ? parseMenu(lines, { agentWaiting: session.agent?.state === 'waiting' }) : null
+  const previous = menus.get(handle)
+  if ((previous?.signature || '') === (menu?.signature || '')) return false
+  if (menu) menus.set(handle, menu)
+  else menus.delete(handle)
+  return true
+}
+
+function statusOf(handle) {
+  const session = sessions.get(handle)
+  if (!session) return 'shell'
+  if (menus.has(handle)) return 'choice'
+  const state = session.agent?.state
+  if (state === 'waiting') return 'waiting'
+  if (state === 'blocked') return 'blocked'
+  if (state === 'working') return 'working'
+  if (state === 'done') {
+    const finishedAt = session.agent.stateStartedAt || session.agent.updatedAt || 0
+    const unseen = (seenAt.get(handle) || 0) < finishedAt
+    return unseen && (session.unread || finishedAt > loadedAt) ? 'new' : 'done'
+  }
+  return session.agentType ? 'idle' : 'shell'
+}
+
+function sectionOf(handle) {
+  return STATUS[statusOf(handle)].section
+}
+
+// ---------- auto-follow ----------
+
+// Menus are only known once screens arrive, so the opening pick is revisited after
+// statuses settle, unless the user has already chosen a session.
+function settle() {
+  eventsReady = true
+  const first = attentionHandles()[0] || displayOrder[0]
+  if (first && !userPicked && first !== focusedHandle) setFocus(first, { quiet: true })
+}
+
+function trackEvents() {
+  const now = Date.now()
+  if (focusedHandle && document.visibilityState === 'visible') seenAt.set(focusedHandle, now)
+  for (const handle of sessions.keys()) {
+    const status = statusOf(handle)
+    const prev = prevStatus.get(handle)
+    const signature = menus.get(handle)?.signature || ''
+    const prevSignature = prevMenuSig.get(handle) || ''
+    prevStatus.set(handle, status)
+    prevMenuSig.set(handle, signature)
+    const inAttention = STATUS[status].section === 'attention'
+    const wasAttention = prev !== undefined && STATUS[prev].section === 'attention'
+    if (inAttention && !wasAttention) attentionSince.set(handle, now)
+    if (!inAttention) attentionSince.delete(handle)
+    if (!eventsReady) continue
+    if (prev === undefined) {
+      // A session that opens already asking something is news too.
+      if (inAttention) queueEvent(handle, 'attention')
+      continue
+    }
+
+    if (inAttention && (!wasAttention || (signature && signature !== prevSignature))) queueEvent(handle, 'attention')
+    else if (prev === 'working' && status !== 'working' && !inAttention) queueEvent(handle, 'done')
+    // The user just answered the session in view: move on to the next one waiting.
+    if (wasAttention && !inAttention && handle === focusedHandle && now - (lastActionAt.get(handle) || 0) < 20_000) scheduleAdvance(handle)
+  }
+  for (const handle of [...prevStatus.keys()]) {
+    if (!sessions.has(handle)) {
+      prevStatus.delete(handle)
+      prevMenuSig.delete(handle)
+      attentionSince.delete(handle)
+    }
+  }
+}
+
+function queueEvent(handle, kind) {
+  sound.chime(kind)
+  if (kind === 'attention') setZen(false)
+  if (kind === 'done' && prefs.view === 'galaxy') galaxy?.shootingStar()
+  flashUntil.set(handle, Date.now() + 3600)
+  followQueue = followQueue.filter((p) => p.handle !== handle)
+  followQueue.push({ handle, kind, at: Date.now() })
+  processQueue()
+}
+
+function processQueue() {
+  const now = Date.now()
+  followQueue = followQueue.filter(
+    (p) =>
+      sessions.has(p.handle) &&
+      (p.kind === 'attention' ? sectionOf(p.handle) === 'attention' : now - p.at < DONE_EVENT_TTL_MS)
+  )
+  if (!prefs.autoFollow || followQueue.length === 0 || userBusy()) return
+  // A finished task never pulls the view away from a question that's still open.
+  const viewingQuestion = focusedHandle && sectionOf(focusedHandle) === 'attention'
+  const pinnedFirst = [...followQueue].sort((a, b) => Number(isPinned(b.handle)) - Number(isPinned(a.handle)))
+  const next = pinnedFirst.find((p) => p.kind === 'attention') || (viewingQuestion ? null : pinnedFirst.find((p) => p.kind === 'done'))
+  if (!next) return
+  followQueue = followQueue.filter((p) => p !== next)
+  if (next.handle !== focusedHandle) setFocus(next.handle, { auto: true, reason: next.kind })
+}
+
+function scheduleAdvance(from) {
+  setTimeout(() => {
+    if (!prefs.autoFollow || focusedHandle !== from || typingReply()) return
+    const next = attentionHandles().find((h) => h !== from)
+    if (next) setFocus(next, { auto: true, reason: 'next' })
+  }, ADVANCE_DELAY_MS)
+}
+
+function attentionHandles() {
+  return [...sessions.keys()]
+    .filter((h) => sectionOf(h) === 'attention')
+    .sort(
+      (a, b) =>
+        Number(isPinned(b)) - Number(isPinned(a)) ||
+        STATUS[statusOf(a)].rank - STATUS[statusOf(b)].rank ||
+        (attentionSince.get(a) || 0) - (attentionSince.get(b) || 0)
+    )
+}
+
+function typingReply() {
+  const active = document.activeElement
+  return active?.tagName === 'TEXTAREA' && active.value.trim() !== ''
+}
+
+function userBusy() {
+  if (typingReply()) return true
+  if (String(window.getSelection?.() || '')) return true
+  return Date.now() - lastInteraction < FOLLOW_IDLE_MS
+}
+
+// quiet: the opening pick, which shouldn't pop the galaxy's pane open unless something is waiting.
+function setFocus(handle, { auto = false, reason, quiet = false } = {}) {
+  if (!sessions.has(handle)) return
+  const previous = focusedHandle
+  if (previous && previous !== handle) previousHandle = previous
+  focusedHandle = handle
+  seenAt.set(handle, Date.now())
+  followQueue = followQueue.filter((p) => p.handle !== handle)
+  if (prefs.view === 'grid') {
+    const card = cards.get(handle)
+    if (card && !card.el.hidden) card.el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    flashUntil.set(handle, Date.now() + 3600)
+  }
+  if (auto && previous !== handle) showNotice(handle, previous, reason)
+  else if (!auto) hideNotice()
+  if (prefs.view === 'galaxy') {
+    galaxy?.flyTo(handle)
+    // The full terminal stays in the pane only once the user has gone in; otherwise a pick
+    // (or a question arriving) shows the short report.
+    if (!paneOpen && ((!auto && !quiet) || sectionOf(handle) === 'attention' || report)) openReport(sessions.get(handle).project, handle)
+  }
+  scheduleRender()
+}
+
+function showNotice(handle, previous, reason) {
+  if (!isDocked()) return
+  const session = sessions.get(handle)
+  const text = { done: '작업이 끝나서 이 세션으로 왔어요', next: '다음으로 확인할 세션으로 왔어요' }[reason] || '확인이 필요해서 이 세션으로 왔어요'
+  paneNotice.dataset.status = statusOf(handle)
+  const parts = [el('span', { className: 'dot' }), el('span', { textContent: `${session.project} · ${text}` })]
+  if (previous && sessions.has(previous)) {
+    const back = el('button', { type: 'button', textContent: `← ${sessions.get(previous).project}(으)로 돌아가기` })
+    back.addEventListener('click', () => pick(previous))
+    parts.push(back)
+  }
+  paneNotice.replaceChildren(...parts)
+  paneNotice.hidden = false
+  clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(hideNotice, NOTICE_MS)
+}
+
+function hideNotice() {
+  clearTimeout(noticeTimer)
+  paneNotice.hidden = true
+}
+
+// ---------- render ----------
+
+function scheduleRender() {
+  if (renderQueued) return
+  renderQueued = true
+  setTimeout(() => {
+    renderQueued = false
+    renderAll()
+  }, 0)
+}
+
+function renderAll() {
+  const counts = { all: 0, attention: 0, working: 0, done: 0 }
+  const visible = []
+  const all = []
+  for (const [handle, session] of sessions) {
+    const status = statusOf(handle)
+    const group = STATUS[status].group
+    if (group === 'shell' && !prefs.showShells && handle !== focusedHandle) {
+      cards.get(handle)?.el.setAttribute('hidden', '')
+      continue
+    }
+    counts.all++
+    if (counts[group] !== undefined) counts[group]++
+    const card = cards.get(handle) || createCard(handle)
+    updateCard(card, session, status)
+    const show = (prefs.filter === 'all' || prefs.filter === group) && matchesSearch(session, handle)
+    if (prefs.view === 'grid') {
+      card.el.toggleAttribute('hidden', !show && expandedHandle !== handle)
+      if (!card.el.hidden && card.dirty) renderScreen(card)
+    }
+    all.push({ handle, session, status, show })
+    if (show) visible.push({ handle, session, status })
+  }
+
+  for (const [key, value] of Object.entries(counts)) {
+    document.querySelector(`[data-count="${key}"]`).textContent = value
+  }
+  document.title = counts.attention ? `(${counts.attention}) Orca Portal` : 'Orca Portal'
+  if (focusedHandle && !sessions.has(focusedHandle)) focusedHandle = null
+
+  if (prefs.view === 'grid') {
+    orderCards(visible)
+    renderAttention()
+  } else {
+    if (prefs.view === 'galaxy') renderGalaxy(all)
+    else renderList(visible)
+    syncDock()
+  }
+  renderEmpty(visible.length)
+  trackEvents()
+}
+
+function syncDock() {
+  if (!focusedHandle && displayOrder[0]) focusedHandle = displayOrder[0]
+  for (const card of cards.values()) {
+    const docked = isDocked() && card.handle === focusedHandle
+    if (docked === card.el.classList.contains('docked')) continue
+    card.el.classList.toggle('docked', docked)
+    if (docked) {
+      card.el.hidden = false
+      card.stick = true
+      if (prefs.view === 'galaxy') warp(card.el)
+      card.detailsKey = ''
+      renderDetails(card, sessions.get(card.handle), statusOf(card.handle))
+      renderScreen(card)
+    }
+  }
+  paneEmpty.hidden = !isDocked() || Boolean(focusedHandle) || sessions.size === 0
+}
+
+function renderList(visible) {
+  const bySection = new Map(SECTIONS.map((s) => [s.id, []]))
+  for (const item of visible) bySection.get(isPinned(item.handle) ? 'pinned' : STATUS[item.status].section).push(item)
+  const byName = (a, b) =>
+    a.session.project.localeCompare(b.session.project, 'ko') || a.session.name.localeCompare(b.session.name, 'ko') || a.handle.localeCompare(b.handle)
+  bySection.get('attention').sort((a, b) => STATUS[a.status].rank - STATUS[b.status].rank || (attentionSince.get(a.handle) || 0) - (attentionSince.get(b.handle) || 0))
+  bySection.get('pinned').sort((a, b) => STATUS[a.status].rank - STATUS[b.status].rank || byName(a, b))
+  bySection.get('new').sort((a, b) => finishedAt(b.session) - finishedAt(a.session) || byName(a, b))
+  for (const id of ['working', 'done', 'shell']) bySection.get(id).sort(byName)
+
+  displayOrder = []
+  const groups = []
+  for (const { id, label } of SECTIONS) {
+    const items = bySection.get(id)
+    if (items.length === 0) continue
+    const collapsed = Boolean(prefs.collapsed[id])
+    const head = el('button', { type: 'button', className: 'group-head', ariaExpanded: String(!collapsed) })
+    head.innerHTML = `${icon('chevron', 14)}<span></span><span class="count"></span>`
+    head.children[1].textContent = label
+    head.children[2].textContent = items.length
+    head.dataset.section = id
+    head.addEventListener('click', () => {
+      prefs.collapsed[id] = !collapsed
+      savePrefs()
+      renderAll()
+    })
+    const group = el('div', { className: 'list-group' })
+    group.append(head)
+    for (const item of items) {
+      displayOrder.push(item.handle)
+      // A collapsed group still shows the session in view, so the selection never disappears.
+      if (collapsed && item.handle !== focusedHandle) continue
+      group.append(listRow(item))
+    }
+    groups.push(group)
+  }
+  list.replaceChildren(...groups)
+  // Follow the selection only when it changes, so scrolling the list by hand sticks.
+  if (focusedHandle !== listScrolledTo) {
+    listScrolledTo = focusedHandle
+    list.querySelector('.row.selected')?.scrollIntoView({ block: 'nearest' })
+  }
+}
+
+function listRow({ handle, session, status }) {
+  const row = el('button', { type: 'button', className: 'row', dataset: { status, handle } })
+  if (handle === focusedHandle) row.classList.add('selected')
+  if ((flashUntil.get(handle) || 0) > Date.now()) row.classList.add('flash')
+  const since = status === 'working' ? session.agent?.stateStartedAt : session.lastOutputAt || session.agent?.updatedAt
+  const top = el('span', { className: 'row-top' })
+  top.append(
+    el('span', { className: 'row-project', textContent: session.project }),
+    el('span', { className: 'row-name', textContent: session.name }),
+    el('span', { className: 'row-time', textContent: since ? ago(since) : '' })
+  )
+  const main = el('span', { className: 'row-main' })
+  main.append(top, el('span', { className: 'row-sub', textContent: rowSummary(handle, session, status) }))
+  row.append(el('span', { className: 'dot' }), main)
+  row.title = `${session.project} · ${session.name}\n${STATUS[status].label}${session.background ? ' · 백그라운드' : ''}`
+  row.addEventListener('click', () => pick(handle))
+  return row
+}
+
+function rowSummary(handle, session, status) {
+  const menu = menus.get(handle)
+  if (menu) return menu.question || '선택지를 골라 주세요'
+  if (status === 'waiting' || status === 'blocked') return attentionSummary(session, null, status)
+  if (status === 'working') {
+    const tool = session.agent?.toolName ? `${session.agent.toolName} ${session.agent.toolInput}` : ''
+    return tool.trim() || '작업 중'
+  }
+  if (session.agent) return firstLine(session.agent.lastAssistantMessage) || firstLine(session.agent.prompt) || STATUS[status].label
+  const lines = screens.get(handle) || []
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const text = lines[i].trim()
+    if (text && lineKind(lines[i]) !== 'rule') return text
+  }
+  return session.title || ''
+}
+
+function firstLine(text) {
+  for (const line of (text || '').split('\n')) {
+    const clean = line.replace(/^[#>*\-\s|]+/, '').replace(/\*\*|`/g, '').trim()
+    if (clean) return clean
+  }
+  return ''
+}
+
+function finishedAt(session) {
+  return session.agent?.stateStartedAt || session.agent?.updatedAt || 0
+}
+
+function orderCards(visible) {
+  // Reordering moves DOM nodes, which would steal focus from a reply being typed.
+  if (grid.contains(document.activeElement) && document.activeElement.matches('textarea')) return
+  visible.sort(
+    (a, b) =>
+      STATUS[a.status].rank - STATUS[b.status].rank ||
+      Number(isPinned(b.handle)) - Number(isPinned(a.handle)) ||
+      a.session.project.localeCompare(b.session.project, 'ko') ||
+      a.session.name.localeCompare(b.session.name, 'ko') ||
+      a.handle.localeCompare(b.handle)
+  )
+  displayOrder = visible.map((v) => v.handle)
+  const current = [...grid.children].filter((node) => !node.hidden).map((node) => node.dataset.handle)
+  if (current.join() === displayOrder.join()) return
+  for (const { handle } of visible) grid.appendChild(cards.get(handle).el)
+}
+
+function renderAttention() {
+  const items = attentionHandles()
+  attention.hidden = items.length === 0
+  attentionList.replaceChildren(
+    ...items.map((handle) => {
+      const session = sessions.get(handle)
+      const status = statusOf(handle)
+      const menu = menus.get(handle)
+      const li = el('li', { className: 'att', dataset: { status } })
+      const head = el('button', { type: 'button', className: 'att-head', title: '크게 보기' })
+      head.append(
+        el('span', { className: 'dot' }),
+        el('span', { className: 'att-project', textContent: session.project }),
+        el('span', { className: 'att-name', textContent: session.name }),
+        el('span', { className: 'badge', textContent: STATUS[status].label })
+      )
+      head.addEventListener('click', () => expand(handle))
+      const summary = el('div', { className: 'att-text', textContent: attentionSummary(session, menu, status) })
+      li.append(head, summary)
+      if (menu) li.append(menuButtons(handle, menu, { compact: true }))
+      return li
+    })
+  )
+}
+
+function attentionSummary(session, menu, status) {
+  if (menu) return [menu.context.at(-1), menu.question].filter(Boolean).join(' — ') || '선택지를 골라 주세요'
+  const message = session.agent?.lastAssistantMessage || ''
+  const lastPara = message.trim().split(/\n\s*\n/).at(-1) || ''
+  if (status === 'blocked') return lastPara || '에이전트가 막혔어요'
+  return lastPara || '답을 기다리고 있어요'
+}
+
+function renderEmpty(visibleCount) {
+  let message = ''
+  if (!orcaStatus.ok) message = `Orca에 연결할 수 없어요. ${orcaStatus.error || ''}`
+  else if (sessions.size === 0) message = '열린 세션이 없어요. Orca에서 터미널이나 에이전트를 열면 여기에 바로 나타나요.'
+  else if (visibleCount === 0) message = '조건에 맞는 세션이 없어요.'
+  emptyState.hidden = !message
+  emptyState.textContent = message
+}
+
+// ---------- card ----------
+
+function createCard(handle) {
+  const root = el('article', { className: 'card', dataset: { handle } })
+  root.innerHTML = `
+    <header class="card-head">
+      <span class="dot"></span>
+      <div class="titles">
+        <div class="line1"><span class="project"></span><span class="name"></span></div>
+        <div class="line2"><span class="badge"></span><span class="meta"></span></div>
+      </div>
+      <div class="actions">
+        <button type="button" class="icon" data-act="pin" title="고정 (P)">${icon('pin')}</button>
+        <button type="button" class="icon" data-act="details" title="답변 보기">${icon('doc')}</button>
+        <button type="button" class="icon" data-act="focus" title="Orca에서 열기">${icon('open')}</button>
+        <button type="button" class="icon" data-act="expand" title="크게 보기">${icon('expand')}</button>
+      </div>
+    </header>
+    <div class="body">
+      <div class="main">
+        <div class="screen" tabindex="0"><pre></pre></div>
+        <div class="menu" hidden></div>
+        <form class="reply">
+          <textarea rows="1" placeholder="메시지 보내기 · Enter 전송, Shift+Enter 줄바꿈"></textarea>
+          <button type="button" class="icon" data-act="keys" title="키 입력">${icon('keyboard')}</button>
+          <button type="submit" class="icon primary" title="보내기">${icon('send')}</button>
+        </form>
+        <div class="keypad" hidden></div>
+        <div class="note" hidden></div>
+      </div>
+      <aside class="details"></aside>
+    </div>`
+  const card = {
+    handle,
+    el: root,
+    screen: root.querySelector('.screen'),
+    pre: root.querySelector('pre'),
+    menu: root.querySelector('.menu'),
+    form: root.querySelector('.reply'),
+    input: root.querySelector('textarea'),
+    keypad: root.querySelector('.keypad'),
+    note: root.querySelector('.note'),
+    details: root.querySelector('.details'),
+    stick: true,
+    dirty: true,
+    detailsKey: ''
+  }
+
+  card.keypad.append(
+    ...KEYPAD.map((key) => {
+      const button = el('button', { type: 'button', textContent: KEYS[key].label, title: key })
+      button.addEventListener('click', () => pressKeys(handle, [key]))
+      return button
+    })
+  )
+  root.querySelector('[data-act="keys"]').addEventListener('click', () => {
+    card.keypad.hidden = !card.keypad.hidden
+  })
+  root.querySelector('[data-act="details"]').addEventListener('click', () => {
+    card.el.classList.toggle('show-details')
+    if (!card.el.classList.contains('show-details')) renderScreen(card)
+  })
+  root.querySelector('[data-act="expand"]').addEventListener('click', () => {
+    if (isDocked()) setMaximized(!maximized)
+    else if (expandedHandle === handle) collapse()
+    else expand(handle)
+  })
+  root.querySelector('[data-act="focus"]').addEventListener('click', () => focusInOrca(handle))
+  root.querySelector('[data-act="pin"]').addEventListener('click', () => togglePin(handle))
+  root.querySelector('.card-head').addEventListener('dblclick', (e) => {
+    if (!e.target.closest('button') && prefs.view === 'grid') expand(handle)
+  })
+  card.screen.addEventListener('scroll', () => {
+    const { scrollTop, scrollHeight, clientHeight } = card.screen
+    card.stick = scrollTop + clientHeight >= scrollHeight - 12
+  })
+  card.input.addEventListener('input', () => autosize(card.input))
+  card.input.addEventListener('keydown', (e) => {
+    // Korean IME: Enter that ends a composition must not send the half-typed text.
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault()
+      card.form.requestSubmit()
+    }
+    // Esc leaves the box so single-key shortcuts work again; the draft stays.
+    if (e.key === 'Escape') {
+      if (expandedHandle === handle && !card.input.value) collapse()
+      else card.input.blur()
+    }
+  })
+  card.input.addEventListener('blur', () => scheduleRender())
+  card.form.addEventListener('submit', (e) => {
+    e.preventDefault()
+    sendReply(card)
+  })
+
+  cards.set(handle, card)
+  grid.appendChild(root)
+  setExpandButton(card, maximized)
+  renderMenu(card)
+  return card
+}
+
+function updateCard(card, session, status) {
+  card.el.dataset.status = status
+  const pinned = isPinned(card.handle)
+  card.el.classList.toggle('pinned', pinned)
+  const pin = card.el.querySelector('[data-act="pin"]')
+  pin.ariaPressed = String(pinned)
+  pin.title = pinned ? '고정 풀기 (P)' : '고정 (P)'
+  card.el.querySelector('.project').textContent = session.project
+  const name = card.el.querySelector('.name')
+  name.textContent = session.name
+  name.title = session.path
+  card.el.querySelector('.badge').textContent = STATUS[status].label
+  const since = status === 'working' ? session.agent?.stateStartedAt : session.lastOutputAt || session.agent?.updatedAt
+  const meta = [
+    session.agentType || '터미널',
+    session.title && session.title !== session.name ? session.title : '',
+    session.background ? '백그라운드' : '',
+    since ? ago(since) : ''
+  ]
+  const metaEl = card.el.querySelector('.meta')
+  metaEl.textContent = meta.filter(Boolean).join(' · ')
+  metaEl.title = session.background ? 'Orca 창에 탭으로 열려 있지 않지만 실행 중인 터미널이에요' : ''
+  if (!card.typeMode) card.input.placeholder = session.agentType ? '메시지 보내기 · Enter 전송, Shift+Enter 줄바꿈' : '명령 입력 · Enter 실행'
+  card.input.disabled = !session.writable
+  if (expandedHandle === card.handle || card.el.classList.contains('docked')) renderDetails(card, session, status)
+}
+
+function isShown(card) {
+  if (isDocked()) return card.handle === focusedHandle
+  return !card.el.hidden
+}
+
+// Hidden cards skip the redraw and catch up when they are shown again.
+function renderScreen(card) {
+  if (!isShown(card)) {
+    card.dirty = true
+    return
+  }
+  card.dirty = false
+  const lines = trimTrailingBlank(screens.get(card.handle) || [])
+  if (lines.length === 0) {
+    card.pre.innerHTML = '<span class="placeholder">화면을 불러오는 중…</span>'
+    return
+  }
+  card.pre.innerHTML = lines
+    .map((line) => {
+      const kind = lineKind(line)
+      if (kind === 'rule') return '<span class="l rule"></span>'
+      return `<span class="l${kind ? ` ${kind}` : ''}">${escapeHtml(line) || ' '}</span>`
+    })
+    .join('')
+  if (card.stick) card.screen.scrollTop = card.screen.scrollHeight
+}
+
+function renderMenu(card) {
+  const menu = menus.get(card.handle)
+  card.menu.hidden = !menu
+  if (!menu) {
+    card.menu.replaceChildren()
+    return
+  }
+  const parts = []
+  if (menu.header) parts.push(el('div', { className: 'menu-header', textContent: menu.header }))
+  if (menu.context.length) parts.push(el('div', { className: 'menu-ctx', textContent: menu.context.join('\n') }))
+  if (menu.question) parts.push(el('div', { className: 'menu-q', textContent: menu.question }))
+  parts.push(menuButtons(card.handle, menu))
+  if (menu.hint) parts.push(el('div', { className: 'menu-hint', textContent: menu.hint }))
+  card.menu.replaceChildren(...parts)
+}
+
+function menuButtons(handle, menu, { compact = false } = {}) {
+  const wrap = el('div', { className: compact ? 'opts compact' : 'opts' })
+  // A second press on the same menu would land in whatever the agent shows next,
+  // so options stay locked until the screen changes (or a few seconds pass).
+  const sent = pendingChoice.get(handle)
+  const locked = isChoicePending(handle, menu)
+  for (const option of menu.options) {
+    const button = el('button', { type: 'button', className: option.cursor ? 'opt current' : 'opt', title: [option.label, option.desc].filter(Boolean).join('\n') })
+    button.append(el('kbd', { textContent: option.n }), el('span', { className: 'opt-label', textContent: option.label }))
+    if (option.desc && !compact) button.append(el('span', { className: 'opt-desc', textContent: option.desc }))
+    if (locked && sent.n === option.n) button.classList.add('sending')
+    button.disabled = !keysForOption(menu, option.n) || locked
+    button.addEventListener('click', () => choose(handle, menu, option))
+    wrap.append(button)
+  }
+  if (menu.multiSelect) {
+    const submit = el('button', { type: 'button', className: 'opt submit', textContent: 'Enter로 확정' })
+    submit.addEventListener('click', () => pressKeys(handle, ['enter']))
+    wrap.append(submit)
+  }
+  return wrap
+}
+
+async function choose(handle, menu, option) {
+  const keys = keysForOption(menu, option.n)
+  if (!keys || isChoicePending(handle, menu)) return
+  pendingChoice.set(handle, { signature: menu.signature, n: option.n, until: Date.now() + CHOICE_LOCK_MS })
+  refreshMenus(handle)
+  const ok = await pressKeys(handle, keys)
+  if (ok && prefs.view === 'galaxy') galaxy?.comet(handle)
+  if (ok && option.freeText) startMenuTyping(handle)
+  if (!ok) pendingChoice.delete(handle)
+  setTimeout(() => refreshMenus(handle), ok ? CHOICE_LOCK_MS : 0)
+}
+
+function isChoicePending(handle, menu) {
+  const sent = pendingChoice.get(handle)
+  return sent?.signature === menu.signature && Date.now() < sent.until
+}
+
+// Redraw both places a menu's buttons appear: the card and the attention band.
+function refreshMenus(handle) {
+  const card = cards.get(handle)
+  if (card) renderMenu(card)
+  if (prefs.view === 'grid') renderAttention()
+  if (report) renderReport()
+}
+
+function renderDetails(card, session, status) {
+  if (!session) return
+  const agent = session.agent
+  const key = JSON.stringify([session, status])
+  if (key === card.detailsKey) return
+  card.detailsKey = key
+  const sections = []
+  const info = el('dl', { className: 'info' })
+  const rows = [
+    ['상태', STATUS[status].label],
+    ['브랜치', session.branch],
+    ['위치', session.path],
+    ['메모', session.comment]
+  ]
+  for (const [label, value] of rows) {
+    if (value) info.append(el('dt', { textContent: label }), el('dd', { textContent: value }))
+  }
+  sections.push(info)
+  if (agent?.state === 'working' && agent.toolName) {
+    sections.push(section('지금 하는 일', el('pre', { className: 'tool', textContent: `${agent.toolName}  ${agent.toolInput}`.trim() })))
+  }
+  if (agent?.prompt) sections.push(section('마지막 요청', el('div', { className: 'prompt', textContent: agent.prompt })))
+  if (agent?.lastAssistantMessage) {
+    const answer = el('div', { className: 'md' })
+    answer.innerHTML = renderMarkdown(agent.lastAssistantMessage)
+    sections.push(section('마지막 답변', answer))
+  }
+  if (!agent) sections.push(el('p', { className: 'muted', textContent: '이 터미널에는 Orca가 추적하는 에이전트가 없어요. 화면과 키 입력으로 다룰 수 있어요.' }))
+  card.details.replaceChildren(...sections)
+}
+
+function section(title, body) {
+  const wrap = el('section')
+  wrap.append(el('h3', { textContent: title }), body)
+  return wrap
+}
+
+// ---------- actions ----------
+
+async function api(path, body) {
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Portal-Token': TOKEN },
+      body: JSON.stringify(body)
+    })
+    if (res.status === 403) return { ok: false, error: { message: '포탈 서버가 다시 시작됐어요. 새로고침해 주세요.' } }
+    return await res.json()
+  } catch {
+    return { ok: false, error: { message: '포탈 서버에 연결할 수 없어요.' } }
+  }
+}
+
+// After picking a "Type something" option, the agent's menu has its own text field:
+// the next reply is typed into it instead of being sent as a new prompt.
+function startMenuTyping(handle) {
+  const card = cards.get(handle)
+  if (!card) return
+  if (prefs.view === 'grid' && expandedHandle !== handle) expand(handle)
+  if (isDocked() && focusedHandle !== handle) setFocus(handle)
+  card.typeMode = true
+  card.el.classList.add('typing-menu')
+  card.input.placeholder = '메뉴 입력칸에 들어갈 답 · Enter로 입력'
+  setTimeout(() => card.input.focus(), 0)
+  showNote(card, '메뉴의 입력칸을 열었어요. 아래에 답을 쓰고 Enter를 누르면 그 칸에 입력돼요.', 'ok')
+}
+
+function stopMenuTyping(card) {
+  if (!card.typeMode) return
+  card.typeMode = false
+  card.el.classList.remove('typing-menu')
+  updateCard(card, sessions.get(card.handle), statusOf(card.handle))
+}
+
+async function sendReply(card, mode = card.typeMode && menus.has(card.handle) ? 'type' : undefined) {
+  const text = card.input.value
+  if (!text.trim()) return
+  const submit = card.form.querySelector('[type="submit"]')
+  submit.disabled = true
+  const res = await api('/api/send', { handle: card.handle, text, mode })
+  submit.disabled = false
+  if (res.ok) {
+    lastActionAt.set(card.handle, Date.now())
+    card.input.value = ''
+    autosize(card.input)
+    card.stick = true
+    stopMenuTyping(card)
+    if (prefs.view === 'galaxy') galaxy?.comet(card.handle)
+    showNote(card, mode === 'type' ? '입력했어요' : '보냈어요', 'ok')
+    return
+  }
+  if (res.error?.code === 'agent_prompt_blocked') {
+    const button = el('button', { type: 'button', textContent: '메뉴 입력칸에 입력' })
+    button.addEventListener('click', () => sendReply(card, 'type'))
+    showNote(card, '선택 메뉴가 열려 있어서 메시지로 보낼 수 없어요. 위에서 선택지를 고르거나, 메뉴의 입력칸에 바로 입력할 수 있어요.', 'warn', button)
+    return
+  }
+  showNote(card, res.error?.message || '보내지 못했어요.', 'err')
+}
+
+async function pressKeys(handle, keys) {
+  const res = await api('/api/keys', { handle, keys })
+  if (res.ok) lastActionAt.set(handle, Date.now())
+  else {
+    const card = cards.get(handle)
+    if (card) showNote(card, res.error?.message || '키를 보내지 못했어요.', 'err')
+  }
+  return res.ok
+}
+
+async function focusInOrca(handle) {
+  const res = await api('/api/focus', { handle })
+  const card = cards.get(handle)
+  if (card) showNote(card, res.ok ? 'Orca에서 이 터미널을 열었어요' : res.error?.message || 'Orca에서 열지 못했어요.', res.ok ? 'ok' : 'err')
+}
+
+function showNote(card, message, tone, action) {
+  clearTimeout(card.noteTimer)
+  card.note.hidden = false
+  card.note.dataset.tone = tone
+  card.note.replaceChildren(el('span', { textContent: message }), ...(action ? [action] : []))
+  if (!action) card.noteTimer = setTimeout(() => (card.note.hidden = true), tone === 'err' ? 8000 : 2500)
+}
+
+function expand(handle, { focusInput = true } = {}) {
+  if (isDocked()) return pick(handle)
+  if (expandedHandle && expandedHandle !== handle) {
+    previousHandle = expandedHandle
+    collapse()
+  }
+  const card = cards.get(handle)
+  if (!card) return
+  expandedHandle = handle
+  card.el.hidden = false
+  card.el.classList.add('expanded')
+  setExpandButton(card, true)
+  card.keypad.hidden = false
+  card.stick = true
+  backdrop.hidden = false
+  document.body.classList.add('has-expanded')
+  card.detailsKey = ''
+  renderDetails(card, sessions.get(handle), statusOf(handle))
+  renderScreen(card)
+  if (focusInput) card.input.focus()
+}
+
+function collapse() {
+  const card = cards.get(expandedHandle)
+  expandedHandle = null
+  backdrop.hidden = true
+  document.body.classList.remove('has-expanded')
+  if (card) {
+    card.el.classList.remove('expanded')
+    setExpandButton(card, false)
+    if (!card.input.value) card.input.blur()
+    card.keypad.hidden = true
+    card.stick = true
+    renderScreen(card)
+  }
+  renderAll()
+}
+
+// Grid view opens a card as an overlay; list view maximizes the docked pane instead.
+function setExpandButton(card, active) {
+  const button = card.el.querySelector('[data-act="expand"]')
+  const [name, title] =
+    isDocked() ? (active ? ['shrink', '되돌리기 (F)'] : ['expand', '최대화 (F)']) : active ? ['close', '닫기 (Esc)'] : ['expand', '크게 보기 (F)']
+  button.innerHTML = icon(name)
+  button.title = title
+}
+
+function setMaximized(on) {
+  if (on && !isDocked()) return
+  if (on && prefs.view === 'galaxy') setPaneOpen(true)
+  maximized = on
+  document.body.classList.toggle('maximized', on)
+  galaxy?.setActive(prefs.view === 'galaxy' && !on)
+  for (const card of cards.values()) setExpandButton(card, on)
+  const card = cards.get(focusedHandle)
+  if (card) {
+    card.stick = true
+    renderScreen(card)
+  }
+  if (on) toast('최대화했어요 · F나 Esc로 되돌려요')
+}
+
+function toggleMaximize() {
+  if (isDocked()) return setMaximized(!maximized)
+  if (expandedHandle) collapse()
+  else if (focusedHandle || displayOrder[0]) expand(focusedHandle || displayOrder[0], { focusInput: false })
+}
+
+// ---------- controls ----------
+
+function setupControls() {
+  for (const button of document.querySelectorAll('button[data-filter]')) {
+    button.addEventListener('click', () => {
+      prefs.filter = button.dataset.filter
+      savePrefs()
+      applyPrefs()
+      renderAll()
+    })
+  }
+  for (const button of document.querySelectorAll('button[data-size]')) {
+    button.addEventListener('click', () => {
+      prefs.size = button.dataset.size
+      savePrefs()
+      applyPrefs()
+      for (const card of cards.values()) {
+        card.stick = true
+        renderScreen(card)
+      }
+    })
+  }
+  for (const button of document.querySelectorAll('button[data-view]')) {
+    button.addEventListener('click', () => setView(button.dataset.view))
+  }
+  showShells.addEventListener('change', () => {
+    prefs.showShells = showShells.checked
+    savePrefs()
+    renderAll()
+  })
+  autoFollow.addEventListener('change', () => {
+    prefs.autoFollow = autoFollow.checked
+    savePrefs()
+    if (prefs.autoFollow) processQueue()
+  })
+  search.addEventListener('input', () => renderAll())
+  backdrop.addEventListener('click', collapse)
+  for (const type of ['pointerdown', 'keydown', 'wheel']) {
+    document.addEventListener(type, () => (lastInteraction = Date.now()), { capture: true, passive: true })
+  }
+  // Any real touch wakes the page from quiet mode (Z itself toggles it, so it's left to the shortcut).
+  for (const type of ['pointerdown', 'wheel', 'keydown']) {
+    document.addEventListener(type, (e) => zen && !(type === 'keydown' && ['KeyZ', 'Escape'].includes(e.code)) && setZen(false), { capture: true, passive: true })
+  }
+  document.addEventListener('pointermove', (e) => {
+    if (!zen) return
+    zenMoved += Math.abs(e.movementX) + Math.abs(e.movementY)
+    if (zenMoved > 80) setZen(false)
+  })
+  setInterval(checkZen, 10_000)
+  paneToggle.addEventListener('click', () => {
+    setPaneOpen(!paneOpen)
+    if (paneOpen && focusedHandle) galaxy?.flyTo(focusedHandle)
+  })
+  document.addEventListener('keydown', onShortcut)
+  document.querySelector('.help-btn').addEventListener('click', openHelp)
+  help.addEventListener('click', (e) => {
+    if (e.target === help || e.target.closest('[data-act="close-help"]')) help.close()
+  })
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') scheduleRender()
+    syncAmbient()
+  })
+  soundButton.addEventListener('click', () => setSound(!prefs.sound))
+  setSound(prefs.sound)
+  setupPalette()
+  setInterval(processQueue, 1000)
+  setInterval(renderAll, 15_000)
+  applyPrefs()
+}
+
+// List and galaxy views both dock one session on the right.
+function isDocked() {
+  return prefs.view !== 'grid'
+}
+
+// ---------- pins ----------
+
+// Pins follow the worktree path, which survives Orca restarts (terminal handles don't).
+function isPinned(handle) {
+  const path = sessions.get(handle)?.path
+  return Boolean(path) && prefs.pins.includes(path)
+}
+
+function togglePin(handle) {
+  const path = sessions.get(handle)?.path
+  if (!path) return
+  const pinned = prefs.pins.includes(path)
+  prefs.pins = pinned ? prefs.pins.filter((p) => p !== path) : [...prefs.pins, path]
+  savePrefs()
+  renderAll()
+  toast(pinned ? '고정을 풀었어요' : '고정했어요 · 맨 위에 두고 먼저 챙겨요')
+}
+
+// ---------- galaxy ----------
+
+function ensureGalaxy() {
+  if (galaxy || galaxyLoad) return galaxyLoad
+  galaxyLoad = import('./galaxy.js')
+    .then(({ createGalaxy }) => {
+      galaxy = createGalaxy(cosmos, {
+        onPick: pick,
+        onPickSystem: (app) => openReport(app, null),
+        onWarp: (seconds) => sound.warp(seconds),
+        onSound: (kind) => sound.chime(kind),
+        onOverview: () => {
+          setPaneOpen(false)
+          closeReport()
+        }
+      })
+      new ResizeObserver(layoutGalaxy).observe(gxHud)
+      layoutGalaxy()
+      galaxy.setActive(prefs.view === 'galaxy' && !maximized)
+      renderAll()
+      if (focusedHandle && prefs.view === 'galaxy') galaxy.flyTo(focusedHandle)
+    })
+    .catch((error) => {
+      console.error(error)
+      galaxyLoad = null
+      toast('이 브라우저에서는 은하 보기를 열 수 없어요')
+      if (prefs.view === 'galaxy') setView('focus')
+    })
+  return galaxyLoad
+}
+
+// The galaxy centres itself in the free area beside the session pane (all of it when the pane is shut).
+function layoutGalaxy({ animate = false } = {}) {
+  if (!galaxy || !gxHud.offsetWidth) return
+  const hud = gxHud.getBoundingClientRect()
+  const area = { left: hud.left, top: hud.top, width: hud.width, height: hud.height }
+  if (paneOpen) {
+    const box = layoutEl.getBoundingClientRect()
+    // Side panel on wide screens, bottom sheet on narrow ones.
+    if (paneEl.offsetLeft > 0) area.width = Math.max(160, box.left + paneEl.offsetLeft - hud.left)
+    else area.height = Math.max(120, box.top + paneEl.offsetTop - hud.top)
+  }
+  galaxy.setArea(area, { animate })
+}
+
+function setPaneOpen(open) {
+  if (paneOpen === open) return
+  paneOpen = open
+  if (open) closeReport()
+  document.body.classList.toggle('pane-closed', !open)
+  paneToggle.setAttribute('aria-expanded', String(open))
+  paneToggle.title = open ? '세션 패널 닫기 (Esc)' : '세션 패널 열기'
+  if (open) setZen(false)
+  layoutGalaxy({ animate: true })
+}
+
+function setZen(on) {
+  if (zen === on || (on && prefs.view !== 'galaxy')) return
+  zen = on
+  zenMoved = 0
+  document.body.classList.toggle('zen', on)
+  if (!on) return
+  setPaneOpen(false)
+  closeReport()
+  galaxy?.overview()
+}
+
+// Nothing to answer, nobody touching anything, the pane shut: let the galaxy have the screen.
+function checkZen() {
+  if (zen || prefs.view !== 'galaxy' || paneOpen || report || document.hidden) return
+  if (Date.now() - lastInteraction < ZEN_IDLE_MS || attentionHandles().length) return
+  setZen(true)
+}
+
+function renderGalaxy(all) {
+  const moons = moonHosts(all)
+  const items = all.map(({ handle, session, status, show }) => ({
+    handle,
+    app: session.project,
+    path: session.path,
+    pr: session.pr,
+    servers: servers[session.path] || [],
+    moons: moons.get(handle) || 0,
+    planet: session.title || session.name,
+    branch: session.name,
+    status,
+    statusLabel: STATUS[status].label,
+    summary: rowSummary(handle, session, status),
+    background: session.background,
+    pinned: isPinned(handle),
+    // Printed something in the last 15 seconds: its star sparkles.
+    active: Date.now() - (session.lastOutputAt || 0) < 15_000,
+    show
+  }))
+  displayOrder = galaxy ? galaxy.update(items, { focused: focusedHandle, gone: vanished, born, stats: appStats(all) }) : items.filter((i) => i.show).map((i) => i.handle)
+  vanished.clear()
+  born.clear()
+  if (report) renderReport()
+  renderSignals()
+}
+
+// ---------- star report ----------
+
+function openReport(app, handle) {
+  if (prefs.view !== 'galaxy') return
+  report = { app, handle }
+  reportEl.dataset.key = ''
+  renderReport()
+}
+
+function closeReport() {
+  if (!report) return
+  report = null
+  reportEl.hidden = true
+  reportEl.replaceChildren()
+}
+
+// Waiting first, then work in progress, then results; shells only as a count.
+function renderReport() {
+  const handles = [...sessions.keys()].filter((h) => sessions.get(h).project === report.app)
+  if (!handles.length) return closeReport()
+  const order = handles.sort((a, b) => STATUS[statusOf(a)].rank - STATUS[statusOf(b)].rank || (sessions.get(a).title || '').localeCompare(sessions.get(b).title || '', 'ko'))
+  const rows = order.filter((h) => STATUS[statusOf(h)].group !== 'shell')
+  const shells = order.length - rows.length
+  const minute = Math.floor(Date.now() / 60000)
+  const key = JSON.stringify([report, minute, shells, rows.map((h) => [h, statusOf(h), rowSummary(h, sessions.get(h), statusOf(h)), menus.get(h)?.signature, !!menus.get(h) && isChoicePending(h, menus.get(h)), sessions.get(h).title, servers[sessions.get(h).path]])])
+  if (key === reportEl.dataset.key) return
+  reportEl.dataset.key = key
+  const typing = document.activeElement?.closest?.('.rp-quick')?.dataset.handle
+
+  const counts = {}
+  for (const h of handles) counts[STATUS[statusOf(h)].group] = (counts[STATUS[statusOf(h)].group] || 0) + 1
+  const head = el('header', { className: 'rp-head' })
+  const title = el('div', { className: 'rp-title' })
+  title.append(el('b', { textContent: report.app }), el('span', { textContent: reportCounts(counts) }))
+  const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
+  close.addEventListener('click', closeReport)
+  head.append(title, close)
+
+  const list = el('div', { className: 'rp-list' })
+  const serversShown = new Set()
+  for (const handle of rows) {
+    const path = sessions.get(handle).path
+    list.append(reportRow(handle, serversShown.has(path) ? [] : servers[path] || []))
+    serversShown.add(path)
+  }
+  if (!rows.length) list.append(el('p', { className: 'rp-empty', textContent: '에이전트가 없는 셸만 열려 있어요' }))
+  if (shells && rows.length) list.append(el('p', { className: 'rp-shells', textContent: `셸 ${shells}개는 따로 할 일이 없어요` }))
+  reportEl.replaceChildren(head, list)
+  reportEl.hidden = false
+  const input = typing && reportEl.querySelector(`.rp-quick[data-handle="${typing}"] input`)
+  if (input) {
+    input.focus()
+    input.setSelectionRange(input.value.length, input.value.length)
+  }
+}
+
+function reportCounts(counts) {
+  const parts = [['attention', '확인 필요'], ['working', '작업 중'], ['done', '완료']].filter(([g]) => counts[g]).map(([g, label]) => `${label} ${counts[g]}`)
+  return parts.join(' · ') || '할 일 없음'
+}
+
+function reportRow(handle, running = []) {
+  const session = sessions.get(handle)
+  const status = statusOf(handle)
+  const menu = menus.get(handle)
+  const row = el('article', { className: 'rp-row', dataset: { status, handle } })
+  if (handle === report.handle) row.classList.add('focused')
+  const head = el('div', { className: 'rp-row-head' })
+  head.append(el('i', { className: 'dot' }), el('b', { textContent: session.title || session.name || '터미널' }), el('span', { className: 'rp-state', textContent: reportState(session, status) }))
+  const open = el('button', { type: 'button', className: 'rp-open', title: '터미널 화면 전체 보기', textContent: '자세히 ›' })
+  open.addEventListener('click', (e) => {
+    e.stopPropagation()
+    drillIn(handle)
+  })
+  head.append(open)
+  row.append(head)
+  const summary = menu ? attentionSummary(session, menu, status) : rowSummary(handle, session, status)
+  if (summary && summary !== STATUS[status].label) row.append(el('p', { className: 'rp-sum', textContent: summary }))
+  if (running.length) row.append(serverChips(running))
+  if (menu) row.append(menuButtons(handle, menu, { compact: true }))
+  else if (session.writable) row.append(quickReply(handle, STATUS[status].section === 'attention'))
+  // A click points the camera at that planet; going all the way in is the button's job.
+  row.addEventListener('click', (e) => {
+    if (e.target.closest('button, input, form')) return
+    report.handle = handle
+    galaxy?.flyTo(handle)
+    for (const r of reportEl.querySelectorAll('.rp-row')) r.classList.toggle('focused', r.dataset.handle === handle)
+  })
+  row.addEventListener('dblclick', (e) => !e.target.closest('button, input, form') && drillIn(handle))
+  return row
+}
+
+// Servers running in this worktree, each port a link to open it.
+function serverChips(running) {
+  const wrap = el('div', { className: 'rp-srv' })
+  for (const server of running) {
+    const chip = el('span', { className: 'rp-srv-chip', title: `${server.name} (pid ${server.pid})` })
+    chip.append(el('i', { textContent: '📡' }), el('b', { textContent: server.name }))
+    for (const port of server.ports.slice(0, 3)) chip.append(el('a', { href: `http://localhost:${port}/`, target: '_blank', rel: 'noopener', textContent: `:${port}` }))
+    wrap.append(chip)
+  }
+  return wrap
+}
+
+function reportState(session, status) {
+  const label = STATUS[status].label
+  if (status === 'working' && session.agent?.stateStartedAt) return `${label} · ${ago(session.agent.stateStartedAt).replace(' 전', '째')}`
+  const at = session.agent?.updatedAt || session.lastOutputAt
+  return at && STATUS[status].section !== 'attention' ? `${label} · ${ago(at)}` : label
+}
+
+// One line to the agent: an answer when it's waiting, otherwise the next instruction.
+function quickReply(handle, answering) {
+  const form = el('form', { className: 'rp-quick', dataset: { handle } })
+  const input = el('input', { type: 'text', placeholder: answering ? '답하기 · Enter' : '명령 보내기 · Enter', value: quickDrafts.get(handle) || '' })
+  input.addEventListener('input', () => quickDrafts.set(handle, input.value))
+  const send = el('button', { type: 'submit', textContent: '보내기' })
+  form.append(input, send)
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const text = input.value
+    if (!text.trim()) return
+    send.disabled = true
+    const res = await api('/api/send', { handle, text })
+    send.disabled = false
+    if (!res.ok) return toast(res.error?.message || '보내지 못했어요')
+    quickDrafts.delete(handle)
+    input.value = ''
+    lastActionAt.set(handle, Date.now())
+    galaxy?.comet(handle)
+    toast('보냈어요')
+  })
+  return form
+}
+
+// Going deeper: the full terminal in the side pane.
+function drillIn(handle) {
+  setFocus(handle)
+  setPaneOpen(true)
+}
+
+// Each app's star is sized and coloured by the agent work in all of its worktrees.
+function appStats(all) {
+  const stats = new Map()
+  const counted = new Set()
+  for (const { session } of all) {
+    const u = usage[session.path]
+    if (!u || counted.has(session.path)) continue
+    counted.add(session.path)
+    const s = stats.get(session.project) || { tokens: 0, activeMs: 0, firstAt: 0 }
+    s.tokens += u.tokens || 0
+    s.activeMs += u.activeMs || 0
+    if (u.firstAt && (!s.firstAt || u.firstAt < s.firstAt)) s.firstAt = u.firstAt
+    stats.set(session.project, s)
+  }
+  return stats
+}
+
+// Running subagents become moons of their worktree's agent terminal: the working one,
+// or else whichever printed last.
+function moonHosts(all) {
+  const byPath = new Map()
+  for (const entry of all) {
+    if (!entry.session.agentType || !usage[entry.session.path]?.subagents) continue
+    if (!byPath.has(entry.session.path)) byPath.set(entry.session.path, [])
+    byPath.get(entry.session.path).push(entry)
+  }
+  const hosts = new Map()
+  for (const [path, list] of byPath) {
+    const host = list.find((e) => e.status === 'working') || [...list].sort((a, b) => (b.session.lastOutputAt || 0) - (a.session.lastOutputAt || 0))[0]
+    hosts.set(host.handle, usage[path].subagents)
+  }
+  return hosts
+}
+
+// Sessions waiting on the user, floating over the galaxy.
+function renderSignals() {
+  const waiting = attentionHandles()
+  const head = el('div', { className: 'gx-signals-head', textContent: waiting.length ? `신호 ${waiting.length}` : '조용해요 · 확인할 세션이 없어요' })
+  const rows = waiting.slice(0, 6).map((handle) => {
+    const session = sessions.get(handle)
+    const status = statusOf(handle)
+    const row = el('button', { type: 'button', className: 'gx-signal', dataset: { status } })
+    if (handle === focusedHandle) row.classList.add('selected')
+    const text = el('span', { className: 'gx-signal-text' })
+    text.append(
+      el('b', { textContent: `${isPinned(handle) ? '★ ' : ''}${session.project}` }),
+      el('span', { textContent: session.title || session.name }),
+      el('em', { textContent: rowSummary(handle, session, status) })
+    )
+    row.append(el('span', { className: 'dot' }), text)
+    row.addEventListener('click', () => pick(handle))
+    return row
+  })
+  gxSignals.replaceChildren(head, ...rows)
+}
+
+function warp(node) {
+  node.classList.remove('warp')
+  void node.offsetWidth
+  node.classList.add('warp')
+}
+
+// ---------- sound ----------
+
+function setSound(on) {
+  prefs.sound = on
+  savePrefs()
+  soundButton.innerHTML = icon(on ? 'sound' : 'mute')
+  soundButton.ariaPressed = String(on)
+  soundButton.title = on ? '소리 끄기 (M)' : '소리 켜기 (M)'
+  sound.setEnabled(on)
+  syncAmbient()
+}
+
+// The drone plays while the galaxy is on screen; event bells ring in every view, even hidden.
+function syncAmbient() {
+  sound.setAmbient(prefs.view === 'galaxy' && document.visibilityState === 'visible')
+}
+
+// ---------- search palette ----------
+
+function setupPalette() {
+  paletteInput.addEventListener('input', () => {
+    palette.index = 0
+    renderPalette()
+  })
+  paletteInput.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      movePalette(e.key === 'ArrowDown' ? 1 : -1)
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      choosePalette(palette.items[palette.index])
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      closePalette()
+    }
+  })
+  paletteEl.addEventListener('pointerdown', (e) => {
+    if (e.target === paletteEl) closePalette()
+  })
+}
+
+function openPalette() {
+  if (!paletteEl.hidden && !paletteEl.classList.contains('closing')) return paletteInput.focus()
+  clearTimeout(palette.closeTimer)
+  paletteEl.classList.remove('closing')
+  paletteEl.hidden = false
+  paletteInput.value = ''
+  palette.index = 0
+  paletteResults.classList.add('intro')
+  renderPalette()
+  // Next frame, so the drop-in transition starts from the closed state.
+  requestAnimationFrame(() => requestAnimationFrame(() => paletteEl.classList.add('open')))
+  paletteInput.focus()
+  sound.chime('open')
+  setTimeout(() => paletteResults.classList.remove('intro'), 900)
+}
+
+function closePalette() {
+  if (paletteEl.hidden) return
+  paletteEl.classList.remove('open')
+  paletteEl.classList.add('closing')
+  paletteInput.blur()
+  palette.closeTimer = setTimeout(() => {
+    paletteEl.hidden = true
+    paletteEl.classList.remove('closing')
+  }, 220)
+}
+
+function choosePalette(handle) {
+  if (!handle) return
+  closePalette()
+  go(handle)
+}
+
+function movePalette(step) {
+  if (palette.items.length === 0) return
+  palette.index = (palette.index + step + palette.items.length) % palette.items.length
+  for (const [i, row] of [...paletteResults.children].entries()) row.classList.toggle('active', i === palette.index)
+  paletteResults.children[palette.index]?.scrollIntoView({ block: 'nearest' })
+}
+
+// Every word must match somewhere; names count more than screen text.
+function searchSessions(query) {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const results = []
+  for (const [handle, session] of sessions) {
+    const status = statusOf(handle)
+    if (status === 'shell' && !prefs.showShells) continue
+    const summary = rowSummary(handle, session, status)
+    const fields = [
+      [session.project, 6],
+      [session.title || '', 6],
+      [session.name, 3],
+      [summary, 2],
+      [(screens.get(handle) || []).slice(-60).join('\n'), 1]
+    ]
+    let score = 0
+    let snippet = summary
+    for (const word of words) {
+      let best = 0
+      for (const [text, weight] of fields) {
+        const at = text.toLowerCase().indexOf(word)
+        if (at === -1) continue
+        const value = weight * (at === 0 ? 1.5 : 1)
+        if (value > best) best = value
+        if (weight === 1 && best === value) snippet = lineAround(text, at)
+      }
+      if (!best) {
+        score = 0
+        break
+      }
+      score += best
+    }
+    if (words.length === 0) score = 1
+    if (score) results.push({ handle, session, status, summary: snippet, score })
+  }
+  const recent = (r) => r.session.lastOutputAt || 0
+  results.sort(
+    (a, b) =>
+      b.score - a.score ||
+      Number(isPinned(b.handle)) - Number(isPinned(a.handle)) ||
+      STATUS[a.status].rank - STATUS[b.status].rank ||
+      recent(b) - recent(a)
+  )
+  return results.slice(0, 40)
+}
+
+function lineAround(text, at) {
+  const start = text.lastIndexOf('\n', at) + 1
+  const end = text.indexOf('\n', at)
+  return text.slice(start, end === -1 ? undefined : end).trim()
+}
+
+function renderPalette() {
+  const query = paletteInput.value.trim()
+  const results = searchSessions(query)
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  palette.items = results.map((r) => r.handle)
+  palette.index = Math.min(palette.index, Math.max(0, results.length - 1))
+  if (results.length === 0) {
+    paletteResults.replaceChildren(el('div', { className: 'palette-empty', textContent: '찾는 세션이 없어요' }))
+    return
+  }
+  paletteResults.replaceChildren(
+    ...results.map(({ handle, session, status, summary }, i) => {
+      const row = el('button', { type: 'button', className: 'palette-item', dataset: { status } })
+      row.style.setProperty('--i', Math.min(i, 12))
+      if (i === palette.index) row.classList.add('active')
+      const title = el('span', { className: 'pi-title' })
+      title.innerHTML = highlight(session.title || session.name, words)
+      const app = el('span', { className: 'pi-app' })
+      app.innerHTML = `${isPinned(handle) ? '★ ' : ''}${highlight(session.project, words)}`
+      const badge = el('span', { className: 'pi-badge', textContent: STATUS[status].label })
+      const snippet = el('span', { className: 'pi-snippet' })
+      snippet.innerHTML = highlight(summary || '', words)
+      const head = el('span', { className: 'pi-head' })
+      head.append(title, app)
+      row.append(el('span', { className: 'dot' }), head, badge, snippet)
+      row.addEventListener('pointermove', () => {
+        if (palette.index !== i) {
+          palette.index = i
+          movePalette(0)
+        }
+      })
+      row.addEventListener('click', () => choosePalette(handle))
+      return row
+    })
+  )
+}
+
+function highlight(text, words) {
+  let html = escapeHtml(text)
+  for (const word of words) {
+    const safe = escapeHtml(word).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (safe) html = html.replace(new RegExp(`(${safe})(?![^<]*>)`, 'gi'), '<mark>$1</mark>')
+  }
+  return html
+}
+
+// ---------- shortcuts ----------
+
+// Letters match by physical key (e.code), so they also work with the Korean
+// input source on, where e.key would be a jamo like 'ㅓ'.
+function onShortcut(e) {
+  if (help.open || !paletteEl.hidden) return
+  const typing = e.target.matches('input, textarea, select')
+  if (e.key === 'Escape' && !typing) return onEscape()
+  if (e.key === 'Escape' && e.target === search) return search.blur()
+  if ((e.metaKey || e.ctrlKey) && e.code === 'KeyK') {
+    e.preventDefault()
+    return openPalette()
+  }
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return
+  const handle = activeHandle()
+  const run = (fn) => {
+    e.preventDefault()
+    fn()
+  }
+  const digit = /^(?:Digit|Numpad)([1-9])$/.exec(e.code)?.[1]
+  if (digit && !e.shiftKey) {
+    if (handle && !e.repeat) run(() => chooseByNumber(handle, Number(digit)))
+    return
+  }
+  if (e.key === '?') return run(openHelp)
+  if (e.key === '/') return run(openPalette)
+  if (e.key === 'Enter') {
+    const row = e.target.closest('.row')
+    // Other buttons keep their own Enter.
+    if (e.target.closest('button') && !row) return
+    return run(() => {
+      if (row) pick(row.dataset.handle)
+      enterReply(row?.dataset.handle || handle)
+    })
+  }
+  // Arrows scroll a focused terminal screen instead.
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.target.closest('.screen')) return run(() => moveFocus(e.key === 'ArrowDown' ? 1 : -1))
+  const actions = {
+    KeyJ: () => moveFocus(1),
+    KeyK: () => moveFocus(-1),
+    KeyN: nextAttention,
+    KeyB: goBack,
+    KeyR: () => enterReply(handle),
+    KeyO: () => handle && focusInOrca(handle),
+    KeyF: toggleMaximize,
+    KeyG: () => {
+      const views = Object.keys(VIEWS)
+      setView(views[(views.indexOf(prefs.view) + 1) % views.length])
+      toast(VIEWS[prefs.view])
+    },
+    KeyV: () => {
+      if (prefs.view !== 'galaxy') return
+      galaxy?.overview()
+      setPaneOpen(false)
+      closeReport()
+    },
+    KeyZ: () => {
+      if (prefs.view !== 'galaxy') return toast('고요 모드는 은하 보기에서 써요')
+      setZen(!zen)
+    },
+    KeyP: () => handle && togglePin(handle),
+    KeyM: () => {
+      setSound(!prefs.sound)
+      toast(prefs.sound ? '우주 소리를 켰어요' : '소리를 껐어요')
+    },
+    KeyA: () => {
+      autoFollow.checked = !autoFollow.checked
+      autoFollow.dispatchEvent(new Event('change'))
+      toast(prefs.autoFollow ? '자동 이동을 켰어요' : '자동 이동을 껐어요')
+    }
+  }
+  if (actions[e.code]) run(actions[e.code])
+}
+
+function onEscape() {
+  if (zen) setZen(false)
+  else if (maximized) setMaximized(false)
+  else if (expandedHandle) collapse()
+  else if (!paneNotice.hidden) hideNotice()
+  else if (document.activeElement?.matches('textarea, input, select')) document.activeElement.blur()
+  else if (report && !paneOpen) closeReport()
+  else if (prefs.view === 'galaxy' && paneOpen) {
+    setPaneOpen(false)
+    document.activeElement?.blur()
+  } else if (report) closeReport()
+  else if (document.activeElement !== document.body) document.activeElement.blur()
+}
+
+// The session the shortcuts act on: the docked one, or the open card in the grid.
+function activeHandle() {
+  return isDocked() ? focusedHandle : expandedHandle
+}
+
+function go(handle) {
+  if (isDocked()) pick(handle)
+  else expand(handle, { focusInput: false })
+}
+
+function moveFocus(step) {
+  const order = prefs.view === 'focus' ? [...list.querySelectorAll('.row')].map((row) => row.dataset.handle) : displayOrder
+  // In the grid, J/K page through cards only while one is open.
+  if (order.length === 0 || (prefs.view === 'grid' && !expandedHandle)) return
+  const index = order.indexOf(activeHandle())
+  const next = order[Math.max(0, Math.min(order.length - 1, index === -1 ? 0 : index + step))]
+  if (next && next !== activeHandle()) go(next)
+}
+
+function nextAttention() {
+  const waiting = attentionHandles()
+  if (waiting.length === 0) return toast('확인이 필요한 세션이 없어요')
+  const index = waiting.indexOf(activeHandle())
+  go(waiting[(index + 1) % waiting.length])
+}
+
+function goBack() {
+  if (previousHandle && sessions.has(previousHandle) && previousHandle !== activeHandle()) go(previousHandle)
+  else toast('돌아갈 세션이 없어요')
+}
+
+function enterReply(handle) {
+  const card = cards.get(handle)
+  if (!card) return
+  if (prefs.view === 'grid' && expandedHandle !== handle) expand(handle)
+  if (prefs.view === 'galaxy') {
+    // A question with a short-answer box in the report: answer there without opening the terminal.
+    const quick = report && reportEl.querySelector(`.rp-quick[data-handle="${handle}"] input`)
+    if (quick) return quick.focus()
+    setPaneOpen(true)
+  }
+  if (card.input.disabled) return toast('이 세션에는 입력할 수 없어요')
+  card.input.focus()
+}
+
+function chooseByNumber(handle, n) {
+  const menu = menus.get(handle)
+  if (!menu) return toast('지금 고를 선택지가 없어요')
+  const option = menu.options.find((o) => o.n === n)
+  if (!option) return toast(`${n}번 선택지가 없어요`)
+  if (isChoicePending(handle, menu)) return
+  choose(handle, menu, option)
+}
+
+function openHelp() {
+  if (!help.firstChild) {
+    const head = el('div', { className: 'help-head' })
+    head.append(el('h2', { textContent: '단축키' }))
+    const close = el('button', { type: 'button', className: 'icon', title: '닫기 (Esc)', dataset: { act: 'close-help' } })
+    close.innerHTML = icon('close')
+    head.append(close)
+    const body = el('div', { className: 'help-body' })
+    for (const group of SHORTCUTS) {
+      const dl = el('dl')
+      for (const [keys, label] of group.keys) {
+        const dt = el('dt')
+        dt.append(...keys.map((key) => el('kbd', { className: 'key', textContent: key })))
+        dl.append(dt, el('dd', { textContent: label }))
+      }
+      const wrap = el('section')
+      wrap.append(el('h3', { textContent: group.title }), dl)
+      body.append(wrap)
+    }
+    const foot = el('p', {
+      className: 'help-foot',
+      textContent: '답장 칸에 글을 쓰는 동안에는 단축키가 꺼져요. Esc로 칸에서 나오면 다시 돼요. 한글 입력 상태에서도 써요.'
+    })
+    help.append(head, body, foot)
+  }
+  help.showModal()
+}
+
+function toast(message) {
+  clearTimeout(toastTimer)
+  toastEl.textContent = message
+  toastEl.hidden = false
+  toastTimer = setTimeout(() => (toastEl.hidden = true), 1800)
+}
+
+// A session the user chose themselves (as opposed to auto-follow).
+function pick(handle) {
+  userPicked = true
+  setFocus(handle)
+}
+
+function setView(view) {
+  if (view === prefs.view) return
+  if (expandedHandle) collapse()
+  if (maximized) setMaximized(false)
+  prefs.view = view
+  savePrefs()
+  applyPrefs()
+  for (const card of cards.values()) {
+    card.el.classList.remove('docked', 'show-details')
+    card.el.hidden = false
+    card.dirty = true
+    setExpandButton(card, false)
+  }
+  hideNotice()
+  setZen(false)
+  closeReport()
+  if (view === 'galaxy') setPaneOpen(false)
+  galaxy?.setActive(view === 'galaxy')
+  if (view === 'galaxy') ensureGalaxy()
+  syncAmbient()
+  renderAll()
+  if (view === 'galaxy' && focusedHandle) galaxy?.flyTo(focusedHandle)
+  if (view === 'grid' && focusedHandle) cards.get(focusedHandle)?.el.scrollIntoView({ block: 'nearest' })
+}
+
+function applyPrefs() {
+  document.body.dataset.size = prefs.size
+  document.body.dataset.view = prefs.view
+  document.body.classList.toggle('pane-closed', !paneOpen)
+  showShells.checked = prefs.showShells
+  autoFollow.checked = prefs.autoFollow
+  for (const button of document.querySelectorAll('button[data-filter]')) button.classList.toggle('active', button.dataset.filter === prefs.filter)
+  for (const button of document.querySelectorAll('button[data-size]')) button.classList.toggle('active', button.dataset.size === prefs.size)
+  for (const button of document.querySelectorAll('button[data-view]')) button.classList.toggle('active', button.dataset.view === prefs.view)
+}
+
+function loadPrefs() {
+  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true }
+  try {
+    const saved = JSON.parse(localStorage.getItem('orca-portal-prefs') || '{}')
+    if (saved.version !== 2) Object.assign(saved, { version: 2, view: 'galaxy' })
+    if (!VIEWS[saved.view]) delete saved.view
+    return { ...defaults, ...saved, collapsed: { ...defaults.collapsed, ...saved.collapsed } }
+  } catch {
+    return defaults
+  }
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem('orca-portal-prefs', JSON.stringify(prefs))
+  } catch {}
+}
+
+function setConn(state, status) {
+  const labels = { live: '연결됨', reconnecting: '다시 연결 중', offline: '포탈 서버 꺼짐', 'orca-down': 'Orca 연결 안 됨', connecting: '연결 중' }
+  conn.dataset.state = state
+  conn.querySelector('.conn-text').textContent = labels[state]
+  conn.title = status?.error || (status?.transport === 'cli' ? 'orca CLI로 읽는 중' : labels[state])
+}
+
+// ---------- helpers ----------
+
+function matchesSearch(session, handle) {
+  const query = search.value.trim().toLowerCase()
+  if (!query) return true
+  const haystack = [session.project, session.name, session.branch, session.title, session.comment, session.agent?.prompt, session.agent?.lastAssistantMessage, ...(screens.get(handle) || [])]
+  return haystack.some((text) => text && text.toLowerCase().includes(query))
+}
+
+function el(tag, props = {}) {
+  const node = document.createElement(tag)
+  const { dataset, ariaExpanded, ...rest } = props
+  Object.assign(node, rest)
+  if (dataset) Object.assign(node.dataset, dataset)
+  if (ariaExpanded !== undefined) node.setAttribute('aria-expanded', ariaExpanded)
+  return node
+}
+
+function icon(name, size = 16) {
+  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`
+}
+
+function autosize(textarea) {
+  textarea.style.height = 'auto'
+  textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
+  textarea.style.overflowY = textarea.scrollHeight > 160 ? 'auto' : 'hidden'
+}
+
+function trimTrailingBlank(lines) {
+  let end = lines.length
+  while (end > 0 && !lines[end - 1].trim()) end--
+  return lines.slice(0, end)
+}
+
+function ago(timestamp) {
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000))
+  if (seconds < 10) return '방금'
+  if (seconds < 60) return `${seconds}초 전`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}분 전`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}시간 전`
+  return `${Math.floor(seconds / 86400)}일 전`
+}
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+}
+
+// Just enough Markdown for agent answers: code blocks, tables, headings, lists, inline code, bold.
+function renderMarkdown(source) {
+  const out = []
+  const lines = source.replace(/\r/g, '').split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (/^```/.test(line)) {
+      const code = []
+      while (++i < lines.length && !/^```/.test(lines[i])) code.push(lines[i])
+      out.push(`<pre class="code">${escapeHtml(code.join('\n'))}</pre>`)
+    } else if (/^\s*\|.*\|\s*$/.test(line)) {
+      const rows = []
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(lines[i++])
+      i--
+      const cells = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r)).map((r) => r.trim().slice(1, -1).split('|').map((c) => inline(c.trim())))
+      const [head, ...body] = cells
+      out.push(`<table><thead><tr>${head.map((c) => `<th>${c}</th>`).join('')}</tr></thead><tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`)
+    } else if (/^#{1,6}\s/.test(line)) {
+      out.push(`<h4>${inline(line.replace(/^#+\s*/, ''))}</h4>`)
+    } else if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
+      const indent = line.match(/^\s*/)[0].length
+      out.push(`<div class="li" style="padding-left:${Math.min(indent, 8) * 0.5 + 1}em"><span class="bullet">${escapeHtml(line.trim().match(/^([-*]|\d+\.)/)[0].replace(/^[-*]$/, '•'))}</span><span>${inline(line.replace(/^\s*([-*]|\d+\.)\s+/, ''))}</span></div>`)
+    } else if (!line.trim()) {
+      out.push('<div class="gap"></div>')
+    } else {
+      out.push(`<p>${inline(line)}</p>`)
+    }
+  }
+  return out.join('')
+}
+
+function inline(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+}
+
+setupControls()
+if (prefs.view === 'galaxy') ensureGalaxy()
+connect()

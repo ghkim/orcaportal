@@ -1,0 +1,39 @@
+{
+  "name": "orcaportal",
+  "version": "0.1.0",
+  "description": "One page that shows every live Orca session at once: watch, reply, and pick options without switching tabs.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ghkim/orcaportal.git"
+  },
+  "keywords": [
+    "orca",
+    "claude-code",
+    "codex",
+    "terminal",
+    "dashboard",
+    "three.js"
+  ],
+  "type": "module",
+  "private": true,
+  "bin": {
+    "orcaportal": "bin/orcaportal.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "portal": "node server.mjs --open",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "bin/",
+    "server.mjs",
+    "src/",
+    "public/",
+    "README.md",
+    "LICENSE"
+  ]
+}

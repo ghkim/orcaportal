@@ -1,0 +1,193 @@
+// Polls Orca and keeps one merged picture of every live session: which project it
+// belongs to, what its agent is doing, and what its terminal currently shows.
+import { EventEmitter } from 'node:events'
+import path from 'node:path'
+
+const TICK_MS = 1000
+const OFFLINE_RETRY_MS = 5000
+const SCREEN_REFRESH_MS = 15_000
+const SCREEN_CONCURRENCY = 6
+
+export class Portal extends EventEmitter {
+  constructor(client) {
+    super()
+    this.client = client
+    this.sessions = []
+    this.screens = new Map() // handle -> { lines, key, lastOutputAt, readAt }
+    this.status = { ok: false, error: null, transport: client.transport, checkedAt: 0 }
+    this.stateKey = ''
+    this.subscribers = 0
+    this.timer = null
+    this.ticking = false
+    this.forced = new Set()
+  }
+
+  subscribe() {
+    this.subscribers += 1
+    if (this.subscribers === 1) this.loop()
+  }
+
+  unsubscribe() {
+    this.subscribers = Math.max(0, this.subscribers - 1)
+    if (this.subscribers === 0) {
+      clearTimeout(this.timer)
+      this.timer = null
+    }
+  }
+
+  // After the user acts on a terminal, read it again right away instead of waiting.
+  refreshSoon(handle) {
+    if (handle) this.forced.add(handle)
+    clearTimeout(this.timer)
+    this.timer = setTimeout(() => this.loop(), 150)
+  }
+
+  async loop() {
+    clearTimeout(this.timer)
+    if (this.ticking) return
+    this.ticking = true
+    try {
+      await this.tick()
+    } finally {
+      this.ticking = false
+      // While Orca is unreachable, retry slowly instead of spawning CLI fallbacks every second.
+      if (this.subscribers > 0) this.timer = setTimeout(() => this.loop(), this.status.ok ? TICK_MS : OFFLINE_RETRY_MS)
+    }
+  }
+
+  async tick() {
+    let workspaces
+    let terminals
+    try {
+      ;[workspaces, terminals] = await Promise.all([this.client.workspaces(), this.client.terminals()])
+    } catch (error) {
+      this.setStatus({ ok: false, error: error.message, code: error.code })
+      return
+    }
+    this.setStatus({ ok: true, error: null })
+
+    const sessions = mergeSessions(workspaces.worktrees || [], terminals.terminals || [])
+    const live = new Set(sessions.map((s) => s.handle))
+    for (const handle of this.screens.keys()) {
+      if (!live.has(handle)) {
+        this.screens.delete(handle)
+        this.emit('screen', { handle, lines: null })
+      }
+    }
+
+    const key = JSON.stringify(sessions.map((s) => ({ ...s, lastOutputAt: Math.floor((s.lastOutputAt || 0) / 10_000) })))
+    this.sessions = sessions
+    if (key !== this.stateKey) {
+      this.stateKey = key
+      this.emit('state', this.snapshot())
+    }
+
+    const now = Date.now()
+    const due = sessions.filter((s) => {
+      const known = this.screens.get(s.handle)
+      return !known || this.forced.has(s.handle) || known.lastOutputAt !== s.lastOutputAt || now - known.readAt > SCREEN_REFRESH_MS
+    })
+    this.forced.clear()
+    await mapLimit(due, SCREEN_CONCURRENCY, (s) => this.readScreen(s))
+  }
+
+  async readScreen(session) {
+    let result
+    try {
+      result = await this.client.screen(session.handle)
+    } catch {
+      return
+    }
+    const terminal = result.terminal || {}
+    const lines = joinWrappedRows(terminal.tail || [], terminal.tailRows || [])
+    const key = lines.join('\n')
+    const previous = this.screens.get(session.handle)
+    this.screens.set(session.handle, { lines, key, lastOutputAt: session.lastOutputAt, readAt: Date.now() })
+    if (previous?.key !== key) this.emit('screen', { handle: session.handle, lines })
+  }
+
+  setStatus(patch) {
+    const next = { ...this.status, ...patch, transport: this.client.transport, checkedAt: Date.now() }
+    const changed = next.ok !== this.status.ok || next.error !== this.status.error || next.transport !== this.status.transport
+    this.status = next
+    if (changed) this.emit('status', next)
+  }
+
+  snapshot() {
+    return { sessions: this.sessions, at: Date.now() }
+  }
+}
+
+export function mergeSessions(worktrees, terminals) {
+  const byWorktree = new Map()
+  const agentByPane = new Map()
+  for (const worktree of worktrees) {
+    byWorktree.set(worktree.worktreeId, worktree)
+    for (const agent of worktree.agents || []) {
+      const existing = agentByPane.get(agent.paneKey)
+      // Prefer the pane's main agent over any child it spawned.
+      if (!existing || (existing.parentPaneKey && !agent.parentPaneKey)) agentByPane.set(agent.paneKey, agent)
+    }
+  }
+
+  // Orphaned terminals have a live PTY but no tab in Orca's window right now; they are
+  // still the user's sessions, so they stay in.
+  return terminals.map((t) => {
+    const worktree = byWorktree.get(t.worktreeId)
+    // Background terminals have no live tab; Orca remembers their pane as recordedPaneKey.
+    const agent = agentByPane.get(`${t.tabId}:${t.leafId}`) || agentByPane.get(t.recordedPaneKey)
+    const worktreePath = t.worktreePath || worktree?.path || ''
+    return {
+      handle: t.handle,
+      title: t.paneTitle || t.title || '',
+      worktreeId: t.worktreeId,
+      path: worktreePath,
+      project: worktree?.repo || path.basename(worktreePath) || '터미널',
+      name: worktree?.displayName || shortBranch(t.branch) || '',
+      branch: shortBranch(t.branch || worktree?.branch),
+      comment: worktree?.comment || '',
+      unread: Boolean(worktree?.unread),
+      pinned: Boolean(worktree?.isPinned),
+      pr: worktree?.linkedPR ? { number: worktree.linkedPR.number, state: worktree.linkedPR.state, title: worktree.linkedPR.title || '', checks: worktree.linkedPR.checksStatus || null } : null,
+      connected: t.connected !== false,
+      writable: t.writable !== false,
+      background: Boolean(t.orphaned),
+      lastOutputAt: t.lastOutputAt || 0,
+      agentType: agent?.agentType || t.agentIdentity || null,
+      agent: agent
+        ? {
+            state: agent.state,
+            prompt: agent.prompt || '',
+            lastAssistantMessage: agent.lastAssistantMessage || '',
+            toolName: agent.toolName || '',
+            toolInput: agent.toolInput || '',
+            interrupted: Boolean(agent.interrupted),
+            stateStartedAt: agent.stateStartedAt || 0,
+            updatedAt: agent.updatedAt || 0
+          }
+        : null
+    }
+  })
+}
+
+// A row flagged `wrapped` continues the row above it (xterm semantics).
+export function joinWrappedRows(tail, rows) {
+  const lines = []
+  tail.forEach((text, index) => {
+    if (rows[index]?.wrapped && lines.length > 0) lines[lines.length - 1] += text
+    else lines.push(text)
+  })
+  return lines
+}
+
+function shortBranch(ref) {
+  return (ref || '').replace(/^refs\/heads\//, '')
+}
+
+async function mapLimit(items, limit, fn) {
+  let next = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) await fn(items[next++])
+  })
+  await Promise.all(workers)
+}
