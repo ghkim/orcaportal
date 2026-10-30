@@ -195,6 +195,10 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   disc.add(decor.remnants)
   let jetLevel = 0
   let decorOn = {} // which decorations the viewer left on (anything not named is on)
+  // How far each one is shown, 0..1: switching one off fades it out instead of popping it.
+  let decorFade = null
+  const DECOR_KEYS = ['magellan', 'disks', 'remnants', 'jets', 'crowns']
+  const DECOR_SECONDS = 1.6
   const auroraRing = aurora()
   const core = galaxyCore(tex.glow)
   let breathAt = 0 // where the core is in its breathing, in radians
@@ -1138,7 +1142,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   }
 
   function stepRemnants(dt) {
-    if (!remnants.size || !decor.remnants.visible) return
+    const shown = decorFade?.remnants ?? 1
+    if (!remnants.size || !shown) return
     const now = Date.now()
     for (const [key, r] of remnants) {
       const age = now - r.diedAt
@@ -1148,7 +1153,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       }
       const k = age / REMNANT_MS
       // Settles in as the blast clears, fades over the last day and a half.
-      const show = smooth(0, 20_000, age) * (1 - smooth(0.5, 1, k))
+      const show = smooth(0, 20_000, age) * (1 - smooth(0.5, 1, k)) * shown
       const size = 26 + 22 * Math.sqrt(k)
       const d = r.group.getWorldPosition(tmp).distanceTo(camera.position)
       const near = smooth(size * 0.3, size * 1.2, d)
@@ -1171,7 +1176,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   // poles with knots of light running up them. More agents, brighter and longer.
   function stepJets(dt) {
     jetLevel += (Math.min(1, busyAgents / 3) - jetLevel) * Math.min(1, dt * 0.4)
-    jets.group.visible = decorOn.jets !== false && jetLevel > 0.01
+    const shown = decorFade?.jets ?? 1
+    jets.group.visible = shown > 0 && jetLevel > 0.01
     if (!jets.group.visible) return
     const length = 130 + 130 * jetLevel
     // Each beam is a flat strip that turns about its own axis to face the camera.
@@ -1180,14 +1186,40 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       beam.rotation.set(0, facing, beam.userData.dir > 0 ? 0 : Math.PI)
       beam.scale.set(9 + 5 * jetLevel, length, 1)
       beam.position.y = (beam.userData.dir * length) / 2
-      beam.material.opacity = jetLevel * (0.5 + 0.06 * Math.sin(time * 7 + beam.userData.dir))
+      beam.material.opacity = shown * jetLevel * (0.5 + 0.06 * Math.sin(time * 7 + beam.userData.dir))
     }
     for (const knot of jets.knots) {
       const u = knot.userData
       u.t = (u.t + dt * u.speed) % 1
       knot.position.y = u.dir * u.t * length
       knot.scale.setScalar(2.5 + 4 * u.t)
-      knot.material.opacity = jetLevel * Math.sin(Math.PI * u.t) * 0.55
+      knot.material.opacity = shown * jetLevel * Math.sin(Math.PI * u.t) * 0.55
+    }
+  }
+
+  // Decorations switched on or off ease in and out. The disc and the Magellanic Clouds
+  // are dimmed here; remnants, jets and crowns read their level as they're drawn.
+  function stepDecor(dt) {
+    if (!decorFade) return
+    for (const key of DECOR_KEYS) {
+      const goal = decorOn[key] !== false ? 1 : 0
+      const raw = decorFade.raw[key]
+      if (raw === goal) continue
+      decorFade.raw[key] = goal > raw ? Math.min(goal, raw + dt / DECOR_SECONDS) : Math.max(goal, raw - dt / DECOR_SECONDS)
+      decorFade[key] = smooth(0, 1, decorFade.raw[key])
+      if (key === 'magellan') showMagellan()
+      if (key === 'disks') for (const system of systems.values()) if (system.disk) showDisk(system)
+      if (key === 'remnants') decor.remnants.visible = decorFade.remnants > 0
+    }
+  }
+
+  function showMagellan() {
+    const shown = decorFade.magellan
+    decor.magellan.visible = shown > 0
+    for (const part of decor.magellan.children) {
+      if (part.isPoints) part.material.uniforms.uAlpha.value = shown
+      // The veils that breathe are dimmed where they breathe; the rest hold a fixed light.
+      else if (!part.userData.rate) part.material.opacity = shown * (part.userData.still ??= part.material.opacity)
     }
   }
 
@@ -2268,11 +2300,18 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     if (!system.disk) {
       system.disk = new THREE.Mesh(plane, diskMaterial(pointUniforms.uTime))
       system.disk.rotation.x = -Math.PI / 2
-      system.disk.visible = decorOn.disks !== false
       system.tilt.add(system.disk)
     }
-    system.disk.material.uniforms.uFade.value = fade
+    system.diskFade = fade
+    showDisk(system)
     fitDisk(system)
+  }
+
+  // A disc's own fading with the star's age, times how far the viewer has it switched on.
+  function showDisk(system) {
+    const shown = decorFade?.disks ?? 1
+    system.disk.visible = shown > 0
+    system.disk.material.uniforms.uFade.value = system.diskFade * shown
   }
 
   function fitDisk(system) {
@@ -2847,11 +2886,13 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     }
     // The far nebulae and the Milky Way's clouds turn and brighten more slowly still.
     for (const group of [veils, band, decor.magellan]) {
+      if (!group.visible) continue
+      const shown = group === decor.magellan ? decorFade?.magellan ?? 1 : 1
       for (const veil of group.children) {
         const u = veil.userData
         if (!u.rate) continue
         veil.material.rotation += u.spin * dt
-        veil.material.opacity = u.base * (0.72 + 0.28 * Math.sin(time * u.rate + u.phase))
+        veil.material.opacity = shown * u.base * (0.72 + 0.28 * Math.sin(time * u.rate + u.phase))
       }
     }
     // Space weather: the more agents at work, the brighter the aurora round the disc.
@@ -2936,6 +2977,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     stepBirths(now)
     stepForming(now, dt)
     stepComets(now)
+    stepDecor(dt)
     stepRemnants(dt)
     stepJets(dt)
     stepMeteors(now)
@@ -3028,7 +3070,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     }
     stepMergeGlints(system, size, t)
     const glints = CROWN_GLINTS[system.tier || 0]
-    system.crown.visible = decorOn.crowns !== false && glints > 0 && system.grow > 0.95
+    const shown = decorFade?.crowns ?? 1
+    system.crown.visible = shown > 0 && glints > 0 && system.grow > 0.95
     if (!system.crown.visible) return
     system.crown.position.y = 2.2 * size
     system.crown.rotation.y += dt * 0.22
@@ -3038,7 +3081,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       const a = (i / glints) * Math.PI * 2
       s.position.set(Math.cos(a) * 2.7 * size, 0, Math.sin(a) * 2.7 * size)
       const shine = Math.pow(Math.max(0, Math.sin(t * 1.3 + i * 2.4)), 6)
-      s.material.opacity = system.anyShown ? 0.6 + 0.4 * shine : 0.15
+      s.material.opacity = shown * (system.anyShown ? 0.6 + 0.4 * shine : 0.15)
       s.material.rotation = t * 0.2 + i
       s.scale.setScalar(size * (1.1 + 1.1 * shine))
     })
@@ -3306,8 +3349,13 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     },
     setDecor(flags = {}) {
       decorOn = flags
-      for (const [name, group] of Object.entries(decor)) group.visible = flags[name] !== false
-      for (const system of systems.values()) if (system.disk) system.disk.visible = flags.disks !== false
+      if (decorFade) return
+      // The first time, the galaxy opens with them as they are, without fading.
+      const raw = Object.fromEntries(DECOR_KEYS.map((key) => [key, flags[key] !== false ? 1 : 0]))
+      decorFade = { ...raw, raw }
+      showMagellan()
+      decor.remnants.visible = raw.remnants > 0
+      for (const system of systems.values()) if (system.disk) showDisk(system)
     },
     // The planet Enter in the search box goes to next: its light stands out.
     setSearchTarget(handle) {
