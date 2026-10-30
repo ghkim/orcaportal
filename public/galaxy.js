@@ -11,6 +11,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 const GALAXY_RADIUS = 320
 const ARMS = 3
 const SPIN = 0.0145 // arm twist, radians per unit of radius
+const WARP = 30 // how far the rim of the disc bends up on one side and down on the other
 const SPOT_CHOICES = 16 // a new star looks at this many spots of its own and takes the emptiest
 const MILESTONES = [1e7, 5e7, 1e8, 5e8, 1e9] // an app's tokens: each one passed is celebrated
 const CROWN_GLINTS = [0, 3, 5, 7, 9, 12] // glints in a star's crown, by milestones passed
@@ -1812,7 +1813,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     const k = hash(`${app}~height`)
     const lift = ((k % 1000) + ((k >>> 12) % 1000)) / 1000 - 1
     const angle = ((h % ARMS) / ARMS) * Math.PI * 2 + radius * SPIN + (((h >>> 2) % 1000) / 1000 - 0.5) * 0.2
-    return new THREE.Vector3(Math.cos(angle) * radius, lift * (46 - 28 * depth), Math.sin(angle) * radius)
+    const x = Math.cos(angle) * radius
+    const z = Math.sin(angle) * radius
+    return new THREE.Vector3(x, lift * (46 - 28 * depth) + warpAt(x, z), z)
   }
 
   function createSystem(app) {
@@ -3229,7 +3232,9 @@ function placeCloud(s, rand, born = 0) {
   const angle = (arm / ARMS) * Math.PI * 2 + r * SPIN + gauss(rand) * 0.06
   s.material.color.set(CLOUD_COLORS[Math.floor(rand() * CLOUD_COLORS.length)])
   s.material.rotation = rand() * Math.PI * 2
-  s.position.set(Math.cos(angle) * r + gauss(rand) * 5, gauss(rand) * 2, Math.sin(angle) * r + gauss(rand) * 5)
+  const x = Math.cos(angle) * r + gauss(rand) * 5
+  const z = Math.sin(angle) * r + gauss(rand) * 5
+  s.position.set(x, gauss(rand) * 2 + warpAt(x, z), z)
   Object.assign(s.userData, {
     size: 22 + rand() * 54,
     base: 0.32 + rand() * 0.3,
@@ -3633,26 +3638,37 @@ function galaxyDisc(uniforms) {
     let x, y, z, r, b
     const kind = rand()
     if (kind < 0.12) {
-      // Bulge: a dense, warm ellipsoid around the core.
-      r = Math.abs(gauss(rand)) * 30
+      // Bulge: a dense, warm, nearly round swell around the core, so from the side the
+      // middle stands up out of the disc.
+      r = Math.abs(gauss(rand)) * 34
       const th = rand() * Math.PI * 2
       const ph = Math.acos(2 * rand() - 1)
       x = r * Math.sin(ph) * Math.cos(th)
-      y = r * Math.cos(ph) * 0.5
+      y = r * Math.cos(ph) * 0.78
       z = r * Math.sin(ph) * Math.sin(th)
       c.copy(inner).lerp(white, rand() * 0.25)
       b = 0.045 + 0.08 * Math.max(0, 1 - r / 45)
       size[i] = 0.9 + rand() * 1.4
-    } else if (kind < 0.26) {
+    } else if (kind < 0.22) {
       // Thin field between the arms.
       r = Math.sqrt(rand()) * R * 1.05
       const a = rand() * Math.PI * 2
       x = Math.cos(a) * r
       z = Math.sin(a) * r
-      y = gauss(rand) * 3
+      y = gauss(rand) * 3 + warpAt(x, z)
       c.copy(inner).lerp(outer, Math.min(1, r / R))
       b = 0.07
       size[i] = 0.6 + rand() * 0.9
+    } else if (kind < 0.32) {
+      // Thick disc: old, faint stars in a puffier layer that flares towards the rim.
+      r = Math.pow(rand(), 0.75) * R
+      const a = rand() * Math.PI * 2
+      x = Math.cos(a) * r
+      z = Math.sin(a) * r
+      y = gauss(rand) * (7 + 18 * (r / R)) + warpAt(x, z)
+      c.copy(inner).lerp(white, 0.35)
+      b = 0.045 + rand() * 0.04
+      size[i] = 0.6 + rand() * 0.8
     } else {
       r = Math.pow(rand(), 1.25) * R
       const arm = Math.floor(rand() * ARMS)
@@ -3661,7 +3677,7 @@ function galaxyDisc(uniforms) {
       const off = () => Math.pow(rand(), 2.6) * (rand() < 0.5 ? -1 : 1) * spread
       x = Math.cos(angle) * r + off()
       z = Math.sin(angle) * r + off()
-      y = gauss(rand) * (2 + 5 * (1 - r / R))
+      y = gauss(rand) * (2 + 5 * (1 - r / R)) + warpAt(x, z)
       c.copy(inner).lerp(outer, Math.min(1, r / (R * 0.55)))
       // Young arms: the outer reaches run cyan and violet.
       if (r > R * 0.35) c.lerp(rand() < 0.5 ? cyan : violet, rand() * 0.45)
@@ -3722,12 +3738,31 @@ function galaxyDisc(uniforms) {
       spread = (3 + r * 0.06) * cloud.width
       dSize[i] = 5 + rand() * 7
     }
-    dPos.set([Math.cos(angle) * r + gauss(rand) * spread, gauss(rand) * 1.2, Math.sin(angle) * r + gauss(rand) * spread], i * 3)
+    const x = Math.cos(angle) * r + gauss(rand) * spread
+    const z = Math.sin(angle) * r + gauss(rand) * spread
+    dPos.set([x, gauss(rand) * 1.2 + warpAt(x, z), z], i * 3)
     dTint.set([0.012, 0.01, 0.012], i * 3)
   }
-  const dust = new THREE.Points(geometryOf(dPos, dTint, dSize), pointsMaterial(uniforms, THREE.NormalBlending, 0.26, 36))
+  const dust = new THREE.Points(geometryOf(dPos, dTint, dSize), dustMaterial(uniforms))
   dust.renderOrder = 1
-  return [stars, dust]
+
+  // Halo: a sparse, faint cloud of old stars all round the disc, above and below it too,
+  // thickest near the core. It gives the galaxy depth from the side.
+  const haloCount = 9000
+  const hPos = new Float32Array(haloCount * 3)
+  const hTint = new Float32Array(haloCount * 3)
+  const hSize = new Float32Array(haloCount)
+  for (let i = 0; i < haloCount; i++) {
+    const r = 25 + Math.pow(rand(), 1.7) * R * 1.05
+    const th = rand() * Math.PI * 2
+    const ph = Math.acos(2 * rand() - 1)
+    hPos.set([r * Math.sin(ph) * Math.cos(th), r * Math.cos(ph) * 0.62, r * Math.sin(ph) * Math.sin(th)], i * 3)
+    c.copy(inner).lerp(white, rand() * 0.5).multiplyScalar((0.07 + rand() * 0.09) * (1.25 - (r / R) * 0.6))
+    hTint.set([c.r, c.g, c.b], i * 3)
+    hSize[i] = 0.6 + rand() * 0.9
+  }
+  const halo = new THREE.Points(geometryOf(hPos, hTint, hSize), pointsMaterial(uniforms, THREE.AdditiveBlending))
+  return [stars, dust, halo]
 }
 
 function galaxyCore(glow) {
@@ -3783,6 +3818,37 @@ function pointsMaterial(uniforms, blending, alpha = 1, maxSize = 4.5) {
     transparent: true,
     depthWrite: false,
     blending
+  })
+}
+
+// The dust's dark points. Seen from the side they would pile up into black slabs taller
+// than the disc, so the closer the eye is to the disc's plane, the smaller and fainter
+// each point gets: edge-on the dust is a thin, soft lane through the middle.
+function dustMaterial(uniforms) {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...uniforms, uAlpha: { value: 0.26 }, uMax: { value: 36 } },
+    vertexShader: `
+      attribute vec3 tint; attribute float size; uniform float uScale; uniform float uPixel; uniform float uMax;
+      varying vec3 vTint; varying float vFade;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float d = -mv.z;
+        float face = smoothstep(0.03, 0.55, abs(dot(normalize(normalMatrix * vec3(0.0, 1.0, 0.0)), normalize(-mv.xyz))));
+        gl_PointSize = clamp(size * mix(0.35, 1.0, face) * uScale / d, 0.0, uMax * uPixel);
+        vFade = smoothstep(2.0, 35.0, d) * mix(0.45, 1.0, face);
+        vTint = tint;
+      }`,
+    fragmentShader: `
+      uniform float uAlpha; varying vec3 vTint; varying float vFade;
+      void main() {
+        vec2 c = gl_PointCoord - 0.5;
+        float a = exp(-dot(c, c) * 14.0) * uAlpha * vFade;
+        gl_FragColor = vec4(vTint, a);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.NormalBlending
   })
 }
 
@@ -4235,6 +4301,15 @@ function ramp(out, stops, t) {
   const x = Math.max(0, Math.min(0.9999, t)) * (stops.length - 1)
   const i = Math.floor(x)
   return out.copy(stops[i]).lerp(stops[i + 1], x - i)
+}
+
+// The outer disc bends like a hat brim, up on one side and down on the other, as real
+// discs do; flat inside, bending more the farther out.
+function warpAt(x, z) {
+  const r = Math.hypot(x, z) / GALAXY_RADIUS
+  if (r < 0.45) return 0
+  const k = (r - 0.45) / 0.55
+  return WARP * k * k * Math.sin(Math.atan2(z, x) - 0.6)
 }
 
 // Where stars sit on an arm: from just outside the core's bulge to near the rim.
