@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { Projects, projectName, projectsHome, gitUrl, repoNameOf, cloneShare, cloneTrouble } from '../src/projects.mjs'
+import { Projects, projectName, projectsHome, gitUrl, repoNameOf, cloneShare, cloneTrouble, cloneDenied, cloneAnyAccount } from '../src/projects.mjs'
 
 test('project names keep any language and refuse anything that walks the path', () => {
   assert.equal(projectName('  할일   앱 '), '할일 앱')
@@ -121,6 +121,9 @@ test("a clone's progress is read from git's own lines, and its failures in plain
   assert.match(cloneTrouble("remote: Repository not found.\nfatal: repository 'https://github.com/x/y/' not found"), /찾을 수 없어요/)
   assert.match(cloneTrouble('fatal: unable to access: Could not resolve host: nowhere'), /연결하지 못했어요/)
   assert.equal(cloneTrouble('fatal: something odd'), '클론하지 못했어요: something odd')
+  assert.ok(cloneDenied("remote: Repository not found.\nfatal: repository 'https://github.com/x/y/' not found"))
+  assert.ok(cloneDenied("fatal: could not read Username for 'https://github.com': terminal prompts disabled"))
+  assert.ok(!cloneDenied('fatal: unable to access: Could not resolve host: nowhere'))
 })
 
 // Waits for the birth under way at `dir` to finish, collecting what it told.
@@ -164,4 +167,37 @@ test('a project from a git address is cloned, added to Orca and started; a faile
   assert.equal(run.told.at(-1).error, '저장소를 찾을 수 없어요.')
   assert.ok(!calls.some((c) => c[1] === 'add' && c[2].endsWith('gone')))
   fs.rmSync(root, { recursive: true })
+})
+
+test("a private GitHub repo the default account can't see is cloned as another signed-in account", async () => {
+  const denied = () => Object.assign(new Error('저장소를 찾을 수 없어요.'), { code: 'clone_failed', denied: true })
+  const accounts = async () => [{ login: 'work', token: 't-work' }, { login: 'home', token: 't-home' }]
+  const tries = []
+  // Only the "home" account can see it.
+  const clone = async (url, dir, onShare, token = null) => {
+    tries.push(token)
+    if (token !== 't-home') throw denied()
+  }
+  await cloneAnyAccount('https://github.com/home/private.git', '/x', () => {}, { clone, accounts })
+  assert.deepEqual(tries, [null, 't-work', 't-home'])
+
+  // Nobody can: the message names the accounts tried.
+  const none = async (url, dir, onShare, token = null) => {
+    tries.push(token)
+    throw denied()
+  }
+  await assert.rejects(cloneAnyAccount('https://github.com/x/y.git', '/x', () => {}, { clone: none, accounts }), (error) => /work, home/.test(error.message) && /권한이 없어요/.test(error.message))
+
+  // Not GitHub, or not a refusal: no second try.
+  tries.length = 0
+  await assert.rejects(cloneAnyAccount('https://gitlab.com/x/y.git', '/x', () => {}, { clone: none, accounts }), { message: '저장소를 찾을 수 없어요.' })
+  const offline = async (url, dir, onShare, token = null) => {
+    tries.push(token)
+    throw Object.assign(new Error('연결하지 못했어요'), { code: 'clone_failed', denied: false })
+  }
+  await assert.rejects(cloneAnyAccount('https://github.com/x/y.git', '/x', () => {}, { clone: offline, accounts }), { message: '연결하지 못했어요' })
+  assert.deepEqual(tries, [null, null])
+
+  // Without gh there is nobody else to try, and git's own answer stands.
+  await assert.rejects(cloneAnyAccount('https://github.com/x/y.git', '/x', () => {}, { clone: none, accounts: async () => [] }), { message: '저장소를 찾을 수 없어요.' })
 })

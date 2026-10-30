@@ -4,6 +4,7 @@
 // That terminal is what lights the new star. The work runs in the background and reports
 // how far it has got, so the page can show the star gathering meanwhile.
 import { EventEmitter } from 'node:events'
+import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -72,7 +73,7 @@ export function projectsHome(repoPaths, fallback = path.join(os.homedir(), 'orca
 }
 
 export class Projects extends EventEmitter {
-  constructor(client, { git = runGit, clone = runClone, attempts = 4, retryMs = 600 } = {}) {
+  constructor(client, { git = runGit, clone = cloneAnyAccount, attempts = 4, retryMs = 600 } = {}) {
     super()
     this.client = client
     this.git = git
@@ -188,12 +189,16 @@ function runGit(cwd, args) {
 }
 
 // `git clone` with its progress read as it goes. It never waits on a prompt: a private
-// repo without saved credentials fails at once instead of hanging the clone.
-export function runClone(url, dir, onShare) {
+// repo without saved credentials fails at once instead of hanging the clone. With a token,
+// git signs in with it alone, for this clone only; the token stays out of the command line
+// and out of the new repo's config.
+export function runClone(url, dir, onShare, token = null) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
     if (!env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes'
-    const child = spawn('git', ['clone', '--progress', '--', url, dir], { env, stdio: ['ignore', 'ignore', 'pipe'] })
+    const signIn = token ? ['-c', 'credential.helper=', '-c', 'credential.helper=!f() { echo username=x-access-token; echo "password=$ORRERY_GIT_TOKEN"; }; f'] : []
+    if (token) env.ORRERY_GIT_TOKEN = token
+    const child = spawn('git', [...signIn, 'clone', '--progress', '--', url, dir], { env, stdio: ['ignore', 'ignore', 'pipe'] })
     let tail = ''
     let timedOut = false
     const timer = setTimeout(() => {
@@ -215,15 +220,79 @@ export function runClone(url, dir, onShare) {
     child.on('close', (code) => {
       clearTimeout(timer)
       if (code === 0) return resolve()
-      reject(new ProjectError('clone_failed', timedOut ? '클론이 30분 넘게 걸려서 멈췄어요.' : cloneTrouble(tail)))
+      const error = new ProjectError('clone_failed', timedOut ? '클론이 30분 넘게 걸려서 멈췄어요.' : cloneTrouble(tail))
+      error.denied = !timedOut && cloneDenied(tail)
+      reject(error)
     })
   })
+}
+
+// git signs in to GitHub as one account, and GitHub answers "not found" for a private repo
+// that account can't see. When that happens, the clone is tried again as each account the
+// gh CLI is signed in to on this Mac, until one gets in.
+export async function cloneAnyAccount(url, dir, onShare, { clone = runClone, accounts = githubAccounts } = {}) {
+  try {
+    return await clone(url, dir, onShare)
+  } catch (error) {
+    if (!error.denied || !/^https:\/\/(?:[^@/]+@)?github\.com\//i.test(url)) throw error
+    const tried = []
+    for (const { login, token } of await accounts().catch(() => [])) {
+      tried.push(login)
+      try {
+        return await clone(url, dir, onShare, token)
+      } catch (again) {
+        if (!again.denied) throw again
+      }
+    }
+    if (!tried.length) throw error
+    throw new ProjectError('clone_failed', `저장소를 찾을 수 없어요. 주소가 맞다면 비공개 저장소인데, 이 맥의 깃허브 계정(${tried.join(', ')})에는 들어갈 권한이 없어요.`)
+  }
+}
+
+// The GitHub accounts the gh CLI is signed in to, each with its token, the active one last
+// (git has most likely just tried it). None when gh isn't installed.
+export async function githubAccounts(gh = findGh()) {
+  if (!gh) return []
+  const status = await runFile(gh, ['auth', 'status', '--hostname', 'github.com', '--json', 'hosts'])
+  const signedIn = (JSON.parse(status).hosts?.['github.com'] || []).filter((a) => a.state === 'success')
+  signedIn.sort((a, b) => Number(a.active) - Number(b.active))
+  const accounts = []
+  for (const { login } of signedIn) {
+    const token = (await runFile(gh, ['auth', 'token', '--hostname', 'github.com', '--user', login]).catch(() => '')).trim()
+    if (token) accounts.push({ login, token })
+  }
+  return accounts
+}
+
+// The Mac app starts with a short PATH, so Homebrew's folders are looked in as well.
+function findGh() {
+  const dirs = [...(process.env.PATH || '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin']
+  for (const dir of dirs.filter(Boolean)) {
+    const candidate = path.join(dir, 'gh')
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
+    } catch {}
+  }
+  return null
+}
+
+// gh exits non-zero when any one account has trouble, yet still prints the rest.
+function runFile(file, args) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { timeout: 10_000 }, (error, stdout) => (stdout || !error ? resolve(stdout) : reject(error)))
+  })
+}
+
+// GitHub turned the clone away: no access, or no sign-in at all.
+export function cloneDenied(output) {
+  return /Repository not found|could not read Username|Authentication failed|terminal prompts disabled|returned error: 40[13]/i.test(output)
 }
 
 // What went wrong, from the end of git's output, in words the user can act on.
 export function cloneTrouble(output) {
   if (/could not read Username|Authentication failed|Permission denied \(publickey\)|terminal prompts disabled|Host key verification failed/i.test(output)) return '저장소를 찾을 수 없거나 들어갈 권한이 없어요. 주소를 확인하고, 비공개 저장소라면 이 맥에서 git 로그인(인증)을 먼저 해 주세요.'
-  if (/not found|does not exist|does not appear to be a git repository/i.test(output)) return '저장소를 찾을 수 없어요. 주소를 확인해 주세요.'
+  if (/not found|does not exist|does not appear to be a git repository/i.test(output)) return '저장소를 찾을 수 없어요. 주소를 확인하고, 비공개 저장소라면 이 맥의 git 계정에 권한이 있는지 확인해 주세요.'
   if (/Could not resolve host|unable to access|Connection refused|timed out/i.test(output)) return '저장소 주소에 연결하지 못했어요. 인터넷 연결이나 주소를 확인해 주세요.'
   const fatal = output.split(/[\r\n]+/).filter((line) => /^(fatal|error):/.test(line.trim())).pop()
   return `클론하지 못했어요${fatal ? `: ${fatal.trim().replace(/^(fatal|error):\s*/, '')}` : '.'}`
