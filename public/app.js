@@ -344,6 +344,7 @@ function onState({ sessions: list }) {
     if (!list.some((s) => s.path === path)) continue
     forming.delete(path)
     galaxy?.unform(job.name)
+    sound.gathered(path)
   }
 }
 
@@ -2165,6 +2166,7 @@ async function onBirthSubmit(e) {
   // goes to watch, and waits there until the terminal opens.
   birth.wait = { path: res.result.path, known, until: Infinity }
   galaxy?.forming(name, { label: BIRTH_STEPS.start, go: true })
+  sound.gather(res.result.path)
   toast(url ? `☄️ ${name} · 저장소를 가져오는 동안 별이 모여요` : `✨ ${name} · 별이 모이고 있어요`, 3500)
 }
 
@@ -2172,6 +2174,7 @@ async function onBirthSubmit(e) {
 function onBirthNews(job) {
   if (!job.done) {
     forming.set(job.path, job)
+    sound.gather(job.path, job.progress)
     return showForming(job)
   }
   const mine = birth.wait?.path === job.path
@@ -2180,6 +2183,7 @@ function onBirthNews(job) {
     // Failed, or made without a terminal: nothing to light the star.
     forming.delete(job.path)
     galaxy?.unform(job.name, { failed: true })
+    sound.gathered(job.path, { failed: true })
     if (mine) birth.wait = null
     if (job.error) toast(`${job.name} · ${job.error}`, 7000)
     return
@@ -2189,10 +2193,12 @@ function onBirthNews(job) {
   forming.set(job.path, job)
   if (mine) birth.wait.until = Date.now() + BIRTH_WAIT_MS
   galaxy?.forming(job.name, { progress: 1, label: BIRTH_STEPS.done })
+  sound.gather(job.path, 1)
   setTimeout(() => {
     if (forming.get(job.path) !== job) return
     forming.delete(job.path)
     galaxy?.unform(job.name)
+    sound.gathered(job.path)
   }, BIRTH_WAIT_MS)
 }
 

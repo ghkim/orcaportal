@@ -111,6 +111,8 @@ export function createSound() {
   let nextRun = 0
   let musicTone = null
   let shimmer = null
+  const births = new Map() // a star being made -> how far it has got, 0 to 1
+  let gathering = null // the music of a star forming, while one is (see gather())
 
   function setup() {
     ctx = new AudioContext()
@@ -182,7 +184,9 @@ export function createSound() {
       alerts: gain(bellBus, mix.alerts),
       // The grove's leaves are outdoors and dry; a stem's knock carries a little.
       bamboo: gain(limiter, mix.bamboo),
-      bambooWet: gain(bellBus, mix.bamboo)
+      bambooWet: gain(bellBus, mix.bamboo),
+      // A star forming has music of its own, at the music's volume, out in the open air.
+      gather: gain(bellBus, 0)
     }
     applyTone()
   }
@@ -207,6 +211,7 @@ export function createSound() {
       if (ctx) {
         fade(bus.ambient, 0, 1.5)
         fade(bus.music, 0, 1.5)
+        fade(bus.gather, 0, 1.5)
         if (grove) fade(grove.level, 0, 1.5)
       }
       stopTimers()
@@ -223,7 +228,8 @@ export function createSound() {
       fade(bus.ambient, 0.3, 5)
       fade(grove.level, 1, 6)
       if (!bambooTimer) scheduleBamboo(2500 + Math.random() * 4000)
-      fade(bus.music, 0.22 * mix.music, 10)
+      fade(bus.music, musicLevel(), 10)
+      fade(bus.gather, mix.music, 3)
       if (!musicTimer) scheduleMusic()
       if (!birdTimer) scheduleBirds(3000 + Math.random() * 5000)
       if (!cricketTimer) scheduleCrickets(2000 + Math.random() * 3000)
@@ -234,10 +240,117 @@ export function createSound() {
     } else {
       fade(bus.ambient, 0, 2.5)
       fade(bus.music, 0, 2.5)
+      fade(bus.gather, 0, 2.5)
       if (grove) fade(grove.level, 0, 2.5)
       stopTimers()
     }
+    if (births.size) gather()
   }
+
+  // The usual music steps back while a star forms, so its own music can be heard.
+  function musicLevel() {
+    return 0.22 * mix.music * (gathering && !gathering.ending ? 0.35 : 1)
+  }
+
+  // A star forming: a low open chord (G, D, A, D) swells under a filter that opens as the
+  // work goes on, with a breath of gas through it. Glints of the home scale fall in like
+  // the dust, more often and higher the further it has got, and now and then three notes
+  // climb together. When the star lights, the chord opens right out and fades; if the work
+  // fails, it sinks a third and is gone.
+  function gather() {
+    if (!births.size || !enabled || !ctx || ctx.state !== 'running') return
+    const progress = Math.max(...births.values())
+    if (!gathering || gathering.ending) {
+      const out = ctx.createGain()
+      out.gain.value = 0
+      out.connect(bus.gather)
+      const filter = ctx.createBiquadFilter()
+      filter.type = 'lowpass'
+      filter.frequency.value = 240
+      filter.Q.value = 0.9
+      filter.connect(out)
+      const swirl = lfo(ctx, 0.07, 90, filter.frequency)
+      const voices = [98, 146.83, 220, 293.66].flatMap((freq, i) =>
+        [-5, 5].map((cents) => {
+          const osc = ctx.createOscillator()
+          osc.type = 'sawtooth'
+          osc.frequency.value = freq
+          osc.detune.value = cents
+          const level = ctx.createGain()
+          level.gain.value = 0.0045 - i * 0.0007
+          osc.connect(level).connect(filter)
+          osc.start()
+          return osc
+        })
+      )
+      const gas = ctx.createBufferSource()
+      gas.buffer = pinkNoise(ctx, 6)
+      gas.loop = true
+      const band = ctx.createBiquadFilter()
+      band.type = 'bandpass'
+      band.frequency.value = 700
+      band.Q.value = 1.4
+      const drift = lfo(ctx, 0.05, 260, band.frequency)
+      const breath = ctx.createGain()
+      breath.gain.value = 0.012
+      gas.connect(band).connect(breath).connect(out)
+      gas.start()
+      gathering = { out, filter, sources: [...voices, gas, swirl, drift], voices, progress: 0, nextRise: ctx.currentTime + 4 + Math.random() * 4 }
+      if (ambientOn) fade(bus.music, musicLevel(), 4)
+      gatherTick()
+    }
+    gathering.progress = Math.max(gathering.progress, progress)
+    gathering.filter.frequency.setTargetAtTime(240 * Math.pow(8, gathering.progress), ctx.currentTime, 2)
+    fade(gathering.out, 0.75 + 0.25 * gathering.progress, 3)
+  }
+
+  function gatherTick() {
+    const g = gathering
+    if (!g || g.ending) return
+    g.timer = setTimeout(gatherTick, 400)
+    if (!enabled || !ambientOn || !(mix.music > 0)) return
+    const notes = SCALE
+    const low = 3 + Math.round(g.progress * 6)
+    const now = ctx.currentTime
+    if (Math.random() < 0.1 + 0.3 * g.progress) {
+      const step = Math.min(notes.length - 1, low + Math.floor(Math.random() * 6))
+      pluck(ctx, bus.gather, notes[step], { at: now + 0.05 + Math.random() * 0.3, level: 0.004 + Math.random() * 0.004, pan: Math.random() * 1.4 - 0.7 })
+    }
+    if (now < g.nextRise) return
+    const pan = Math.random() * 0.8 - 0.4
+    ;[0, 2, 4].forEach((up, i) => {
+      const step = Math.min(notes.length - 1, low - 2 + up)
+      glassNote(ctx, bus.gather, notes[step], { at: now + 0.1 + i * 0.7, level: 0.007 + 0.003 * g.progress, pan: pan + i * 0.1, glass: 0.4 + 0.5 * g.progress })
+    })
+    g.nextRise = now + (11 - 5 * g.progress) * (0.8 + Math.random() * 0.4)
+  }
+
+  function ungather(failed) {
+    const g = gathering
+    if (!g || g.ending) return
+    g.ending = true
+    clearTimeout(g.timer)
+    const now = ctx.currentTime
+    if (failed) {
+      // Sinks a minor third as it goes.
+      for (const osc of g.voices) osc.detune.linearRampToValueAtTime(osc.detune.value - 300, now + 4)
+      g.filter.frequency.setTargetAtTime(200, now, 1.2)
+      fade(g.out, 0, 4)
+    } else {
+      // Opens right out as the star lights, and a run climbs into its first light.
+      g.filter.frequency.setTargetAtTime(4200, now, 0.5)
+      fade(g.out, 0, 5)
+      if (enabled && ambientOn && mix.music > 0) {
+        SCALE.slice(7, 13).forEach((freq, i) => pluck(ctx, bus.gather, freq, { at: now + 0.05 + i * 0.09, level: 0.012, pan: -0.5 + i * 0.2 }))
+      }
+    }
+    for (const source of g.sources) source.stop(now + 7)
+    setTimeout(() => {
+      if (gathering === g) gathering = null
+    }, 7000)
+    if (enabled && ambientOn) fade(bus.music, 0.22 * mix.music, 8)
+  }
+
 
   function stopTimers() {
     clearTimeout(windTimer)
@@ -491,7 +604,10 @@ export function createSound() {
       if (!ctx) return
       for (const key of Object.keys(MIX_DEFAULTS)) if (key !== 'music') bus[key].gain.setTargetAtTime(mix[key], ctx.currentTime, 0.15)
       bus.bambooWet.gain.setTargetAtTime(mix.bamboo, ctx.currentTime, 0.15)
-      if (enabled && ambientOn) fade(bus.music, 0.22 * mix.music, 0.4)
+      if (enabled && ambientOn) {
+        fade(bus.music, musicLevel(), 0.4)
+        fade(bus.gather, mix.music, 0.4)
+      }
     },
     // A sample of one channel, so a slider can be set by ear.
     preview(channel) {
@@ -514,6 +630,17 @@ export function createSound() {
     setEnabled(on) {
       enabled = on
       sync()
+    },
+    // A star being made (key: its folder) has got this far, 0 to 1: its music starts, or
+    // follows along.
+    gather(key, progress = 0) {
+      births.set(key, Math.max(births.get(key) || 0, progress))
+      gather()
+    },
+    // It lit, or failed: once no other star is forming, its music ends that way.
+    gathered(key, { failed = false } = {}) {
+      if (!births.delete(key) || births.size) return
+      ungather(failed)
     },
     // What the sessions are doing ({ working, attention } counts) and the star the camera
     // is with ({ star }), for the music to follow. Pass only what changed.
@@ -1027,6 +1154,7 @@ function lfo(ctx, rate, depth, param) {
   gain.gain.value = depth
   osc.connect(gain).connect(param)
   osc.start()
+  return osc
 }
 
 function fade(node, value, seconds) {
