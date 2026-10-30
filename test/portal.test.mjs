@@ -13,7 +13,7 @@ const worktrees = [
     linkedPR: { number: 7, state: 'open', title: 'Fix login', url: 'https://example.test/pr/7', checksStatus: 'success' },
     agents: [
       { paneKey: 'tabA:leafA', parentPaneKey: null, agentType: 'claude', state: 'waiting', prompt: 'go' },
-      { paneKey: 'tabB:leafB', parentPaneKey: null, agentType: 'codex', state: 'working' }
+      { paneKey: 'tabB:leafB', parentPaneKey: null, agentType: 'codex', state: 'working', workingMode: 'monitoring' }
     ]
   }
 ]
@@ -30,6 +30,8 @@ test('terminals join their agent by tab:leaf, and background ones by recordedPan
   assert.equal(sessions[0].unread, true)
   assert.equal(sessions[1].agent.state, 'working')
   assert.equal(sessions[1].agentType, 'codex')
+  assert.equal(sessions[0].agent.monitoring, false)
+  assert.equal(sessions[1].agent.monitoring, true)
   assert.equal(sessions[1].background, true)
   assert.equal(sessions[2].agent, null)
   assert.equal(sessions[2].project, 'tool')

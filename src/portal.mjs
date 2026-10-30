@@ -165,6 +165,8 @@ export function mergeSessions(worktrees, terminals) {
             toolName: agent.toolName || '',
             toolInput: agent.toolInput || '',
             interrupted: Boolean(agent.interrupted),
+            // Waiting on a background task it watches; Orca's sidebar shows it idle.
+            monitoring: agent.workingMode === 'monitoring',
             stateStartedAt: agent.stateStartedAt || 0,
             updatedAt: agent.updatedAt || 0
           }

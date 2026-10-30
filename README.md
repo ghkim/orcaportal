@@ -210,7 +210,7 @@ npm run dist   # release/에 Apple Silicon용과 Intel용 .dmg를 만들어요
 ## 동작 방식
 
 - `src/orca.mjs`: 읽기는 `orca` CLI가 쓰는 로컬 런타임 소켓에 바로 붙어요. 터미널 27개를 1초마다 읽어도 CPU를 1% 미만으로 써요. 소켓 프로토콜이 바뀌면 자동으로 `orca` CLI로 바꿔 읽어요. 보내기와 Orca에서 열기는 항상 `orca terminal send/switch`를 써요.
-- `src/portal.mjs`: `worktree ps`(에이전트 상태)와 `terminal list`(터미널)를 합쳐요. 출력이 바뀐 터미널의 화면만 다시 읽어요. Orca가 주는 터미널의 에이전트 표시(`agentIdentity`)는 몇 초마다 잠깐씩 빠지곤 해서, 세션이 마지막으로 가졌던 에이전트를 30초 동안 붙잡아 둬요. 그래야 끝난 세션이 셸로 떨어졌다 돌아오며 완료 개수가 흔들리지 않아요.
+- `src/portal.mjs`: `worktree ps`(에이전트 상태)와 `terminal list`(터미널)를 합쳐요. 출력이 바뀐 터미널의 화면만 다시 읽어요. Orca가 주는 터미널의 에이전트 표시(`agentIdentity`)는 몇 초마다 잠깐씩 빠지곤 해서, 세션이 마지막으로 가졌던 에이전트를 30초 동안 붙잡아 둬요. 그래야 끝난 세션이 셸로 떨어졌다 돌아오며 완료 개수가 흔들리지 않아요. 백그라운드 작업만 지켜보는 에이전트(Orca의 monitoring 상태)는 Orca 사이드바처럼 작업 중이 아니라 대기로 보여요.
 - `public/screen.js`: 화면 글자에서 선택 메뉴를 찾아요. Claude 권한 요청, 질문 메뉴, Codex 승인 메뉴를 알아봐요. 대화 속 번호 목록은 아래에 입력칸이 있으면 메뉴로 보지 않아요. Claude Code가 대화 옆에 패널(바뀐 파일, diff)을 열면, 여러 줄에서 같은 칸에 서 있는 `│`를 경계로 보고 왼쪽 대화만 읽어요. 줄바꿈된 질문은 한 문장으로 이어 붙여요.
 - `electron/main.mjs`: Mac 앱. 서버를 앱 안에서 켜고(`server.mjs`의 `start()`), 제목 표시줄 없는 창에 페이지를 띄워요. `electron/preload.cjs`가 페이지에 Dock 배지와 알림만 열어 줘요.
 - `src/projects.mjs`: 새 별과 새 행성 만들기. 폴더, git, `orca repo add`, `orca agent launch`를 차례로 해요. 방금 넣은 프로젝트를 Orca가 아직 못 찾으면(`selector_not_found`) 잠깐 기다렸다 다시 해요. 다른 실패는 에이전트가 이미 떴을 수 있어서 다시 하지 않아요.

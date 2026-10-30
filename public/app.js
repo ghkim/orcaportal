@@ -372,7 +372,8 @@ function statusOf(handle) {
   const state = session.agent?.state
   if (state === 'waiting') return 'waiting'
   if (state === 'blocked') return 'blocked'
-  if (state === 'working') return 'working'
+  // An agent only watching a background task waits, as Orca's sidebar has it.
+  if (state === 'working') return session.agent.monitoring ? 'idle' : 'working'
   if (state === 'done') {
     const finishedAt = session.agent.stateStartedAt || session.agent.updatedAt || 0
     const unseen = (seenAt.get(handle) || 0) < finishedAt
@@ -1061,7 +1062,7 @@ function renderDetails(card, session, status) {
     if (value) info.append(el('dt', { textContent: label }), el('dd', { textContent: value }))
   }
   sections.push(info)
-  if (agent?.state === 'working' && agent.toolName) {
+  if (agent?.state === 'working' && !agent.monitoring && agent.toolName) {
     sections.push(section('지금 하는 일', el('pre', { className: 'tool', textContent: `${agent.toolName}  ${agent.toolInput}`.trim() })))
   }
   if (agent?.prompt) sections.push(section('마지막 요청', el('div', { className: 'prompt', textContent: agent.prompt })))
