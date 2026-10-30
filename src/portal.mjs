@@ -1,6 +1,7 @@
 // Polls Orca and keeps one merged picture of every live session: which project it
 // belongs to, what its agent is doing, and what its terminal currently shows.
 import { EventEmitter } from 'node:events'
+import fsp from 'node:fs/promises'
 import path from 'node:path'
 
 const TICK_MS = 1000
@@ -23,6 +24,7 @@ export class Portal extends EventEmitter {
     this.ticking = false
     this.forced = new Set()
     this.agents = new Map() // handle -> what holdAgents last saw
+    this.born = new Map() // folder -> when its repo appeared, see repoBornAt()
   }
 
   subscribe() {
@@ -70,6 +72,7 @@ export class Portal extends EventEmitter {
     this.setStatus({ ok: true, error: null })
 
     const sessions = holdAgents(mergeSessions(workspaces.worktrees || [], terminals.terminals || []), this.agents)
+    await this.stampBirths(sessions)
     const live = new Set(sessions.map((s) => s.handle))
     for (const handle of this.screens.keys()) {
       if (!live.has(handle)) {
@@ -92,6 +95,16 @@ export class Portal extends EventEmitter {
     })
     this.forced.clear()
     await mapLimit(due, SCREEN_CONCURRENCY, (s) => this.readScreen(s))
+  }
+
+  // When each session's repo first appeared on this Mac: the star's birth, for its look.
+  // Read once per folder.
+  async stampBirths(sessions) {
+    for (const session of sessions) {
+      if (!session.path) continue
+      if (!this.born.has(session.path)) this.born.set(session.path, await repoBornAt(session.path))
+      session.bornAt = this.born.get(session.path)
+    }
   }
 
   async readScreen(session) {
@@ -191,6 +204,29 @@ export function holdAgents(sessions, memory, now = Date.now(), holdMs = AGENT_HO
   }
   for (const handle of memory.keys()) if (!live.has(handle)) memory.delete(handle)
   return sessions
+}
+
+// When a repo first appeared here: the birth of its .git folder. A worktree's .git is a
+// file pointing into the main repo's .git/worktrees, so every worktree of one repo gets
+// the same time. A folder that isn't a repo gives its own birth; one that can't be read,
+// null.
+export async function repoBornAt(dir) {
+  const birth = (stat) => Math.round(stat.birthtimeMs || stat.mtimeMs) || null
+  const dotGit = path.join(dir, '.git')
+  try {
+    let gitDir = dotGit
+    if ((await fsp.stat(dotGit)).isFile()) {
+      const linked = (await fsp.readFile(dotGit, 'utf8')).match(/^gitdir:\s*(.+)$/m)?.[1]?.trim()
+      if (linked) {
+        const full = path.resolve(dir, linked)
+        const at = full.lastIndexOf(`${path.sep}.git${path.sep}worktrees${path.sep}`)
+        gitDir = at >= 0 ? full.slice(0, at + 5) : full
+      }
+    }
+    return birth(await fsp.stat(gitDir))
+  } catch {
+    return fsp.stat(dir).then(birth, () => null)
+  }
 }
 
 // A row flagged `wrapped` continues the row above it (xterm semantics).

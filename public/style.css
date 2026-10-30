@@ -735,6 +735,7 @@ body[data-view='galaxy'] .gx-report:not([hidden]) {
 .rp-title { display: grid; gap: 2px; min-width: 0; }
 .rp-title b { font-size: 15px; }
 .rp-title span { color: var(--muted); font-size: 12px; }
+.rp-title .rp-look { color: var(--muted); font-size: 11px; opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rp-close { padding: 0 6px; border: 0; background: none; color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; }
 .rp-close:hover { color: var(--text); }
 .rp-list { display: grid; gap: 8px; padding: 10px; overflow: auto; }

@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeSessions, joinWrappedRows, holdAgents } from '../src/portal.mjs'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { mergeSessions, joinWrappedRows, holdAgents, repoBornAt } from '../src/portal.mjs'
 
 const worktrees = [
   {
@@ -59,4 +62,21 @@ test('a session keeps its agent through a blink, and lets it go once it stays go
   // A closed terminal is forgotten.
   holdAgents([], memory, 41_000)
   assert.equal(memory.size, 0)
+})
+
+test("a star's birth is its repo's .git folder, the same for every worktree of it", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-born-'))
+  const main = path.join(root, 'app')
+  fs.mkdirSync(path.join(main, '.git', 'worktrees', 'feature'), { recursive: true })
+  const tree = path.join(root, 'app-feature')
+  fs.mkdirSync(tree)
+  fs.writeFileSync(path.join(tree, '.git'), `gitdir: ${path.join(main, '.git', 'worktrees', 'feature')}\n`)
+  const plain = path.join(root, 'notes')
+  fs.mkdirSync(plain)
+  const born = await repoBornAt(main)
+  assert.ok(born > 0)
+  assert.equal(await repoBornAt(tree), born)
+  assert.equal(await repoBornAt(plain), Math.round(fs.statSync(plain).birthtimeMs || fs.statSync(plain).mtimeMs))
+  assert.equal(await repoBornAt(path.join(root, 'gone')), null)
+  fs.rmSync(root, { recursive: true })
 })

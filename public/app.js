@@ -2323,6 +2323,7 @@ function renderGalaxy(all) {
     handle,
     app: session.project,
     path: session.path,
+    bornAt: session.bornAt || null,
     pr: session.pr,
     servers: servers[session.path] || [],
     disk: disk[session.path],
@@ -2383,6 +2384,8 @@ function renderReport() {
   const head = el('header', { className: 'rp-head' })
   const title = el('div', { className: 'rp-title' })
   title.append(el('b', { textContent: report.app }), el('span', { textContent: reportCounts(counts) }))
+  const look = galaxy?.lookOf(report.app)
+  if (look) title.append(el('small', { className: 'rp-look', textContent: lookLine(look) }))
   const planet = el('button', { type: 'button', className: 'rp-new', title: '이 프로젝트에 에이전트를 하나 더 띄워요', textContent: '🪐 새 행성' })
   planet.addEventListener('click', () => openPlanetForm(report.app))
   const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
@@ -2458,6 +2461,14 @@ function serverChips(running) {
     wrap.append(chip)
   }
   return wrap
+}
+
+// The rule a star was made by, in a line: "🌙 밤에 태어난 장미 성운 별 · 10월 31일 00:52".
+function lookLine({ name, time, bornAt }) {
+  if (!time || !bornAt) return `✦ ${name}`
+  const d = new Date(bornAt)
+  const when = `${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return `${time.icon} ${time.label}에 태어난 ${name} · ${when}`
 }
 
 function reportState(session, status) {
