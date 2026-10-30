@@ -77,6 +77,24 @@ const BIRTH_AGENTS = [
   ['codex', 'Codex'],
   ['shell', '셸만']
 ]
+// A new planet in a star is a new worktree, made the way Orca's own dialog makes one, or
+// another agent in a folder the star already has.
+const PLANET_KINDS = [
+  ['worktree', '🌿 새 작업 트리'],
+  ['folder', '📂 이 폴더에서']
+]
+// What the new worktree is made from, as Orca's dialog has it.
+const PLANET_MODES = [
+  ['smart', '스마트', '이름, #1234, 브랜치, GitHub, GitLab 또는 Jira URL 입력'],
+  ['github', 'GitHub', '#1234 또는 GitHub 이슈·PR 주소'],
+  ['branch', '브랜치', '가져올 원격 브랜치'],
+  ['name', '이름', '새 작업 트리 이름']
+]
+const PLANET_SETUPS = [
+  ['inherit', '저장소 설정대로'],
+  ['run', '셋업 실행'],
+  ['skip', '셋업 건너뛰기']
+]
 // How long a project made here waits for its first terminal before the camera stops waiting.
 const BIRTH_WAIT_MS = 90_000
 // What a project being made is doing, under its gathering cloud.
@@ -264,7 +282,7 @@ if (admin) loadTestItems()
 let cleanAsk = null // the terminal dropped into the black hole, while we ask
 // The new star / new planet form: its name check in flight, the star a planet joins, and
 // the folder whose next new terminal gets the camera ({ path, known, until }).
-const birth = { check: 0, timer: null, busy: false, target: null, wait: null, autoName: '' }
+const birth = { check: 0, timer: null, busy: false, target: null, wait: null, autoName: '', draft: null, options: new Map(), github: new Map() }
 // Projects being made (from any window): path -> the last news, as the server tells it.
 const forming = new Map()
 let orcaStatus = { ok: true }
@@ -1356,6 +1374,21 @@ function setupControls() {
   }
   birthEl.addEventListener('input', onBirthInput)
   birthEl.addEventListener('submit', onBirthSubmit)
+  // ⌘↵ makes it from anywhere in the form, as in Orca.
+  birthEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault()
+      birthEl.requestSubmit()
+    }
+  })
+  // A PR or issue picked from the GitHub list fills the field.
+  birthEl.addEventListener('click', (e) => {
+    const item = e.target.closest('.nb-gh-item')
+    if (!item || !birth.draft) return
+    birth.draft.value = item.dataset.url
+    birthEl.querySelector('.nb-value').value = item.dataset.url
+    showPlanetPlan()
+  })
   setSound(prefs.sound)
   setupPalette()
   setInterval(processQueue, 1000)
@@ -2003,6 +2036,7 @@ async function confirmClean() {
 function toggleBirth(on = birthEl.hidden, target = null) {
   if (on && prefs.view !== 'galaxy') return toast('새 별은 은하 보기에서 만들어요')
   birthEl.hidden = !on
+  if (on && target && birth.target?.app !== target.app) birth.draft = null
   birth.target = on ? target : null
   birthButton.setAttribute('aria-expanded', String(on && !target))
   clearTimeout(birth.timer)
@@ -2023,6 +2057,7 @@ function openPlanetForm(app) {
 
 function renderBirth() {
   const target = birth.target
+  if (target) return renderPlanet()
   const head = el('header', { className: 'lg-head' })
   const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
   close.addEventListener('click', () => toggleBirth(false))
@@ -2059,6 +2094,180 @@ function renderBirth() {
   actions.append(no, go)
   birthEl.replaceChildren(...parts, agents, prompt, actions)
   ;(target ? (prompt.disabled ? go : prompt) : birthEl.querySelector('.nb-name')).focus()
+}
+
+// A new planet: a new worktree in the star's project, laid out like Orca's own "create
+// worktree" dialog, or another agent in a folder it already has. Whatever was typed
+// survives a re-render (a tab switched, a list arriving).
+function renderPlanet() {
+  const target = birth.target
+  const draft = (birth.draft ||= { kind: prefs.planetKind === 'folder' ? 'folder' : 'worktree', mode: 'smart', value: '', prompt: '', base: null, branch: '', setup: 'inherit', activate: false, more: false })
+  const options = birth.options.get(target.path)
+  if (!options) loadPlanetOptions(target.path)
+  // A project that isn't a git repo can't have worktrees.
+  const worktree = draft.kind === 'worktree' && options?.git !== false
+  const head = el('header', { className: 'lg-head' })
+  const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
+  close.addEventListener('click', () => toggleBirth(false))
+  head.append(el('b', { textContent: `🪐 ${target.app}에 새 행성` }), close)
+  const kinds = el('div', { className: 'nb-kinds' })
+  for (const [id, label] of PLANET_KINDS) {
+    const option = el('label', { className: 'nb-agent' })
+    option.append(el('input', { type: 'radio', name: 'kind', value: id, checked: id === (worktree ? 'worktree' : 'folder'), disabled: id === 'worktree' && options?.git === false }), el('span', { textContent: label }))
+    kinds.append(option)
+  }
+  const parts = [head, kinds]
+  if (worktree) parts.push(...worktreeFields(target, draft, options))
+  else {
+    parts.push(el('p', { className: 'nb-about', textContent: options?.git === false ? '깃 저장소가 아니라서 작업 트리는 만들 수 없어요. 이 폴더에서 에이전트를 하나 더 띄워요.' : '이 폴더에서 에이전트를 하나 더 띄워요. 터미널이 열리면 행성이 생겨요.' }), planetWhere(target))
+  }
+  const agents = el('fieldset', { className: 'nb-agents' })
+  agents.append(el('legend', { textContent: '띄울 것' }))
+  const agent = BIRTH_AGENTS.some(([id]) => id === prefs.newAgent) ? prefs.newAgent : 'claude'
+  for (const [id, label] of BIRTH_AGENTS) {
+    const option = el('label', { className: 'nb-agent' })
+    option.append(el('input', { type: 'radio', name: 'agent', value: id, checked: id === agent }), el('span', { textContent: label }))
+    agents.append(option)
+  }
+  const prompt = el('textarea', { name: 'prompt', className: 'nb-prompt', rows: 2, maxLength: 4000, value: draft.prompt, disabled: agent === 'shell', placeholder: '할 일 (비워 둬도 돼요)\n예: 테스트를 고쳐줘' })
+  prompt.setAttribute('aria-label', '할 일')
+  parts.push(agents, prompt)
+  if (worktree) parts.push(advancedFields(draft))
+  const actions = el('div', { className: 'cf-actions' })
+  if (worktree) {
+    const again = el('label', { className: 'nb-again', title: '만든 뒤에도 이 창을 열어 두고 하나 더 만들어요' })
+    again.append(el('input', { type: 'checkbox', name: 'more', checked: draft.more }), el('span', { textContent: '더 만들기' }))
+    actions.append(again)
+  }
+  const no = el('button', { type: 'button', className: 'cf-no', textContent: '그만두기' })
+  const go = el('button', { type: 'submit', className: 'cf-yes nb-go', textContent: worktree ? '🌿 작업 트리 만들기' : '🪐 행성 만들기' })
+  if (worktree) go.append(el('kbd', { className: 'key', textContent: '⌘↵' }))
+  no.addEventListener('click', () => toggleBirth(false))
+  actions.append(no, go)
+  birthEl.replaceChildren(...parts, actions)
+  if (worktree) showPlanetPlan()
+  ;(worktree ? birthEl.querySelector('.nb-value') : prompt.disabled ? go : prompt).focus()
+}
+
+function worktreeFields(target, draft, options) {
+  const rows = el('div', { className: 'nb-rows' })
+  // Projects: every star with a folder Orca shows, this one first.
+  const project = el('select', { name: 'project' })
+  const folders = new Map([[target.app, target.path]])
+  for (const s of sessions.values()) if (s.project && s.path && !folders.has(s.project)) folders.set(s.project, s.path)
+  for (const [app, path] of [...folders].sort(([a], [b]) => (a === target.app ? -1 : b === target.app ? 1 : a.localeCompare(b)))) project.append(el('option', { value: app, textContent: app, selected: app === target.app, dataset: { path } }))
+  const base = el('input', { name: 'base', className: 'nb-ref', value: draft.base ?? options?.base ?? '', placeholder: options ? '저장소 기본 브랜치' : '불러오는 중…', spellcheck: false })
+  base.setAttribute('list', 'nb-bases')
+  const bases = el('datalist', { id: 'nb-bases' })
+  for (const branch of options?.branches || []) bases.append(el('option', { value: `origin/${branch}` }))
+  rows.append(planetRow('프로젝트', project), planetRow('실행 위치', el('b', { className: 'nb-chip', textContent: '💻 이 맥' })), planetRow('다음에서 만들기', base, bases))
+  const modes = el('div', { className: 'nb-modes', role: 'tablist' })
+  for (const [id, label] of PLANET_MODES) {
+    const option = el('label', { className: 'nb-mode' })
+    option.append(el('input', { type: 'radio', name: 'mode', value: id, checked: id === draft.mode }), el('span', { textContent: label }))
+    modes.append(option)
+  }
+  const mode = PLANET_MODES.find(([id]) => id === draft.mode)
+  const value = el('input', { name: 'value', className: 'nb-name nb-value', value: draft.value, placeholder: mode[2], maxLength: 500, spellcheck: false })
+  value.setAttribute('aria-label', mode[2])
+  const parts = [rows, modes, value]
+  if (draft.mode === 'branch') {
+    value.setAttribute('list', 'nb-branches')
+    const list = el('datalist', { id: 'nb-branches' })
+    for (const branch of options?.branches || []) list.append(el('option', { value: branch }))
+    parts.push(list)
+  }
+  if (draft.mode === 'github') parts.push(githubList(target.path))
+  parts.push(el('p', { className: 'nb-where' }))
+  return parts
+}
+
+function planetRow(label, ...field) {
+  const row = el('label', { className: 'nb-row' })
+  row.append(el('span', { textContent: label }), ...field)
+  return row
+}
+
+function advancedFields(draft) {
+  const more = el('details', { className: 'nb-advanced' })
+  const setup = el('select', { name: 'setup' })
+  for (const [id, label] of PLANET_SETUPS) setup.append(el('option', { value: id, textContent: label, selected: id === draft.setup }))
+  const branch = el('input', { name: 'branch', className: 'nb-ref', value: draft.branch, placeholder: '비우면 Orca가 정해요', spellcheck: false, disabled: draft.mode === 'branch' })
+  const activate = el('label', { className: 'nb-again' })
+  activate.append(el('input', { type: 'checkbox', name: 'activate', checked: draft.activate }), el('span', { textContent: 'Orca 앱에서 열기' }))
+  more.append(el('summary', { textContent: '고급' }), planetRow('셋업', setup), planetRow('브랜치 이름', branch), activate)
+  more.open = draft.setup !== 'inherit' || Boolean(draft.branch) || draft.activate
+  return more
+}
+
+// The project's open PRs and issues, to pick one.
+function githubList(path) {
+  const list = el('div', { className: 'nb-gh' })
+  const found = birth.github.get(path)
+  if (!found) {
+    loadGithub(path)
+    list.append(el('small', { textContent: 'GitHub에서 열린 PR과 이슈를 불러오는 중…' }))
+  } else if (found.error) list.append(el('small', { className: 'warn', textContent: found.error }))
+  else if (!found.pulls.length && !found.issues.length) list.append(el('small', { textContent: `${found.repo}에 열린 PR이나 이슈가 없어요.` }))
+  else {
+    const item = (url, badge, title, note) => {
+      const button = el('button', { type: 'button', className: 'nb-gh-item', dataset: { url } })
+      button.append(el('b', { textContent: badge }), el('span', { textContent: title }), ...(note ? [el('small', { textContent: note })] : []))
+      return button
+    }
+    for (const pr of found.pulls) list.append(item(`https://github.com/${found.repo}/pull/${pr.number}`, `PR #${pr.number}`, pr.title, pr.branch))
+    for (const issue of found.issues) list.append(item(`https://github.com/${found.repo}/issues/${issue.number}`, `이슈 #${issue.number}`, issue.title))
+  }
+  return list
+}
+
+async function loadPlanetOptions(path) {
+  birth.options.set(path, null)
+  const res = await api('/api/worktree', { path, check: true })
+  birth.options.set(path, res.ok ? res.result : { git: true, base: null, branches: [], error: res.error?.message })
+  if (birth.target?.path === path && !birthEl.hidden && !birth.busy) renderPlanet()
+}
+
+async function loadGithub(path) {
+  if (birth.github.has(path)) return
+  birth.github.set(path, null)
+  const res = await api('/api/worktree', { path, github: true })
+  birth.github.set(path, res.ok ? res.result : { error: res.error?.message || 'GitHub 목록을 불러오지 못했어요.' })
+  if (birth.target?.path === path && birth.draft?.mode === 'github' && !birthEl.hidden && !birth.busy) renderPlanet()
+}
+
+// What the worktree would be made from, in words, the way the server will read it; the
+// button waits until there is something to make.
+function showPlanetPlan() {
+  const options = birth.options.get(birth.target.path)
+  const [plan, warn] = options?.error ? [options.error, true] : planetPlan(birth.draft, options)
+  showWhere(plan, warn)
+  birthEl.querySelector('.nb-go').disabled = birth.busy || !birth.draft.value.trim() || warn || !options
+}
+
+function planetPlan(draft, options) {
+  const base = draft.base ?? options?.base ?? ''
+  const from = base ? `${base}에서` : '기본 브랜치에서'
+  const text = draft.value.trim()
+  const branches = options?.branches || []
+  const branch = text.replace(/^origin\//, '')
+  const link = /^https?:\/\/\S+$/.test(text) ? text : ''
+  const gh = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(pull|issues)\/(\d+)/.exec(link)
+  const number = /^#?(\d{1,7})$/.exec(text)
+  if (!text) return [{ github: '#번호를 적거나 아래에서 골라요.', branch: '원격 브랜치를 골라요.' }[draft.mode] || '무엇을 만들지 적어 주세요.', false]
+  if (draft.mode === 'branch') return branches.includes(branch) ? [`원격 브랜치를 가져와 작업 트리로 열어요 · ${branch}`, false] : ['원격에 없는 브랜치예요. 목록에서 골라 주세요.', true]
+  if (draft.mode === 'name') return [`새 브랜치를 ${from} 만들어요 · ${slugOf(text)}`, false]
+  if (gh) return [gh[1] === 'pull' ? `PR #${gh[2]}의 브랜치로 작업 트리를 열어요.` : `이슈 #${gh[2]}에 연결된 새 브랜치를 ${from} 만들어요.`, false]
+  if (number) return options?.github ? [`GitHub #${number[1]}: PR이면 그 브랜치로, 이슈면 새 브랜치로 만들어요.`, false] : ['#번호는 GitHub 저장소에서만 쓸 수 있어요.', true]
+  if (draft.mode === 'github') return ['#번호나 GitHub 이슈·PR 주소를 적어 주세요.', true]
+  if (link) return [`${new URL(link).hostname} 링크를 단 새 브랜치를 ${from} 만들어요.`, false]
+  if (/^[A-Z][A-Z0-9]+-\d+$/.test(text)) return [`Jira ${text}에 연결된 새 브랜치를 ${from} 만들어요.`, false]
+  if (branches.includes(branch)) return [`원격 브랜치를 가져와 작업 트리로 열어요 · ${branch}`, false]
+  return [`새 브랜치를 ${from} 만들어요 · ${slugOf(text)}`, false]
+}
+
+function slugOf(text) {
+  return text.normalize('NFC').trim().replace(/\s+/g, '-').replace(/[/\\:*?"<>|]+/g, '-').replace(/^[.-]+/, '').slice(0, 60)
 }
 
 // Where the new planet starts: the folder, or a choice when the star has several.
@@ -2100,6 +2309,25 @@ function showWhere(text, warn = false) {
 }
 
 function onBirthInput(e) {
+  const draft = birth.target && birth.draft
+  if (draft && ['kind', 'mode', 'project'].includes(e.target.name)) {
+    if (e.target.name === 'kind') prefs.planetKind = draft.kind = e.target.value
+    if (e.target.name === 'mode') draft.mode = e.target.value
+    if (e.target.name === 'project') {
+      // Another star: its own base and branches, and a fresh start.
+      birth.target = { app: e.target.value, path: e.target.selectedOptions[0].dataset.path }
+      draft.base = null
+      draft.value = ''
+    }
+    savePrefs()
+    return renderPlanet()
+  }
+  if (draft && ['value', 'base', 'branch', 'setup', 'prompt'].includes(e.target.name)) {
+    draft[e.target.name] = e.target.value
+    if (e.target.name !== 'prompt' && draft.kind === 'worktree') showPlanetPlan()
+    return
+  }
+  if (draft && ['more', 'activate'].includes(e.target.name)) return void (draft[e.target.name] = e.target.checked)
   if (e.target.name === 'agent') {
     prefs.newAgent = e.target.value
     savePrefs()
@@ -2143,6 +2371,7 @@ async function onBirthSubmit(e) {
   const go = birthEl.querySelector('.nb-go')
   const target = birth.target
   if (birth.busy || !go || go.disabled) return
+  if (target && birthEl.querySelector('input[name="kind"]:checked')?.value === 'worktree') return makeWorktree(target, go)
   const { name, bad } = target ? { name: target.app } : birthName(birthEl.querySelector('.nb-name').value)
   if (!name || bad) return
   const url = target ? '' : birthUrl(birthEl.querySelector('.nb-url').value).url
@@ -2175,6 +2404,40 @@ async function onBirthSubmit(e) {
   galaxy?.forming(name, { label: BIRTH_STEPS.start, go: true })
   sound.gather(res.result.path)
   toast(url ? `☄️ ${name} · 저장소를 가져오는 동안 별이 모여요` : `✨ ${name} · 별이 모이고 있어요`, 3500)
+}
+
+// A new worktree in the star, made by Orca. The camera goes to meet its planet when its
+// first terminal opens; with "더 만들기" the form stays for the next one.
+async function makeWorktree(target, go) {
+  const draft = birth.draft
+  const agent = birthEl.querySelector('input[name="agent"]:checked')?.value || 'claude'
+  birth.busy = true
+  go.disabled = true
+  go.textContent = '만드는 중…'
+  const res = await api('/api/worktree', {
+    path: target.path,
+    mode: draft.mode,
+    value: draft.value,
+    base: draft.base ?? birth.options.get(target.path)?.base ?? '',
+    branch: draft.mode === 'branch' ? '' : draft.branch,
+    agent,
+    prompt: agent === 'shell' ? '' : draft.prompt.trim(),
+    setup: draft.setup,
+    activate: draft.activate
+  })
+  birth.busy = false
+  if (!res.ok) {
+    const message = res.error?.message || '작업 트리를 만들지 못했어요'
+    if (birthEl.hidden || birth.target !== target) return toast(message, 5000)
+    renderPlanet()
+    return showWhere(message, true)
+  }
+  const { path, name, branch } = res.result
+  if (path) birth.wait = { path, known: new Set(), until: Date.now() + BIRTH_WAIT_MS }
+  toast(`🌿 ${target.app} · ${branch || name} 작업 트리를 만들었어요. 터미널이 열리면 행성이 생겨요`, 4500)
+  if (!draft.more) return birth.target === target && toggleBirth(false)
+  draft.value = ''
+  if (birth.target === target && !birthEl.hidden) renderPlanet()
 }
 
 // News of a project being made, from this window or another.

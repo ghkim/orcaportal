@@ -16,6 +16,7 @@ import { Servers } from './src/servers.mjs'
 import { Disk } from './src/disk.mjs'
 import { Speaker } from './src/speaker.mjs'
 import { Projects, projectName, gitUrl, AGENTS } from './src/projects.mjs'
+import { Worktrees } from './src/worktrees.mjs'
 import { keyBytes } from './public/keys.js'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -41,6 +42,7 @@ portal.on('state', () => disk.pathsChanged())
 const speaker = new Speaker()
 // New projects made from the page: a folder, a repo, added to Orca, an agent started in it.
 const projects = new Projects(client)
+const worktrees = new Worktrees(client)
 // The moment a new project's terminal could be there, look for it.
 projects.on('birth', (job) => (job.done || job.step === 'agent') && portal.refreshSoon())
 let port = 0 // set by start()
@@ -140,6 +142,7 @@ async function handleApi(pathname, body, res) {
   }
   if (pathname === '/api/project') return handleProject(body, res)
   if (pathname === '/api/session') return handleSession(body, res)
+  if (pathname === '/api/worktree') return handleWorktree(body, res)
   const handle = typeof body.handle === 'string' ? body.handle : ''
   if (!/^term_[\w-]+$/.test(handle)) return sendJson(res, 400, { ok: false, error: { code: 'invalid_argument', message: '터미널을 찾을 수 없어요.' } })
   try {
@@ -205,6 +208,37 @@ async function handleSession(body, res) {
     sendJson(res, 200, { ok: true, result })
   } catch (error) {
     sendJson(res, 200, { ok: false, error: { code: error.code || 'failed', message: `터미널을 열지 못했어요: ${error.message}` } })
+  }
+}
+
+// A new worktree in a project already in the galaxy, as Orca's own dialog makes one.
+// `check` asks what the form can offer (the base and the branches), `github` the open PRs
+// and issues; otherwise it is made. Only a folder Orca shows a terminal for is accepted.
+async function handleWorktree(body, res) {
+  const dir = typeof body.path === 'string' ? body.path : ''
+  const session = portal.sessions.find((s) => s.path === dir)
+  if (!session) return sendJson(res, 400, { ok: false, error: { code: 'invalid_argument', message: '이 프로젝트를 찾을 수 없어요.' } })
+  const text = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '')
+  try {
+    let result
+    if (body.check === true) result = await worktrees.options(dir, session.worktreeId)
+    else if (body.github === true) result = await worktrees.github(session.worktreeId)
+    else {
+      result = await worktrees.create(dir, session.worktreeId, {
+        mode: ['smart', 'github', 'branch', 'name'].includes(body.mode) ? body.mode : 'smart',
+        value: text(body.value, 500),
+        base: text(body.base, 200),
+        branch: text(body.branch, 200),
+        agent: body.agent,
+        prompt: text(body.prompt, 4000),
+        setup: body.setup,
+        activate: body.activate === true
+      })
+      portal.refreshSoon()
+    }
+    sendJson(res, 200, { ok: true, result })
+  } catch (error) {
+    sendJson(res, 200, { ok: false, error: { code: error.code || 'failed', message: error.message } })
   }
 }
 

@@ -265,7 +265,7 @@ export async function githubAccounts(gh = findGh()) {
 }
 
 // The Mac app starts with a short PATH, so Homebrew's folders are looked in as well.
-function findGh() {
+export function findGh() {
   const dirs = [...(process.env.PATH || '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin']
   for (const dir of dirs.filter(Boolean)) {
     const candidate = path.join(dir, 'gh')

@@ -1464,6 +1464,59 @@ body[data-view='galaxy'] .gx-birth:not([hidden]) {
   font: inherit;
   font-size: 12px;
 }
+/* The new planet form, laid out like Orca's "create worktree" dialog. */
+body[data-view='galaxy'] .gx-birth:not([hidden]) { max-height: calc(100% - 32px); overflow-y: auto; }
+.nb-kinds, .nb-modes { display: flex; flex-wrap: wrap; gap: 6px; }
+.nb-modes { padding: 3px; border: 1px solid var(--border); border-radius: 10px; background: rgb(255 255 255 / 3%); }
+.nb-mode { flex: 1; position: relative; cursor: pointer; }
+.nb-mode input { position: absolute; opacity: 0; pointer-events: none; }
+.nb-mode span { display: block; padding: 4px 0; border-radius: 7px; color: var(--muted); font-size: 12.5px; text-align: center; }
+.nb-mode input:checked + span { background: rgb(255 226 168 / 14%); color: #ffe9c2; }
+.nb-mode input:focus-visible + span { outline: 2px solid var(--holo-cyan); outline-offset: 1px; }
+.nb-agent input:disabled + span { opacity: 0.4; cursor: default; }
+.nb-rows { display: grid; gap: 6px; }
+.nb-row { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 8px; color: var(--faint); font-size: 12px; }
+.nb-row select, .nb-ref {
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 4%);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.nb-ref { font-family: var(--mono); }
+.nb-value { font-family: var(--sans); font-size: 13.5px; letter-spacing: 0; }
+.nb-ref:disabled { opacity: 0.4; }
+.nb-chip { justify-self: start; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-weight: 500; }
+.nb-gh { display: grid; gap: 4px; max-height: 168px; overflow-y: auto; }
+.nb-gh small { color: var(--faint); font-size: 12px; }
+.nb-gh small.warn { color: #ffc2b8; }
+.nb-gh-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 3%);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.nb-gh-item:hover { border-color: rgb(255 226 168 / 40%); }
+.nb-gh-item b { color: #ffe9c2; font-weight: 600; }
+.nb-gh-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nb-gh-item small { grid-column: 2; color: var(--faint); font-family: var(--mono); font-size: 11px; }
+.nb-advanced { display: grid; gap: 6px; color: var(--faint); font-size: 12px; }
+.nb-advanced summary { cursor: pointer; }
+.nb-advanced[open] { padding-bottom: 2px; }
+.nb-advanced > * + * { margin-top: 6px; }
+.nb-again { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; color: var(--muted); font-size: 12px; cursor: pointer; }
+.nb-go .key { margin-left: 6px; }
 .rp-new {
   margin-left: auto;
   align-self: center;
