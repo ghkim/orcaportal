@@ -203,6 +203,8 @@ let servers = {}
 let disk = {}
 // In the galaxy view the session pane slides in only when a session is picked.
 let paneOpen = false
+// The star the viewer went into to work: its terminal is the main window, the galaxy all round.
+let insideApp = null
 // The galaxy's short report: one app's terminals, only what needs a decision and how work is going.
 let report = null // { app, handle } — handle is the terminal the report points at, if any
 const quickDrafts = new Map() // handle -> half-written quick reply, kept across redraws
@@ -246,6 +248,10 @@ const cosmos = document.querySelector('.cosmos')
 const layoutEl = document.querySelector('.layout')
 const paneEl = document.querySelector('.pane')
 const paneToggle = document.querySelector('.pane-toggle')
+// Inside a star: a tab for each of its planets, over the terminal.
+const starTabs = Object.assign(document.createElement('nav'), { className: 'star-tabs', hidden: true })
+starTabs.setAttribute('aria-label', '이 별의 행성')
+paneEl.prepend(starTabs)
 const reportEl = document.querySelector('.gx-report')
 const gxHud = document.querySelector('.gx-hud')
 const gxSignals = document.querySelector('.gx-signals')
@@ -499,7 +505,8 @@ function processQueue() {
   if (!prefs.autoFollow || followQueue.length === 0 || userBusy()) return
   // A finished task never pulls the view away from a question that's still open.
   const viewingQuestion = focusedHandle && sectionOf(focusedHandle) === 'attention'
-  const pinnedFirst = [...followQueue].sort((a, b) => Number(isPinned(b.handle)) - Number(isPinned(a.handle)))
+  // Inside a star, only its own planets call the view; the rest wait until it's left.
+  const pinnedFirst = [...followQueue].filter((p) => !insideApp || sessions.get(p.handle)?.project === insideApp).sort((a, b) => Number(isPinned(b.handle)) - Number(isPinned(a.handle)))
   const next = pinnedFirst.find((p) => p.kind === 'attention') || (viewingQuestion ? null : pinnedFirst.find((p) => p.kind === 'done'))
   if (!next) return
   followQueue = followQueue.filter((p) => p !== next)
@@ -509,7 +516,7 @@ function processQueue() {
 function scheduleAdvance(from) {
   setTimeout(() => {
     if (!prefs.autoFollow || focusedHandle !== from || typingReply()) return
-    const next = attentionHandles().find((h) => h !== from)
+    const next = attentionHandles().find((h) => h !== from && (!insideApp || sessions.get(h)?.project === insideApp))
     if (next) setFocus(next, { auto: true, reason: 'next' })
   }, ADVANCE_DELAY_MS)
 }
@@ -641,6 +648,7 @@ function renderAll() {
     if (prefs.view === 'galaxy') renderGalaxy(all)
     else renderList(visible)
     syncDock()
+    renderStarTabs()
   }
   renderSearchHint()
   renderEmpty(visible.length)
@@ -2502,6 +2510,7 @@ function ensureGalaxy() {
       galaxy = createGalaxy(cosmos, {
         onPick: pick,
         onPickSystem: (app) => {
+          if (app === insideApp) return
           if ([...testItems.values()].some((i) => i.app === app)) testFocus = app
           openReport(app, null)
         },
@@ -2515,6 +2524,8 @@ function ensureGalaxy() {
         spots,
         onSpot: saveSpot,
         onGlide: (seconds, pan) => sound.glide(seconds, pan),
+        // Something else took the camera out of the star.
+        onInside: () => leaveStar({ fly: false }),
         onMilestone,
         onOverview: () => {
           setPaneOpen(false)
@@ -2547,7 +2558,8 @@ function layoutGalaxy({ animate = false } = {}) {
   if (!galaxy || !gxHud.offsetWidth) return
   const hud = gxHud.getBoundingClientRect()
   const area = { left: hud.left, top: hud.top, width: hud.width, height: hud.height }
-  if (paneOpen) {
+  // Inside a star the terminal floats over the galaxy, which keeps the whole screen.
+  if (paneOpen && !insideApp) {
     const box = layoutEl.getBoundingClientRect()
     // Side panel on wide screens, bottom sheet on narrow ones.
     if (paneEl.offsetLeft > 0) area.width = Math.max(160, box.left + paneEl.offsetLeft - hud.left)
@@ -2661,9 +2673,11 @@ function renderReport() {
   if (look) title.append(el('small', { className: 'rp-look', textContent: lookLine(look) }))
   const planet = el('button', { type: 'button', className: 'rp-new', title: '이 프로젝트에 에이전트를 하나 더 띄워요', textContent: '🪐 새 행성' })
   planet.addEventListener('click', () => openPlanetForm(report.app))
+  const enter = el('button', { type: 'button', className: 'rp-new rp-enter', title: '별 안으로 들어가 이 별의 터미널에서 일해요', textContent: '🌟 별 안으로' })
+  enter.addEventListener('click', () => enterStar(report.app))
   const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
   close.addEventListener('click', closeReport)
-  head.append(title, planet, close)
+  head.append(title, enter, planet, close)
 
   const list = el('div', { className: 'rp-list' })
   const serversShown = new Set()
@@ -2784,6 +2798,68 @@ function quickReply(handle, answering) {
 function drillIn(handle) {
   setFocus(handle)
   setPaneOpen(true)
+}
+
+// Into a star to work there: the camera goes inside, its terminal opens as the main
+// window with a tab for each planet, and the galaxy shows all round.
+function enterStar(app) {
+  const own = starHandles(app)
+  const handle = own.includes(report?.handle) ? report.handle : own.includes(focusedHandle) ? focusedHandle : own[0]
+  if (!handle || !galaxy?.enterStar(app)) return
+  insideApp = app
+  document.body.classList.add('inside-star')
+  setZen(false)
+  setPaneOpen(true)
+  setFocus(handle)
+  layoutGalaxy({ animate: true })
+  renderStarTabs()
+  sound.chime('enter')
+  toast(`🌟 ${app} 안이에요 · Esc로 나가요`, 3000)
+}
+
+// Out again, to the star's usual view; or, when something else already took the camera
+// out (`fly: false`), just the window put back.
+function leaveStar({ fly = true } = {}) {
+  if (!insideApp) return
+  const app = insideApp
+  insideApp = null
+  document.body.classList.remove('inside-star')
+  starTabs.hidden = true
+  starTabs.replaceChildren()
+  if (fly) galaxy?.leaveStar()
+  setPaneOpen(false)
+  layoutGalaxy({ animate: true })
+  if (fly && focusedHandle && sessions.get(focusedHandle)?.project === app) openReport(app, focusedHandle)
+}
+
+function starHandles(app) {
+  const shown = displayOrder.filter((h) => sessions.get(h)?.project === app)
+  return shown.length ? shown : [...sessions.keys()].filter((h) => sessions.get(h).project === app)
+}
+
+function renderStarTabs() {
+  if (!insideApp) return
+  const handles = starHandles(insideApp)
+  // The star's last terminal closed: nothing left to work in.
+  if (!handles.length) return leaveStar()
+  if (!handles.includes(focusedHandle)) return setFocus(handles[0])
+  const key = JSON.stringify([insideApp, focusedHandle, handles.map((h) => [h, statusOf(h), sessions.get(h).title, sessions.get(h).name])])
+  if (key === starTabs.dataset.key) return
+  starTabs.dataset.key = key
+  const name = el('b', { className: 'st-star', textContent: `🌟 ${insideApp}` })
+  const tabs = el('div', { className: 'st-tabs', role: 'tablist' })
+  for (const handle of handles) {
+    const session = sessions.get(handle)
+    const tab = el('button', { type: 'button', className: 'st-tab', role: 'tab', dataset: { status: statusOf(handle) }, title: [session.title, session.branch, session.path].filter(Boolean).join('\n') })
+    tab.setAttribute('aria-selected', String(handle === focusedHandle))
+    tab.append(el('i', { className: 'dot' }), el('span', { textContent: session.title || session.name || '터미널' }), ...(session.branch ? [el('small', { textContent: session.branch })] : []))
+    tab.addEventListener('click', () => setFocus(handle))
+    tabs.append(tab)
+  }
+  const out = el('button', { type: 'button', className: 'st-out', title: '별 밖으로 (Esc)', textContent: '별 밖으로' })
+  out.addEventListener('click', () => leaveStar())
+  starTabs.replaceChildren(name, tabs, out)
+  starTabs.hidden = false
 }
 
 // Each app's star is sized and coloured by the agent work in all of its worktrees.
@@ -3268,6 +3344,7 @@ function onEscape() {
   else if (!guideEl.hidden) toggleGuide(false)
   else if (document.activeElement?.matches('textarea, input, select')) document.activeElement.blur()
   else if (report && !paneOpen) closeReport()
+  else if (insideApp) leaveStar()
   else if (prefs.view === 'galaxy' && paneOpen) {
     setPaneOpen(false)
     document.activeElement?.blur()
@@ -3376,6 +3453,7 @@ function pick(handle) {
 
 function setView(view) {
   if (view === prefs.view) return
+  if (insideApp) leaveStar()
   if (cleanAsk) cancelClean()
   if (expandedHandle) collapse()
   if (maximized) setMaximized(false)

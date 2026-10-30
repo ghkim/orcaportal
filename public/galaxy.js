@@ -126,7 +126,7 @@ const UNKNOWN_STAR = new THREE.Color('#f4f2ff') // until a star's colour is know
 // onPlay hears about play (a meteor caught, a comet swallowed) for the page's log.
 // onClean is asked when a planet is dropped into the black hole; the page confirms
 // with the user, closes the terminal and then calls swallow(), or cancelClean().
-export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSound, onOverview, onPlay, onClean, onRemnant, spots: knownSpots = {}, onSpot, onGlide, onMilestone }) {
+export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSound, onOverview, onPlay, onClean, onRemnant, spots: knownSpots = {}, onSpot, onGlide, onMilestone, onInside }) {
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
@@ -393,6 +393,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     }
     for (const [app, system] of systems) {
       if (byApp.has(app)) continue
+      if (inside?.system === system) leaveStar()
       systems.delete(app)
       if (fading.has(system)) {
         dying.push({ kind: 'star', system, start: now, duration: NOVA_MS })
@@ -2534,6 +2535,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   }
 
   function flyToSystem(system, subtitle = `터미널 ${system.planets.length}개`) {
+    // Inside a star, its own planets are already all round; anywhere else is outside.
+    if (inside?.system === system) return
+    if (inside) leaveStar()
     const distance = 18 + system.reach * 2.4
     // Another app's system: engage the warp drive. Same system: just glide over.
     const jump = !reduceMotion && follow !== system && camera.position.distanceTo(system.group.getWorldPosition(tmp)) > 60
@@ -2567,6 +2571,93 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     if (goal.position.distanceTo(camera.position) > 4) onGlide?.(FLY_MS / 1000, Math.max(-1, Math.min(1, goal.target.clone().project(camera).x)))
   }
 
+  // ---------- inside a star ----------
+
+  // The viewer can go into a star to work there. Its body (core, glow, spikes, dress)
+  // gives way to a thin shell of its light all round, thicker towards the edges of sight,
+  // its planets turn about the eye, and the galaxy shows through, the core straight ahead.
+  let inside = null // { system, shell, level, goal }
+
+  function enterStar(app) {
+    const system = systems.get(app)
+    if (!system) return false
+    if (inside?.system === system) return true
+    if (inside) leaveStar({ quiet: true })
+    const [a] = system.dress.colors.map((c) => new THREE.Color(c))
+    const shell = new THREE.Mesh(sphere, insideMaterial(system.color.clone().lerp(WHITE, 0.25), a, pointUniforms.uTime))
+    shell.frustumCulled = false
+    system.group.add(shell)
+    inside = { system, shell }
+    controls.minDistance = 0.12 * system.size
+    controls.maxDistance = 0.95 * system.size
+    flight = {
+      from: camera.position.clone(),
+      fromTarget: controls.target.clone(),
+      start: performance.now(),
+      duration: reduceMotion ? 0 : FLY_MS * 1.4,
+      // Just off the centre on the far side from the galactic core, so the eye looks
+      // straight out at it, through the window, with the disc across the view.
+      end: () => {
+        const at = system.group.getWorldPosition(tmp2).clone()
+        const toCore = tmp.copy(at).negate().normalize()
+        if (toCore.lengthSq() === 0) toCore.set(0, 0, -1)
+        return { target: at, position: at.clone().addScaledVector(toCore, -0.45 * system.size) }
+      },
+      system
+    }
+    follow = system
+    onGlide?.((FLY_MS * 1.4) / 1000, 0)
+    return true
+  }
+
+  // Out of the star. With `fly` the camera goes back to the star's usual view; otherwise it
+  // is already on its way somewhere else. The page hears unless it asked.
+  function leaveStar({ quiet = false, fly = false } = {}) {
+    if (!inside) return
+    const { system, shell } = inside
+    inside = null
+    leftShells.push(shell)
+    controls.minDistance = 4
+    controls.maxDistance = 2200
+    showStarBody(system)
+    if (!quiet) onInside?.(null)
+    if (fly) flyToSystem(system)
+  }
+
+  const leftShells = [] // shells of stars just left, fading before they go
+
+  function stepInside(dt) {
+    for (const shell of [...leftShells]) {
+      const level = shell.material.uniforms.uLevel
+      level.value = Math.max(0, level.value - dt * 2.5)
+      if (level.value > 0) continue
+      shell.removeFromParent()
+      shell.material.dispose()
+      leftShells.splice(leftShells.indexOf(shell), 1)
+    }
+    if (!inside) return
+    const { system, shell } = inside
+    // The shell lights as the camera passes through the surface.
+    const level = shell.material.uniforms.uLevel
+    if (camera.position.distanceTo(system.group.getWorldPosition(tmp)) < 1.3 * system.size) level.value = Math.min(1, level.value + dt * 1.2)
+    shell.scale.setScalar(1.25 * system.size)
+    hideStarBody(system)
+  }
+
+  function starBody(system) {
+    return [system.core, system.glow, system.corona, system.spikes, system.spikes2, system.crown, system.label, ...system.beacons, ...system.sparkles.map((s) => s.sprite), ...system.dress.objects, ...(system.mergeGlints ? [system.mergeGlints] : []), ...(system.disk ? [system.disk] : [])]
+  }
+
+  function hideStarBody(system) {
+    for (const part of starBody(system)) part.visible = false
+  }
+
+  // What twinkle() doesn't set again each frame comes back on here; the rest it sets.
+  function showStarBody(system) {
+    for (const part of starBody(system)) part.visible = true
+    if (system.disk) showDisk(system)
+  }
+
   // What the music hears about a star: how old it looks (0 young and blue … 1 old and red),
   // whether its agents are at work, how much work went in (0 … 1, a hundred thousand
   // tokens to a hundred million), and a seed so stars of one age still differ.
@@ -2587,6 +2678,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   }
 
   function overview() {
+    if (inside) leaveStar()
     follow = null
     const distance = overviewDistance()
     if (!reduceMotion && camera.position.distanceTo(OVERVIEW_DIR.clone().multiplyScalar(distance)) > 30) onGlide?.((FLY_MS * 1.75) / 1000, 0)
@@ -3038,6 +3130,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       const pulse = ALERT.has(system.tone) ? 1 + 0.18 * Math.sin(time * 3.2) : 1
       twinkle(system, pulse, dt)
     }
+    stepInside(dt)
 
     const flying = stepCamera(now, dt)
     stepFlashes(now)
@@ -3055,7 +3148,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     stepBursts(now, dt)
     stepHole(dt)
     if (cruising) stepCruise(now, dt, flying)
-    controls.autoRotate = !cruising && !flying && !dragging && !aim && !grab && now - releasedAt > 1200
+    // Inside a star the slow idle turn would swing the galactic core out of sight.
+    controls.autoRotate = !cruising && !flying && !dragging && !aim && !grab && !inside && now - releasedAt > 1200
     controls.autoRotateSpeed = follow ? 0.7 : 0.45
     // Left alone, the view also rises and dips, slowly enough not to make anyone dizzy:
     // from looking down on the disc to nearly side-on and back over a couple of minutes.
@@ -3364,6 +3458,10 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   return {
     update,
     flyTo,
+    // Into a star to work there, and back out. The page hears if something else (a pick
+    // elsewhere, the overview) takes the camera out.
+    enterStar,
+    leaveStar: () => leaveStar({ quiet: true, fly: true }),
     flyToApp(app) {
       const system = systems.get(app)
       if (system) flyToSystem(system)
@@ -4196,6 +4294,46 @@ function beamMaterial(color) {
 // with a barred heart and the pink glow of the Tarantula, the smaller a lavender
 // smudge, and a faint bridge of stars and gas between them. They sit outside the
 // disc, so as it turns they seem to drift slowly round it.
+// The inside of a star: its light on a shell all round the eye, faint where the eye looks
+// straight out and thicker towards the edges of sight, with granules drifting across it.
+function insideMaterial(color, tint, uTime) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime, uColor: { value: color }, uTint: { value: tint }, uLevel: { value: 0 } },
+    vertexShader: `
+      varying vec3 vView; varying vec3 vDir;
+      void main() {
+        vDir = normalize(position);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vView = mv.xyz;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform float uTime; uniform vec3 uColor; uniform vec3 uTint; uniform float uLevel;
+      varying vec3 vView; varying vec3 vDir;
+      float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+      float noise(vec3 p) {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(mix(hash(i), hash(i + vec3(1.0, 0.0, 0.0)), f.x), mix(hash(i + vec3(0.0, 1.0, 0.0)), hash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+                   mix(mix(hash(i + vec3(0.0, 0.0, 1.0)), hash(i + vec3(1.0, 0.0, 1.0)), f.x), mix(hash(i + vec3(0.0, 1.0, 1.0)), hash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+      }
+      void main() {
+        // 0 straight ahead, about 0.25 at the corners of the screen.
+        float off = 1.0 - (-normalize(vView).z);
+        float edge = smoothstep(0.01, 0.24, off);
+        float g = 0.6 * noise(vDir * 7.0 + vec3(0.0, uTime * 0.04, 0.0)) + 0.4 * noise(vDir * 19.0 - vec3(uTime * 0.07));
+        vec3 col = mix(uColor, uTint, smoothstep(0.35, 0.75, g));
+        float a = uLevel * (0.01 + 0.09 * edge) * (0.5 + 0.8 * g);
+        gl_FragColor = vec4(col * a, 1.0);
+      }`,
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+}
+
 function magellanicClouds(tex, uniforms) {
   const rand = mulberry32(151)
   const group = new THREE.Group()

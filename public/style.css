@@ -711,6 +711,81 @@ body[data-view='galaxy'] .pane-toggle:hover { background: rgb(30 34 70 / 80%); c
 body[data-view='galaxy'] .pane-toggle span::before { content: '›'; font-size: 18px; line-height: 1; }
 body[data-view='galaxy'].pane-closed .pane-toggle { right: 0; }
 body[data-view='galaxy'].pane-closed .pane-toggle span::before { content: '‹'; }
+/* Inside a star: the terminal is a window of glass in the middle, the galaxy all round
+   it and faintly through it, with a tab for each of the star's planets on top. */
+.star-tabs { display: none; }
+body[data-view='galaxy'].inside-star .pane {
+  top: 8%;
+  right: auto;
+  bottom: 8%;
+  left: 50%;
+  width: min(1120px, 72%);
+  border: 1px solid rgb(255 226 168 / 26%);
+  border-radius: 18px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgb(8 8 22 / 44%), rgb(5 5 16 / 56%));
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 4%), 0 0 70px rgb(255 214 150 / 12%), 0 30px 90px rgb(0 0 0 / 45%);
+  backdrop-filter: blur(4px) saturate(130%);
+  transform: translateX(-50%);
+  animation: star-in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes star-in { from { opacity: 0; transform: translateX(-50%) scale(0.94); } }
+body[data-view='galaxy'].inside-star .pane-toggle { display: none; }
+body[data-view='galaxy'].inside-star .card { background: rgb(6 8 20 / 22%); box-shadow: none; }
+body[data-view='galaxy'].inside-star .card .screen { background: rgb(2 3 10 / 34%); }
+body[data-view='galaxy'].inside-star .gx-signals,
+body[data-view='galaxy'].inside-star .gx-foot,
+body[data-view='galaxy'].inside-star .gx-report { display: none; }
+body[data-view='galaxy'].inside-star .star-tabs:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 6px 14px;
+  border-bottom: 1px solid rgb(255 226 168 / 14%);
+}
+.st-star { flex: none; color: #ffe9c2; font-family: var(--display-ko); font-size: 13.5px; letter-spacing: -0.02em; }
+.st-tabs { display: flex; flex: 1; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.st-tab {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.st-tab span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-tab small { overflow: hidden; color: var(--faint); font-family: var(--mono); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.st-tab:hover { background: rgb(255 255 255 / 5%); color: var(--text); }
+.st-tab[aria-selected='true'] { border-color: rgb(255 226 168 / 35%); background: rgb(255 226 168 / 10%); color: #ffe9c2; }
+.st-tab .dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--faint); }
+.st-tab[data-status='working'] .dot { background: var(--holo-cyan, #6ee7ff); }
+.st-tab:is([data-status='choice'], [data-status='waiting'], [data-status='blocked']) .dot { background: #ffb547; box-shadow: 0 0 8px #ffb547; }
+.st-tab[data-status='new'] .dot { background: #4ade80; }
+.st-out {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 4%);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.st-out:hover { color: var(--text); }
+.rp-enter { margin-left: auto; }
+.rp-enter + .rp-new { margin-left: 6px; }
+@media (max-width: 720px) {
+  body[data-view='galaxy'].inside-star .pane { top: 8%; bottom: 4%; width: calc(100% - 24px); }
+}
+
 /* The star report: what needs a decision and how work is going, nothing more. */
 .gx-report { display: none; }
 body[data-view='galaxy'] .gx-report:not([hidden]) {

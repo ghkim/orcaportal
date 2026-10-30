@@ -718,6 +718,13 @@ export function createSound() {
         windBell(ctx, bus.alerts, WIND_BELLS[0], { at: at + 1.5, level: 0.02, pan: 0.2 })
         return
       }
+      // Into a star: a low bowl as the light closes round, and a glass fifth opening out.
+      if (kind === 'enter') {
+        bowl(ctx, bus.alerts, 130.81, { at, level: 0.06 })
+        glassNote(ctx, bus.alerts, 392, { at: at + 0.35, level: 0.022, pan: -0.25 })
+        glassNote(ctx, bus.alerts, 587.33, { at: at + 0.6, level: 0.02, pan: 0.25 })
+        return
+      }
       if (kind === 'star') {
         bowl(ctx, bus.alerts, 196, { at, level: 0.08 })
         windBell(ctx, bus.alerts, WIND_BELLS[0], { at: at + 0.9, level: 0.028, pan: 0.25 })
