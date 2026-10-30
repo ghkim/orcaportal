@@ -318,6 +318,9 @@ function onState({ sessions: list }) {
   for (const session of list) {
     seen.add(session.handle)
     if (!firstState && !sessions.has(session.handle) && prefs.view === 'galaxy') born.add(session.handle)
+    // A pull request merged: outside the galaxy (where the planet shows it), say so.
+    const was = sessions.get(session.handle)?.pr?.state
+    if (was && was !== 'merged' && session.pr?.state === 'merged' && prefs.view !== 'galaxy') toast(`✦ ${session.project} · ${mergeNote(session)} 합쳐졌어요`, 5000)
     sessions.set(session.handle, session)
     // The agent's waiting state can turn a plain numbered list into a menu.
     const card = cards.get(session.handle)
@@ -2325,6 +2328,9 @@ function renderGalaxy(all) {
     path: session.path,
     bornAt: session.bornAt || null,
     pr: session.pr,
+    // A merged pull request takes its planet into the star while its terminal is quiet.
+    absorbed: session.pr?.state === 'merged' && status !== 'working' && STATUS[status].section !== 'attention',
+    mergeNote: session.pr ? mergeNote(session) : '',
     servers: servers[session.path] || [],
     disk: disk[session.path],
     moons: moons.get(handle) || 0,
@@ -2461,6 +2467,11 @@ function serverChips(running) {
     wrap.append(chip)
   }
   return wrap
+}
+
+// Which branch went where: "feature/login → main · PR #12".
+function mergeNote(session) {
+  return `${session.branch || session.name}${session.base ? ` → ${session.base}` : ''} · PR #${session.pr.number}`
 }
 
 // The rule a star was made by, in a line: "🌙 밤에 태어난 장미 성운 별 · 10월 31일 00:52".

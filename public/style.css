@@ -866,6 +866,25 @@ body[data-view='galaxy'] .gx-hud { display: flex; flex-direction: column; justif
 .gx-planet.dim:not(.selected) { opacity: 0.25; }
 /* T hides every name, stars and planets; hovering a planet still shows the tip. */
 body.titles-off .gx-labels { visibility: hidden; }
+/* A planet gone into its star after its pull request merged. */
+.gx-planet.merged-in { opacity: 0 !important; }
+.gx-planet.merged-in span { pointer-events: none; }
+.gx-merge span {
+  display: block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 216, 140, 0.55);
+  background: rgba(40, 28, 8, 0.72);
+  color: #ffe2a8;
+  font-size: 12px;
+  white-space: nowrap;
+  animation: gx-merge 7s ease forwards;
+}
+@keyframes gx-merge {
+  0% { opacity: 0; transform: translateY(6px); }
+  10%, 80% { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: translateY(-6px); }
+}
 .gx-star.gone, .gx-planet.gone { opacity: 0 !important; filter: blur(4px); transition: opacity 1.4s ease, filter 1.4s ease; }
 .gx-star.gone span, .gx-planet.gone span { pointer-events: none; }
 .gx-planet span {

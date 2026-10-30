@@ -1,6 +1,7 @@
 // Polls Orca and keeps one merged picture of every live session: which project it
 // belongs to, what its agent is doing, and what its terminal currently shows.
 import { EventEmitter } from 'node:events'
+import { execFile } from 'node:child_process'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 
@@ -25,6 +26,7 @@ export class Portal extends EventEmitter {
     this.forced = new Set()
     this.agents = new Map() // handle -> what holdAgents last saw
     this.born = new Map() // folder -> when its repo appeared, see repoBornAt()
+    this.bases = new Map() // folder -> the branch its pull requests go into
   }
 
   subscribe() {
@@ -104,6 +106,10 @@ export class Portal extends EventEmitter {
       if (!session.path) continue
       if (!this.born.has(session.path)) this.born.set(session.path, await repoBornAt(session.path))
       session.bornAt = this.born.get(session.path)
+      // Where its pull request goes, to say "feature → main" when it merges.
+      if (!session.pr) continue
+      if (!this.bases.has(session.path)) this.bases.set(session.path, await baseBranch(session.path))
+      session.base = this.bases.get(session.path)
     }
   }
 
@@ -227,6 +233,15 @@ export async function repoBornAt(dir) {
   } catch {
     return fsp.stat(dir).then(birth, () => null)
   }
+}
+
+// The branch a repo's pull requests go into: what origin's HEAD points at ("main").
+export function baseBranch(dir) {
+  return new Promise((resolve) => {
+    execFile('git', ['-C', dir, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { timeout: 3000 }, (error, stdout) => {
+      resolve(error ? null : stdout.trim().replace(/^origin\//, '') || null)
+    })
+  })
 }
 
 // A row flagged `wrapped` continues the row above it (xterm semantics).

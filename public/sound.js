@@ -709,6 +709,15 @@ export function createSound() {
         windBell(ctx, bus.alerts, WIND_BELLS[1], { at: at + 0.85, level: 0.022, pan: 0.3 })
         return
       }
+      // A pull request merged: D and B♭ fall in on G, over a warm bowl, and a bell after.
+      if (kind === 'merge') {
+        glassNote(ctx, bus.alerts, 587.33, { at, level: 0.024, pan: -0.3 })
+        glassNote(ctx, bus.alerts, 466.16, { at: at + 0.3, level: 0.024, pan: 0.3 })
+        bowl(ctx, bus.alerts, 196, { at: at + 0.75, level: 0.07 })
+        glassNote(ctx, bus.alerts, 392, { at: at + 0.8, level: 0.03, pan: 0 })
+        windBell(ctx, bus.alerts, WIND_BELLS[0], { at: at + 1.5, level: 0.02, pan: 0.2 })
+        return
+      }
       if (kind === 'star') {
         bowl(ctx, bus.alerts, 196, { at, level: 0.08 })
         windBell(ctx, bus.alerts, WIND_BELLS[0], { at: at + 0.9, level: 0.028, pan: 0.25 })

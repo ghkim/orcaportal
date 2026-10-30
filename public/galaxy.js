@@ -58,6 +58,8 @@ const DRESS_TIMES = [
   { label: '저녁', icon: '🌇', from: 17, to: 21, colors: [['#ff9a6b', '#9b6bff'], ['#ffd36e', '#ff4f8b'], ['#ff7ad9', '#ffb36b']] },
   { label: '밤', icon: '🌙', from: 21, to: 4, colors: [['#a6c8ff', '#c39bff'], ['#5fe8ff', '#ff4f8b'], ['#6f8bff', '#a6ffea']] }
 ]
+const MERGE_IN = 4.5 // seconds a merged planet takes to spiral into its star
+const MERGE_OUT = 2.5 // and to come back out when its terminal gets busy again
 const CRUISE_STAY = [20, 34] // seconds the cruising camera circles a star before moving on
 const CRUISE_WIDE_EVERY = 4 // every so many legs, the cruise pulls back to the whole galaxy
 // Play: comets thrown by hand and bent by the stars, things to catch, the black hole.
@@ -300,6 +302,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       let active = 0
       for (const item of byApp.get(app)) {
         const planet = planets.get(item.handle)
+        // Merged while we watched: it goes in with a show. One already merged when the
+        // page opened is simply inside.
+        if (item.absorbed && !planet.item.absorbed) planet.mergeLive = true
         Object.assign(planet, { item })
         if (!planet.swallowing) paintPlanet(planet)
         // Found ones flare on one after another rather than all at once.
@@ -424,6 +429,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     system.core.material.dispose()
     system.disk?.material.dispose()
     for (const m of system.dress.materials) m.dispose()
+    for (const g of system.mergeGlints?.children || []) g.material.dispose()
     for (const s of [system.glow, system.corona, system.spikes, system.spikes2, ...system.beacons, ...system.sparkles.map((x) => x.sprite), ...system.crown.children]) s.material.dispose()
     for (const c of system.companions) {
       c.body.material.dispose()
@@ -2300,7 +2306,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     pivot.add(holder)
     const orbit = new THREE.LineLoop(circle, new THREE.LineBasicMaterial({ transparent: true, opacity: 0.12, depthWrite: false }))
     system.tilt.add(pivot, orbit)
-    const planet = { handle: item.handle, system, pivot, holder, mesh, hit, label, beacons, orbit, item, orbitRadius: 5, speed: 0.2, painted: '', moons: [], moonGoal: 0, satellite: null, prKey: '', probes: new Map(), ring: null, size: 0.9, sizeGoal: 0.9 }
+    const planet = { handle: item.handle, system, pivot, holder, mesh, hit, label, beacons, orbit, item, orbitRadius: 5, speed: 0.2, painted: '', moons: [], moonGoal: 0, satellite: null, prKey: '', probes: new Map(), ring: null, size: 0.9, sizeGoal: 0.9, inside: item.absorbed ? 1 : 0 }
     hit.userData.planet = planet
     label.element.addEventListener('click', () => onPick(planet.handle))
     planet.ring = ring
@@ -2638,12 +2644,75 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     warpHud.hidden = true
   }
 
+  // ---------- merged pull requests ----------
+
+  // A planet whose pull request merged goes into its star: the branch joins the trunk. It
+  // spirals in, faster and smaller, and the star swells and says which branch went where.
+  // It stays inside, a gold glint on the star, until its terminal gets busy again or
+  // opens another pull request; then it comes back out to its orbit.
+  function stepMerge(planet, dt) {
+    const goal = planet.item.absorbed ? 1 : 0
+    const before = planet.inside
+    if (before === goal && !goal) return 0
+    const step = dt / (reduceMotion ? 0.05 : goal ? MERGE_IN : MERGE_OUT)
+    planet.inside = goal ? Math.min(1, before + step) : Math.max(0, before - step)
+    if (before < 1 && planet.inside >= 1 && planet.mergeLive) mergedIn(planet)
+    if (!goal) planet.mergeLive = false
+    planet.holder.scale.setScalar(Math.max(0.001, 1 - smooth(0.6, 1, planet.inside)))
+    planet.orbit.visible = planet.inside < 0.4
+    planet.label.element.classList.toggle('merged-in', planet.inside > 0.3)
+    return easeInOut(planet.inside)
+  }
+
+  function mergedIn(planet) {
+    planet.mergeLive = false
+    const system = planet.system
+    if (systems.get(system.app) !== system) return
+    system.gulp = 1
+    flashAt(system, planet.system.dress.colors[0])
+    onSound?.('merge')
+    if (!planet.item.mergeNote) return
+    const note = labelObject('gx-merge', `✦ ${planet.item.mergeNote} 합쳐졌어요`)
+    note.center.set(0.5, 1)
+    note.position.set(0, 2.5 + 2.2 * system.size, 0)
+    system.group.add(note)
+    setTimeout(() => {
+      note.element.remove()
+      note.removeFromParent()
+    }, 7000)
+  }
+
+  // Gold glints going round a star, one for each merged planet inside it.
+  function stepMergeGlints(system, size, t) {
+    const inside = system.planets.filter((p) => p.inside >= 0.99).length
+    if (!inside && !system.mergeGlints) return
+    if (!system.mergeGlints) {
+      system.mergeGlints = new THREE.Group()
+      for (let i = 0; i < 8; i++) {
+        const glint = sprite(tex.spikes, 1, 0)
+        glint.material.color.set(i % 2 ? '#ffd27a' : '#ffe2a8')
+        system.mergeGlints.add(glint)
+      }
+      system.tilt.add(system.mergeGlints)
+    }
+    system.mergeGlints.rotation.y = t * 0.3
+    system.mergeGlints.children.forEach((glint, i) => {
+      glint.visible = i < inside
+      if (!glint.visible) return
+      const a = (i / Math.min(8, inside)) * Math.PI * 2
+      glint.position.set(Math.cos(a) * 1.75 * size, Math.sin(t * 0.7 + i) * 0.3 * size, Math.sin(a) * 1.75 * size)
+      const shine = 0.55 + 0.45 * Math.pow(Math.max(0, Math.sin(t * 1.4 + i * 1.9)), 4)
+      glint.material.opacity = system.anyShown ? shine : 0.2
+      glint.scale.setScalar(Math.max(0.001, size * 1.3 * shine))
+    })
+  }
+
   // Dropping out of warp: a burst of light and a shock ring at the arrival system.
-  function flashAt(system) {
+  function flashAt(system, tint = '#9fd0ff') {
     const glow = sprite(tex.glow, 1, 1)
     glow.material.color.set('#d6ebff')
     const ring = sprite(tex.ring, 1, 0.9)
-    ring.material.color.set('#9fd0ff')
+    ring.material.color.set(tint)
     system.group.add(glow, ring)
     flashes.push({ glow, ring, system, start: performance.now() })
   }
@@ -2825,8 +2894,11 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     for (const planet of planets.values()) {
       if (planet.swallowing) continue
       const working = planet.item.status === 'working'
-      planet.pivot.rotation.y += planet.speed * dt * (working ? 1.6 : 0.45)
-      planet.holder.position.x += (planet.orbitRadius - planet.holder.position.x) * Math.min(1, dt * 2)
+      const pull = stepMerge(planet, dt)
+      // Spiralling in, it turns ever faster as its orbit closes.
+      planet.pivot.rotation.y += planet.speed * dt * (working ? 1.6 : 0.45) * (1 + 7 * pull)
+      const radius = planet.orbitRadius * (1 - pull) + pull * planet.system.size
+      planet.holder.position.x += (radius - planet.holder.position.x) * Math.min(1, dt * (pull ? 8 : 2))
       planet.orbit.scale.setScalar(planet.holder.position.x)
       planet.mesh.rotation.y += dt * 0.25
       planet.size += (planet.sizeGoal - planet.size) * Math.min(1, dt * 1.6)
@@ -2954,6 +3026,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       s.sprite.material.opacity = glint * (0.6 + busy * 0.4)
       s.sprite.scale.setScalar(s.size * size * (0.6 + glint))
     }
+    stepMergeGlints(system, size, t)
     const glints = CROWN_GLINTS[system.tier || 0]
     system.crown.visible = decorOn.crowns !== false && glints > 0 && system.grow > 0.95
     if (!system.crown.visible) return
@@ -2989,7 +3062,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     const ndc = new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1)
     raycaster.setFromCamera(ndc, camera)
     const targets = []
-    for (const system of systems.values()) targets.push(system.hit, ...system.planets.filter((p) => !p.swallowing).map((p) => p.hit))
+    for (const system of systems.values()) targets.push(system.hit, ...system.planets.filter((p) => !p.swallowing && p.inside < 0.5).map((p) => p.hit))
     // Planets win over their star when both are under the pointer, and when planets'
     // generous hit areas overlap, the one whose centre is nearest the pointer wins.
     const found = raycaster.intersectObjects(targets, false)

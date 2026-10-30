@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { mergeSessions, joinWrappedRows, holdAgents, repoBornAt } from '../src/portal.mjs'
+import { execFileSync } from 'node:child_process'
+import { mergeSessions, joinWrappedRows, holdAgents, repoBornAt, baseBranch } from '../src/portal.mjs'
 
 const worktrees = [
   {
@@ -78,5 +79,15 @@ test("a star's birth is its repo's .git folder, the same for every worktree of i
   assert.equal(await repoBornAt(tree), born)
   assert.equal(await repoBornAt(plain), Math.round(fs.statSync(plain).birthtimeMs || fs.statSync(plain).mtimeMs))
   assert.equal(await repoBornAt(path.join(root, 'gone')), null)
+  fs.rmSync(root, { recursive: true })
+})
+
+test("a merged PR's base is the branch the repo's origin points HEAD at", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-base-'))
+  execFileSync('git', ['init', '-q', root])
+  assert.equal(await baseBranch(root), null)
+  execFileSync('git', ['-C', root, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/develop'])
+  assert.equal(await baseBranch(root), 'develop')
+  assert.equal(await baseBranch(path.join(root, 'gone')), null)
   fs.rmSync(root, { recursive: true })
 })
