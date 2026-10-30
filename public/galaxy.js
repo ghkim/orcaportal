@@ -32,7 +32,20 @@ const BLOOM = 0.78
 // The Milky Way: the plane of the far sky's band and the direction of its bright heart.
 const BAND_NORMAL = new THREE.Vector3(0.3, 1, 0.2).normalize()
 const BAND_CENTER = new THREE.Vector3(1, 0, -1.5).projectOnPlane(BAND_NORMAL).normalize()
-const METEOR_TINTS = [new THREE.Color(1, 0.97, 0.9), new THREE.Color(0.7, 1, 0.8), new THREE.Color(0.7, 0.85, 1), new THREE.Color(1, 0.85, 0.6)]
+// Shooting stars: a head of one colour and a tail that turns into another along its
+// length. The last is the rarest, with the whole rainbow in its tail. The order is the
+// codex's, so new colours go on the end.
+const METEOR_TINTS = [
+  ['#fff4dc', '#8fd0ff'],
+  ['#5dffb0', '#3de0ff'],
+  ['#5ab8ff', '#8a6bff'],
+  ['#ffd24d', '#ff6f5c'],
+  ['#ff6fc0', '#b06bff'],
+  ['#b77bff', '#4d9bff'],
+  ['#ffffff', null]
+].map(([head, tail]) => ({ head: new THREE.Color(head), tail: tail && new THREE.Color(tail) }))
+const METEOR_WEIGHTS = [1, 1, 1, 1, 1, 1, 0.45]
+const METEOR_TRAIL = 18 // points along a shooting star's tail
 const PASTELS = ['#ffc8e8', '#c8d8ff', '#dccbff', '#c8fff0', '#ffe2c4']
 const TILT_PERIOD = 110 // seconds for the idle camera's slow rise and dip
 // What a star wears around its own light. Each star's is picked from its name, so every
@@ -264,6 +277,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   const tmp = new THREE.Vector3()
   const tmp2 = new THREE.Vector3()
   const tmp3 = new THREE.Vector3()
+  const tmp4 = new THREE.Vector3()
+  const tmpColor = new THREE.Color()
   const ndc = new THREE.Vector2()
   const turn = new THREE.Quaternion()
   const partTurn = new THREE.Quaternion()
@@ -862,19 +877,36 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       .addScaledVector(up, -0.5)
       .normalize()
       .multiplyScalar(380 + Math.random() * 120)
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3))
-    geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(6), 3))
-    const line = new THREE.LineSegments(geometry, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }))
-    line.frustumCulled = false
-    line.visible = false
-    const tint = METEOR_TINTS[Math.floor(Math.random() * METEOR_TINTS.length)]
-    // A small glowing head makes the streak read even though lines are one pixel wide.
-    const head = sprite(tex.glow, 4 + Math.random() * 3, 0)
-    head.material.color.copy(tint)
-    head.visible = false
-    scene.add(line, head)
-    meteors.push({ line, head, tint, from, velocity, begin: performance.now() + delay, duration: 1000 + Math.random() * 600 })
+    let roll = Math.random() * METEOR_WEIGHTS.reduce((sum, weight) => sum + weight, 0)
+    const tint = METEOR_TINTS.find((_, i) => (roll -= METEOR_WEIGHTS[i]) <= 0) || METEOR_TINTS[0]
+    const hue = Math.random()
+    // The tail is a ribbon turned to the eye, bright down the middle and dark at its edges,
+    // thinning and turning colour from the head back.
+    const trail = new THREE.Mesh(trailGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }))
+    const colors = trail.geometry.attributes.color.array
+    for (let i = 0; i < METEOR_TRAIL; i++) {
+      const u = i / (METEOR_TRAIL - 1)
+      const c = tint.tail ? tmpColor.copy(tint.head).lerp(tint.tail, smooth(0, 0.6, u)) : tmpColor.setHSL((hue + u * 0.9) % 1, 1, 0.62).lerp(WHITE, 1 - smooth(0, 0.15, u))
+      c.multiplyScalar(Math.pow(1 - u, 1.3))
+      colors.set([c.r, c.g, c.b], (i * 3 + 1) * 3)
+    }
+    trail.frustumCulled = false
+    const head = sprite(tex.glow, 6 + Math.random() * 3, 0)
+    head.material.color.copy(tint.tail ? tint.head : tmpColor.setHSL(hue, 1, 0.75))
+    const core = sprite(tex.glow, 1.8, 0)
+    // Embers it sheds on the way, in the tail's colours, twinkling out behind it.
+    const embers = Array.from({ length: 7 }, (_, i) => {
+      const ember = sprite(tex.glow, 1.8 + Math.random() * 1.6, 0)
+      const u = 0.2 + Math.random() * 0.6
+      ember.material.color.copy(tint.tail ? tmpColor.copy(tint.head).lerp(tint.tail, u) : tmpColor.setHSL((hue + u * 0.9) % 1, 1, 0.65))
+      const drift = new THREE.Vector3().randomDirection().multiplyScalar(3 + Math.random() * 5).addScaledVector(velocity, 0.03)
+      return { sprite: ember, at: 0.12 + i * 0.1 + Math.random() * 0.05, from: null, drift, life: 0.7 + Math.random() * 0.6, rate: 9 + Math.random() * 8 }
+    })
+    const group = new THREE.Group()
+    group.add(trail, head, core, ...embers.map((e) => e.sprite))
+    group.visible = false
+    scene.add(group)
+    meteors.push({ group, trail, head, core, embers, tint, from, velocity, tail: new THREE.Vector3(), width: 0.7 + Math.random() * 0.5, begin: performance.now() + delay, duration: 1000 + Math.random() * 600 })
   }
 
   function meteorShower(count = 4 + Math.floor(Math.random() * 4)) {
@@ -892,27 +924,63 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
 
   function stepMeteors(now) {
     for (const m of [...meteors]) {
-      const k = (now - m.begin) / m.duration
+      const seconds = (now - m.begin) / 1000
+      const k = seconds / (m.duration / 1000)
       if (k < 0) continue
-      if (k >= 1) {
-        scene.remove(m.line, m.head)
-        m.line.geometry.dispose()
-        m.line.material.dispose()
-        m.head.material.dispose()
+      // The embers outlive the streak by a moment.
+      if (k >= 1 + 1100 / m.duration) {
+        scene.remove(m.group)
+        m.trail.geometry.dispose()
+        for (const part of m.group.children) part.material.dispose()
         meteors.splice(meteors.indexOf(m), 1)
         continue
       }
-      m.line.visible = m.head.visible = true
-      const head = tmp.copy(m.from).addScaledVector(m.velocity, k * (m.duration / 1000))
-      const tailEnd = tmp2.copy(head).addScaledVector(m.velocity, -0.3 * smooth(0, 0.3, k))
-      const b = Math.sin(Math.PI * k)
-      m.line.geometry.attributes.position.array.set([head.x, head.y, head.z, tailEnd.x, tailEnd.y, tailEnd.z])
-      m.line.geometry.attributes.color.array.set([m.tint.r * b, m.tint.g * b, m.tint.b * b, 0, 0, 0])
-      m.line.geometry.attributes.position.needsUpdate = true
-      m.line.geometry.attributes.color.needsUpdate = true
-      m.head.position.copy(head)
-      m.head.material.opacity = b
+      m.group.visible = true
+      const shown = k < 1
+      const b = shown ? Math.sin(Math.PI * k) : 0
+      const head = tmp.copy(m.from).addScaledVector(m.velocity, Math.min(k, 1) * (m.duration / 1000))
+      m.tail.copy(head).addScaledVector(m.velocity, -0.32 * smooth(0, 0.3, k))
+      m.head.visible = m.core.visible = m.trail.visible = shown
+      if (shown) {
+        layTrail(m, head)
+        m.trail.material.opacity = b
+        m.head.position.copy(head)
+        m.head.material.opacity = b
+        m.core.position.copy(head)
+        m.core.material.opacity = b
+      }
+      for (const e of m.embers) {
+        if (!e.from) {
+          if (k < e.at || !shown) continue
+          e.from = head.clone()
+        }
+        const age = seconds - e.at * (m.duration / 1000)
+        const left = 1 - age / e.life
+        e.sprite.visible = left > 0
+        if (left <= 0) continue
+        e.sprite.position.copy(e.from).addScaledVector(e.drift, age)
+        e.sprite.material.opacity = Math.pow(left, 1.5) * (0.55 + 0.45 * Math.sin(age * e.rate))
+      }
     }
+  }
+
+  // Each row of the ribbon: an edge, the middle and the other edge, across the line
+  // from the head back to the tail and square to the eye.
+  function layTrail(m, head) {
+    const along = tmp2.subVectors(m.tail, head)
+    const side = tmp3.crossVectors(along, tmp4.subVectors(camera.position, head))
+    if (side.lengthSq() < 1e-9) return
+    side.normalize()
+    const position = m.trail.geometry.attributes.position
+    for (let i = 0; i < METEOR_TRAIL; i++) {
+      const u = i / (METEOR_TRAIL - 1)
+      const w = m.width * (1 - 0.85 * Math.pow(u, 0.7))
+      const x = head.x + along.x * u
+      const y = head.y + along.y * u
+      const z = head.z + along.z * u
+      position.array.set([x + side.x * w, y + side.y * w, z + side.z * w, x, y, z, x - side.x * w, y - side.y * w, z - side.z * w], i * 9)
+    }
+    position.needsUpdate = true
   }
 
   // ---------- stardust ----------
@@ -1647,9 +1715,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     const rect = canvas.getBoundingClientRect()
     const x = event.clientX - rect.left
     const y = event.clientY - rect.top
-    const meteor = meteors.find((m) => m.head.visible && screenGap(m.head.position, tmp.fromArray(m.line.geometry.attributes.position.array, 3), x, y, rect) < CATCH_PX)
+    const meteor = meteors.find((m) => m.head.visible && screenGap(m.head.position, m.tail, x, y, rect) < CATCH_PX)
     if (meteor) {
-      burst(meteor.head.position, { color: meteor.tint, size: camera.position.distanceTo(meteor.head.position) * 0.06, sparks: 10 })
+      burst(meteor.head.position, { color: meteor.head.material.color, size: camera.position.distanceTo(meteor.head.position) * 0.06, sparks: 10 })
       meteor.begin = -Infinity
       onSound?.('catch')
       onPlay?.({ type: 'meteor', tint: METEOR_TINTS.indexOf(meteor.tint) })
@@ -4898,6 +4966,22 @@ function blackHole(ringTex) {
       ring.rotation.z = time * 0.3
     }
   }
+}
+
+// A shooting star's tail: METEOR_TRAIL rows of three points, edge, middle, edge, with the
+// middle carrying the colour.
+function trailGeometry() {
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(METEOR_TRAIL * 9), 3))
+  geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(METEOR_TRAIL * 9), 3))
+  const index = []
+  for (let i = 0; i < METEOR_TRAIL - 1; i++) {
+    const a = i * 3
+    const b = a + 3
+    index.push(a, a + 1, b, a + 1, b + 1, b, a + 1, a + 2, b + 1, a + 2, b + 2, b + 1)
+  }
+  geometry.setIndex(index)
+  return geometry
 }
 
 function lineGeometry(points) {

@@ -1646,16 +1646,19 @@ function slider(start, min, max, onInput) {
 
 // What the viewer caught, threw and saw in the galaxy, kept in this browser (LOG_KEY).
 const TINTS = [
-  ['흰', '#fff7e6'],
-  ['초록', '#b3ffcc'],
-  ['파랑', '#b3d9ff'],
-  ['금빛', '#ffd999']
+  ['흰', '#fff4dc'],
+  ['초록', '#5dffb0'],
+  ['파랑', '#5ab8ff'],
+  ['금빛', '#ffd24d'],
+  ['분홍', '#ff6fc0'],
+  ['보라', '#b77bff'],
+  ['무지개', '#ff9fd0']
 ]
 const LOG_FIELDS = { meteor: 'meteors', comet: 'comets', throw: 'thrown', swallow: 'swallowed', core: 'core', splash: 'splashes', clean: 'cleaned', aurora: 'auroras', supernova: 'novas', starbirth: 'births' }
 const BADGES = [
   { id: 'meteor', icon: '🌠', name: '첫 별똥별', hint: '지나가는 별똥별을 눌러 잡기', earned: (l) => l.meteors >= 1 },
   { id: 'hunter', icon: '🏹', name: '유성 사냥꾼', hint: '별똥별 10개 잡기', earned: (l) => l.meteors >= 10 },
-  { id: 'colors', icon: '🌈', name: '네 빛깔', hint: '네 가지 색 별똥별을 다 잡기', earned: (l) => l.tints.every(Boolean) },
+  { id: 'colors', icon: '🌈', name: '일곱 빛깔', hint: '일곱 가지 색 별똥별을 다 잡기', earned: (l) => l.tints.every(Boolean) },
   { id: 'comet', icon: '☄️', name: '혜성 사냥꾼', hint: '멀리 지나가는 큰 혜성 잡기', earned: (l) => l.comets >= 1 },
   { id: 'throw', icon: '🎯', name: '첫 투척', hint: '빈 곳을 Alt+끌기로 혜성 던지기', earned: (l) => l.thrown >= 1 },
   { id: 'feed', icon: '⭐', name: '별 먹이 주기', hint: '혜성을 별에 떨어뜨리기', earned: (l) => l.swallowed >= 1 },
@@ -1854,7 +1857,7 @@ function addRemnant(remnant) {
 }
 
 function loadLog() {
-  const empty = { meteors: 0, tints: [0, 0, 0, 0], comets: 0, thrown: 0, swallowed: 0, core: 0, splashes: 0, cleaned: 0, auroras: 0, novas: 0, births: 0, badges: [], since: Date.now() }
+  const empty = { meteors: 0, tints: [0, 0, 0, 0, 0, 0, 0], comets: 0, thrown: 0, swallowed: 0, core: 0, splashes: 0, cleaned: 0, auroras: 0, novas: 0, births: 0, badges: [], since: Date.now() }
   try {
     const saved = JSON.parse(localStorage.getItem(LOG_KEY) || '{}')
     return { ...empty, ...saved, tints: empty.tints.map((n, i) => saved.tints?.[i] || n), badges: Array.isArray(saved.badges) ? saved.badges : [] }
@@ -1912,6 +1915,7 @@ function renderLog() {
   TINTS.forEach(([name, color], i) => {
     const dot = el('i', { title: `${name} ${playLog.tints[i]}개`, textContent: String(playLog.tints[i]) })
     dot.style.setProperty('--tint', color)
+    if (i === TINTS.length - 1) dot.classList.add('rainbow')
     tints.append(dot)
   })
   stat('잡은 별똥별', playLog.meteors, tints)

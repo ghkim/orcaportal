@@ -1311,6 +1311,11 @@ body[data-view='galaxy'] .gx-log:not([hidden]) {
   font-size: 10.5px;
   font-style: normal;
 }
+.lg-tints i.rainbow {
+  border-color: #ffffff55;
+  background: linear-gradient(90deg, #ff6fc04d, #ffd24d4d, #5dffb04d, #5ab8ff4d, #b77bff4d);
+  color: #fff;
+}
 .lg-badges { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px; margin: 0; padding: 4px 14px 12px; list-style: none; }
 .lg-badges li { display: grid; grid-template-columns: 26px 1fr; column-gap: 6px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 10px; opacity: 0.5; }
 .lg-badges li.earned {
