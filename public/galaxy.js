@@ -3683,19 +3683,47 @@ function galaxyDisc(uniforms) {
   }
   const stars = new THREE.Points(geometryOf(position, tint, size), pointsMaterial(uniforms, THREE.AdditiveBlending))
 
-  // Dust lanes on the inner edge of each arm dim what lies behind them.
+  // Dust lanes on the inner edge of each arm dim what lies behind them. Not one even
+  // ribbon per arm: the dust gathers in clouds of their own length, width and weight that
+  // drift off the arm and back and leave gaps, and some send a feather out across the
+  // gap between arms. Thick near the core, broken up towards the rim.
+  const clouds = []
+  for (let arm = 0; arm < ARMS; arm++) {
+    let r = 32 + rand() * 12
+    while (r < R - 20) {
+      const length = (14 + rand() * 46) * (1.25 - (r / R) * 0.6)
+      const weight = length * (0.3 + rand() * 0.9) * (1.4 - r / R)
+      clouds.push({ arm, from: r, length, weight, width: 0.5 + rand() * 1.1, shift: gauss(rand) * 0.05, wave: rand() * Math.PI * 2 })
+      if (rand() < 0.5) clouds.push({ arm, from: r + rand() * length, length: 14 + rand() * 30, weight: weight * 0.3, feather: true })
+      r += length + (rand() < 0.4 ? 6 + rand() * (10 + r * 0.12) : rand() * 4)
+    }
+  }
+  const total = clouds.reduce((sum, cloud) => sum + cloud.weight, 0)
   const dustCount = 26000
   const dPos = new Float32Array(dustCount * 3)
   const dTint = new Float32Array(dustCount * 3)
   const dSize = new Float32Array(dustCount)
   for (let i = 0; i < dustCount; i++) {
-    const r = 35 + Math.pow(rand(), 1.1) * (R - 40)
-    const arm = Math.floor(rand() * ARMS)
-    const angle = (arm / ARMS) * Math.PI * 2 + r * SPIN - 0.16
-    const spread = 3 + r * 0.06
+    let pickAt = rand() * total
+    const cloud = clouds.find((c) => (pickAt -= c.weight) <= 0) || clouds[clouds.length - 1]
+    const start = (cloud.arm / ARMS) * Math.PI * 2 - 0.16
+    let r, angle, spread
+    if (cloud.feather) {
+      // Leaves the lane at a steeper pitch than the arm, thinning as it goes.
+      const t = Math.pow(rand(), 0.8)
+      r = cloud.from + t * cloud.length
+      angle = start + cloud.from * SPIN + (r - cloud.from) * SPIN * 0.25
+      spread = (1.5 + r * 0.02) * (1 - 0.6 * t)
+      dSize[i] = 4 + rand() * 5
+    } else {
+      // Densest mid-cloud, fading out at both ends.
+      r = cloud.from + ((rand() + rand()) / 2) * cloud.length
+      angle = start + r * SPIN + cloud.shift + 0.05 * Math.sin(r * 0.045 + cloud.wave)
+      spread = (3 + r * 0.06) * cloud.width
+      dSize[i] = 5 + rand() * 7
+    }
     dPos.set([Math.cos(angle) * r + gauss(rand) * spread, gauss(rand) * 1.2, Math.sin(angle) * r + gauss(rand) * spread], i * 3)
     dTint.set([0.012, 0.01, 0.012], i * 3)
-    dSize[i] = 5 + rand() * 7
   }
   const dust = new THREE.Points(geometryOf(dPos, dTint, dSize), pointsMaterial(uniforms, THREE.NormalBlending, 0.26, 36))
   dust.renderOrder = 1

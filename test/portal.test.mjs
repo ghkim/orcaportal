@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeSessions, joinWrappedRows } from '../src/portal.mjs'
+import { mergeSessions, joinWrappedRows, holdAgents } from '../src/portal.mjs'
 
 const worktrees = [
   {
@@ -40,4 +40,21 @@ test('terminals join their agent by tab:leaf, and background ones by recordedPan
 test('wrapped rows rejoin the row above them', () => {
   assert.deepEqual(joinWrappedRows(['abc', 'def', 'ghi'], [{ wrapped: false }, { wrapped: true }, { wrapped: false }]), ['abcdef', 'ghi'])
   assert.deepEqual(joinWrappedRows(['x'], []), ['x'])
+})
+
+test('a session keeps its agent through a blink, and lets it go once it stays gone', () => {
+  const memory = new Map()
+  const agent = { state: 'done' }
+  const at = (now, agentType, withAgent) => holdAgents([{ handle: 'term_1', agentType, agent: withAgent ? agent : null }], memory, now, 30_000)[0]
+  assert.equal(at(0, 'claude', true).agentType, 'claude')
+  const blink = at(1000, null, false)
+  assert.equal(blink.agentType, 'claude')
+  assert.equal(blink.agent, agent)
+  assert.equal(at(2000, 'claude', true).agentType, 'claude')
+  const gone = at(40_000, null, false)
+  assert.equal(gone.agentType, null)
+  assert.equal(gone.agent, null)
+  // A closed terminal is forgotten.
+  holdAgents([], memory, 41_000)
+  assert.equal(memory.size, 0)
 })

@@ -69,6 +69,8 @@ const compactFormat = new Intl.NumberFormat('ko', { notation: 'compact', maximum
 const REMNANT_MS = 3 * 86_400_000
 const ADMIN_KEY = 'orrery-admin'
 const TEST_KEY = 'orrery-test-items'
+// The status filters' names, for the search box while one is on.
+const FILTER_NAMES = { attention: '확인 필요', working: '작업 중', done: '완료' }
 // What a new project can start with, in the order offered.
 const BIRTH_AGENTS = [
   ['claude', 'Claude'],
@@ -120,6 +122,7 @@ const SHORTCUTS = [
       [['/'], '찾기 · Enter로 찾은 행성까지 날아가기'],
       [['↑', '↓'], '선택지가 떠 있으면 고르기 · Enter로 확정'],
       [['V'], '은하 전체 보기'],
+      [['T'], '별·행성 이름 모두 끄기 / 켜기'],
       [['Z'], '고요 모드: 은하와 소리만 남기기']
     ]
   },
@@ -1235,12 +1238,21 @@ function toggleMaximize() {
 // ---------- controls ----------
 
 function setupControls() {
+  // A status filter works like a search: its planets light up, Enter goes from one to the
+  // next, and words typed in the search box narrow it further. Pressed again, it lets go.
   for (const button of document.querySelectorAll('button[data-filter]')) {
     button.addEventListener('click', () => {
-      prefs.filter = button.dataset.filter
+      const filter = button.dataset.filter === prefs.filter ? 'all' : button.dataset.filter
+      const started = prefs.filter === 'all' && filter !== 'all' && !searchQuery()
+      prefs.filter = filter
+      searchAt = null
       savePrefs()
       applyPrefs()
       renderAll()
+      if (filter !== 'all' && prefs.view === 'galaxy') {
+        if (started && !paneOpen) galaxy?.overview()
+        search.focus()
+      }
     })
   }
   for (const button of document.querySelectorAll('button[data-size]')) {
@@ -1320,6 +1332,7 @@ function setupControls() {
   logButton.addEventListener('click', () => toggleLog())
   guideButton.addEventListener('click', () => toggleGuide())
   birthButton.addEventListener('click', () => toggleBirth())
+  document.body.classList.toggle('titles-off', !prefs.titles)
   if (desktop) {
     document.body.classList.add('in-app')
     desktop.onPick((handle) => sessions.has(handle) && pick(handle))
@@ -2200,7 +2213,7 @@ function setZen(on) {
 
 // Nothing to answer, nobody touching anything, the pane shut: let the galaxy have the screen.
 function checkZen() {
-  if (zen || prefs.view !== 'galaxy' || paneOpen || report || document.hidden || searchQuery()) return
+  if (zen || prefs.view !== 'galaxy' || paneOpen || report || document.hidden || searching()) return
   if (Date.now() - lastInteraction < ZEN_IDLE_MS || attentionHandles().length) return
   setZen(true)
 }
@@ -2227,7 +2240,7 @@ function renderGalaxy(all) {
     show
   }))
   items.push(...testItems.values())
-  displayOrder = galaxy ? galaxy.update(items, { focused: focusedHandle, gone: vanished, born, stats: appStats(all), searching: Boolean(searchQuery()) }) : items.filter((i) => i.show).map((i) => i.handle)
+  displayOrder = galaxy ? galaxy.update(items, { focused: focusedHandle, gone: vanished, born, stats: appStats(all), searching: searching() }) : items.filter((i) => i.show).map((i) => i.handle)
   galaxy?.setSearchTarget(nextMatch())
   vanished.clear()
   born.clear()
@@ -2671,6 +2684,11 @@ function searchQuery() {
   return search.value.trim().toLowerCase()
 }
 
+// Words in the search box, or a status filter: either lights planets up for Enter.
+function searching() {
+  return Boolean(searchQuery()) || prefs.filter !== 'all'
+}
+
 // Every word has to turn up somewhere, in any order. Spaces don't count, so '포탈모드'
 // finds '포탈 모드'. In names, Korean initials count too, so 'ㅁㄹ' finds '메모리'; on
 // screen they would match nearly everything.
@@ -2707,10 +2725,11 @@ function searchRank(session, handle, words = searchWords(searchQuery())) {
   return rank
 }
 
-// Found in the planet's own name first, then in its app's, then anywhere on screen.
+// Found in the planet's own name first, then in its app's, then anywhere on screen. With
+// only a status filter on, every planet it lets through, in order.
 function searchHits() {
   const words = searchWords(searchQuery())
-  if (!words.length) return []
+  if (!words.length) return prefs.filter === 'all' ? [] : displayOrder.filter((handle) => sessions.has(handle))
   const rank = (handle) => searchRank(sessions.get(handle), handle, words)
   return displayOrder
     .filter((handle) => sessions.has(handle))
@@ -2730,7 +2749,7 @@ function jumpToMatch(step) {
   // An Enter that finished a syllable can arrive twice; one jump is enough.
   if (Date.now() - jumpedAt < 150) return
   const hits = searchHits()
-  if (!searchQuery()) return
+  if (!searching()) return
   if (!hits.length) return toast('찾은 게 없어요')
   jumpedAt = Date.now()
   searchAt = nextMatch(step, hits)
@@ -2739,9 +2758,9 @@ function jumpToMatch(step) {
 }
 
 function renderSearchHint() {
-  const query = searchQuery()
-  searchHint.hidden = !query
-  if (!query) return
+  search.placeholder = prefs.filter === 'all' ? '찾기 · Enter로 이동' : `${FILTER_NAMES[prefs.filter]}에서 찾기 · Enter로 이동`
+  searchHint.hidden = !searching()
+  if (searchHint.hidden) return
   const hits = searchHits()
   const at = hits.indexOf(searchAt)
   searchHint.textContent = !hits.length ? '없음' : at < 0 ? `${hits.length}개 ↵` : `${at + 1}/${hits.length} ↵`
@@ -2815,6 +2834,13 @@ function onShortcut(e) {
       closeReport()
     },
     KeyC: () => toggleBirth(),
+    KeyT: () => {
+      if (prefs.view !== 'galaxy') return toast('이름 끄기는 은하 보기에서 써요')
+      prefs.titles = !prefs.titles
+      savePrefs()
+      document.body.classList.toggle('titles-off', !prefs.titles)
+      toast(prefs.titles ? '별과 행성 이름을 켰어요' : '이름을 모두 껐어요 · T로 다시 켜요')
+    },
     KeyL: () => {
       if (prefs.view !== 'galaxy') return toast('우주 도감은 은하 보기에서 봐요')
       toggleLog()
@@ -2998,7 +3024,7 @@ function applyPrefs() {
 }
 
 function loadPrefs() {
-  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true, look: LOOK_DEFAULTS, mix: {}, mixOff: {}, decor: {}, musicMood: true, newAgent: 'claude' }
+  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true, look: LOOK_DEFAULTS, mix: {}, mixOff: {}, decor: {}, musicMood: true, newAgent: 'claude', titles: true }
   try {
     const saved = JSON.parse(localStorage.getItem('orca-portal-prefs') || '{}')
     if (saved.version !== 2) Object.assign(saved, { version: 2, view: 'galaxy' })

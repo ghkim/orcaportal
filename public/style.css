@@ -863,6 +863,8 @@ body[data-view='galaxy'] .gx-hud { display: flex; flex-direction: column; justif
 .gx-planet { padding-top: 10px; opacity: 0; transition: opacity 0.25s; }
 .gx-planet.on, .gx-planet.selected { opacity: 1; }
 .gx-planet.dim:not(.selected) { opacity: 0.25; }
+/* T hides every name, stars and planets; hovering a planet still shows the tip. */
+body.titles-off .gx-labels { visibility: hidden; }
 .gx-star.gone, .gx-planet.gone { opacity: 0 !important; filter: blur(4px); transition: opacity 1.4s ease, filter 1.4s ease; }
 .gx-star.gone span, .gx-planet.gone span { pointer-events: none; }
 .gx-planet span {

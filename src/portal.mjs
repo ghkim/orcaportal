@@ -7,6 +7,8 @@ const TICK_MS = 1000
 const OFFLINE_RETRY_MS = 5000
 const SCREEN_REFRESH_MS = 15_000
 const SCREEN_CONCURRENCY = 6
+// How long a session keeps the agent it last had when Orca briefly leaves it out.
+const AGENT_HOLD_MS = 30_000
 
 export class Portal extends EventEmitter {
   constructor(client) {
@@ -20,6 +22,7 @@ export class Portal extends EventEmitter {
     this.timer = null
     this.ticking = false
     this.forced = new Set()
+    this.agents = new Map() // handle -> what holdAgents last saw
   }
 
   subscribe() {
@@ -66,7 +69,7 @@ export class Portal extends EventEmitter {
     }
     this.setStatus({ ok: true, error: null })
 
-    const sessions = mergeSessions(workspaces.worktrees || [], terminals.terminals || [])
+    const sessions = holdAgents(mergeSessions(workspaces.worktrees || [], terminals.terminals || []), this.agents)
     const live = new Set(sessions.map((s) => s.handle))
     for (const handle of this.screens.keys()) {
       if (!live.has(handle)) {
@@ -168,6 +171,24 @@ export function mergeSessions(worktrees, terminals) {
         : null
     }
   })
+}
+
+// Orca's agent fields blink: a terminal's agentIdentity drops out for a moment every few
+// seconds, and an agent can miss a poll. Without a hold, a finished session falls to a
+// plain shell and back, and the done count jumps with it.
+export function holdAgents(sessions, memory, now = Date.now(), holdMs = AGENT_HOLD_MS) {
+  const live = new Set()
+  for (const session of sessions) {
+    live.add(session.handle)
+    const known = memory.get(session.handle) || {}
+    if (session.agentType) Object.assign(known, { agentType: session.agentType, typeAt: now })
+    else if (known.agentType && now - known.typeAt < holdMs) session.agentType = known.agentType
+    if (session.agent) Object.assign(known, { agent: session.agent, agentAt: now })
+    else if (known.agent && now - known.agentAt < holdMs) session.agent = known.agent
+    memory.set(session.handle, known)
+  }
+  for (const handle of memory.keys()) if (!live.has(handle)) memory.delete(handle)
+  return sessions
 }
 
 // A row flagged `wrapped` continues the row above it (xterm semantics).
