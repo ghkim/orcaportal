@@ -1391,7 +1391,7 @@ body[data-view='galaxy'] .gx-birth:not([hidden]) {
 .gx-birth p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .gx-birth .nb-where { min-height: 1.5em; color: var(--faint); font-size: 12px; overflow-wrap: anywhere; }
 .gx-birth .nb-where.warn { color: #ffc2b8; }
-.nb-name, .nb-prompt {
+.nb-name, .nb-url, .nb-prompt {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border-strong);
@@ -1403,7 +1403,12 @@ body[data-view='galaxy'] .gx-birth:not([hidden]) {
   resize: vertical;
 }
 .nb-name { font-family: var(--display-ko); font-size: 15px; letter-spacing: -0.02em; }
-.nb-name:focus, .nb-prompt:focus { outline: none; border-color: rgb(255 226 168 / 55%); box-shadow: 0 0 0 3px rgb(255 226 168 / 10%); }
+.nb-url { margin-top: 8px; font-family: var(--mono); font-size: 12.5px; }
+.nb-url::placeholder { font-family: var(--sans); }
+/* A star still forming: its name, and under it what is being done. */
+.gx-forming span { color: rgb(220 214 255 / 85%); font-style: italic; }
+.gx-forming small { display: block; margin-top: 2px; color: rgb(255 226 196 / 75%); font: 500 10.5px/1.3 var(--sans); text-align: center; text-shadow: 0 0 6px rgb(0 0 0 / 95%), 0 1px 2px #000; white-space: nowrap; }
+.nb-name:focus, .nb-url:focus, .nb-prompt:focus { outline: none; border-color: rgb(255 226 168 / 55%); box-shadow: 0 0 0 3px rgb(255 226 168 / 10%); }
 .nb-prompt:disabled { opacity: 0.4; }
 .nb-agents { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; padding: 0; border: 0; }
 .nb-agents legend { float: left; margin-right: 4px; color: var(--faint); font-size: 12px; }

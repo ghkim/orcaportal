@@ -15,7 +15,7 @@ import { Usage } from './src/usage.mjs'
 import { Servers } from './src/servers.mjs'
 import { Disk } from './src/disk.mjs'
 import { Speaker } from './src/speaker.mjs'
-import { Projects, projectName, AGENTS } from './src/projects.mjs'
+import { Projects, projectName, gitUrl, AGENTS } from './src/projects.mjs'
 import { keyBytes } from './public/keys.js'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -41,6 +41,8 @@ portal.on('state', () => disk.pathsChanged())
 const speaker = new Speaker()
 // New projects made from the page: a folder, a repo, added to Orca, an agent started in it.
 const projects = new Projects(client)
+// The moment a new project's terminal could be there, look for it.
+projects.on('birth', (job) => (job.done || job.step === 'agent') && portal.refreshSoon())
 let port = 0 // set by start()
 
 const server = http.createServer(async (req, res) => {
@@ -86,6 +88,7 @@ function openEventStream(req, res, page, visible) {
   write('servers', servers.snapshot())
   write('disk', disk.snapshot())
   for (const [handle, screen] of portal.screens) write('screen', { handle, lines: screen.lines })
+  for (const job of projects.jobs.values()) write('birth', job)
   if (page) speaker.join(page, { visible })
   write('speaker', { id: speaker.current })
 
@@ -96,6 +99,7 @@ function openEventStream(req, res, page, visible) {
   const onServers = (data) => write('servers', data)
   const onDisk = (data) => write('disk', data)
   const onSpeaker = (data) => write('speaker', data)
+  const onBirth = (data) => write('birth', data)
   portal.on('state', onState)
   portal.on('screen', onScreen)
   portal.on('status', onStatus)
@@ -103,6 +107,7 @@ function openEventStream(req, res, page, visible) {
   servers.on('servers', onServers)
   disk.on('disk', onDisk)
   speaker.on('speaker', onSpeaker)
+  projects.on('birth', onBirth)
   portal.subscribe()
   usage.subscribe()
   servers.subscribe()
@@ -117,6 +122,7 @@ function openEventStream(req, res, page, visible) {
     servers.off('servers', onServers)
     disk.off('disk', onDisk)
     speaker.off('speaker', onSpeaker)
+    projects.off('birth', onBirth)
     if (page) speaker.leave(page)
     portal.unsubscribe()
     usage.unsubscribe()
@@ -169,15 +175,17 @@ async function handleApi(pathname, body, res) {
   }
 }
 
-// `check` only says where the project would go; otherwise it is made and started.
+// `check` only says where the project would go; otherwise it is started, and how it goes
+// arrives on the event stream as 'birth' events. With `url` the project is a clone.
 async function handleProject(body, res) {
   const name = projectName(body.name)
   if (!name) return sendJson(res, 400, { ok: false, error: { code: 'invalid_argument', message: '이름에는 / \\ : * ? " < > | 를 쓸 수 없고, 점으로 시작할 수 없어요. 60자까지예요.' } })
+  const url = body.url ? gitUrl(body.url) : null
+  if (body.url && !url) return sendJson(res, 400, { ok: false, error: { code: 'invalid_argument', message: '깃 주소는 https://… 또는 git@…:… 꼴이어야 해요.' } })
   const agent = AGENTS.includes(body.agent) ? body.agent : 'claude'
   const prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 4000) : ''
   try {
-    const result = body.check === true ? await projects.check(name) : await projects.create({ name, agent, prompt })
-    if (body.check !== true) portal.refreshSoon()
+    const result = body.check === true ? await projects.check(name) : await projects.begin({ name, agent, prompt, url })
     sendJson(res, 200, { ok: true, result })
   } catch (error) {
     sendJson(res, 200, { ok: false, error: { code: error.code || 'failed', message: error.message } })

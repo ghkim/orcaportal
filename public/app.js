@@ -79,6 +79,8 @@ const BIRTH_AGENTS = [
 ]
 // How long a project made here waits for its first terminal before the camera stops waiting.
 const BIRTH_WAIT_MS = 90_000
+// What a project being made is doing, under its gathering cloud.
+const BIRTH_STEPS = { start: '자리 잡는 중', clone: '가져오는 중', repo: '저장소 만드는 중', orca: 'Orca에 넣는 중', agent: '터미널 여는 중', done: '곧 빛나요' }
 // Korean initial consonants, in syllable order, for searching by initials.
 const INITIALS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ'
 // Decorations in the galaxy, each of which can be switched off.
@@ -262,7 +264,9 @@ if (admin) loadTestItems()
 let cleanAsk = null // the terminal dropped into the black hole, while we ask
 // The new star / new planet form: its name check in flight, the star a planet joins, and
 // the folder whose next new terminal gets the camera ({ path, known, until }).
-const birth = { check: 0, timer: null, busy: false, target: null, wait: null }
+const birth = { check: 0, timer: null, busy: false, target: null, wait: null, autoName: '' }
+// Projects being made (from any window): path -> the last news, as the server tells it.
+const forming = new Map()
 let orcaStatus = { ok: true }
 // With Orrery open in more than one place, the server lets one page play sound: the one
 // touched last. The id lives in sessionStorage, so a reload keeps the page's turn.
@@ -293,6 +297,7 @@ function connect() {
     servers = JSON.parse(e.data).paths || {}
     if (prefs.view === 'galaxy') scheduleRender()
   })
+  events.addEventListener('birth', (e) => onBirthNews(JSON.parse(e.data)))
   events.addEventListener('status', (e) => {
     orcaStatus = JSON.parse(e.data)
     setConn(orcaStatus.ok ? 'live' : 'orca-down', orcaStatus)
@@ -333,6 +338,13 @@ function onState({ sessions: list }) {
   renderAll()
   if (firstState) setTimeout(settle, SETTLE_MS)
   if (birth.wait) greetNewStar(list)
+  // A project's first terminal is here: its star ignites (if the names differ, the cloud
+  // still has to clear).
+  for (const [path, job] of forming) {
+    if (!list.some((s) => s.path === path)) continue
+    forming.delete(path)
+    galaxy?.unform(job.name)
+  }
 }
 
 function onScreen({ handle, lines }) {
@@ -2001,7 +2013,7 @@ function renderBirth() {
   head.append(el('b', { textContent: target ? `🪐 ${target.app}에 새 행성` : '✨ 새 별 만들기' }), close)
   const about = el('p', {
     className: 'nb-about',
-    textContent: target ? '이 프로젝트에서 에이전트를 하나 더 띄워요. 터미널이 열리면 행성이 생겨요.' : '새 프로젝트 폴더를 만들어 Orca에 넣고, 그 안에서 에이전트를 시작해요. 터미널이 열리면 별이 태어나요.'
+    textContent: target ? '이 프로젝트에서 에이전트를 하나 더 띄워요. 터미널이 열리면 행성이 생겨요.' : '새 프로젝트 폴더를 만들거나 깃 저장소를 가져와 Orca에 넣고, 그 안에서 에이전트를 시작해요. 그동안 별이 모이고, 터미널이 열리면 빛나요.'
   })
   const parts = [head, about]
   if (target) {
@@ -2009,7 +2021,10 @@ function renderBirth() {
   } else {
     const name = el('input', { name: 'name', className: 'nb-name', placeholder: '프로젝트 이름', maxLength: 60, required: true, spellcheck: false })
     name.setAttribute('aria-label', '프로젝트 이름')
-    parts.push(name, el('p', { className: 'nb-where', textContent: '이름을 적으면 어디에 만들지 알려드려요.' }))
+    const url = el('input', { name: 'url', className: 'nb-url', placeholder: '깃 주소에서 가져오기 (선택) · https://github.com/…', maxLength: 500, spellcheck: false, autocomplete: 'off' })
+    url.setAttribute('aria-label', '가져올 깃 주소')
+    parts.push(name, url, el('p', { className: 'nb-where', textContent: '이름을 적으면 어디에 만들지 알려드려요.' }))
+    birth.autoName = ''
   }
   const agents = el('fieldset', { className: 'nb-agents' })
   agents.append(el('legend', { textContent: '띄울 것' }))
@@ -2043,7 +2058,16 @@ function planetWhere(target) {
 }
 
 function goLabel() {
-  return birth.target ? '🪐 행성 만들기' : '✨ 별 만들기'
+  if (birth.target) return '🪐 행성 만들기'
+  return birthEl.querySelector('.nb-url')?.value.trim() ? '☄️ 가져와서 별 만들기' : '✨ 별 만들기'
+}
+
+// The same address rule the server keeps (it has the last word), and the folder name git
+// would give the clone.
+function birthUrl(value) {
+  const url = value.trim()
+  const ok = /^(?:https?|ssh|git):\/\/[^/@\s]+(?:@[^/\s]+)?\/\S+$/.test(url) || /^[\w.-]+@[\w.-]+:[\w./~-]+$/.test(url) || /^[\w.-]+\.[a-z]{2,}\/[^:\s]+$/i.test(url)
+  return { url, bad: Boolean(url) && (!ok || url.startsWith('-')), name: (url.replace(/[/\\]+$/, '').split(/[/:]/).pop() || '').replace(/\.git$/i, '') }
 }
 
 // The same rule the server keeps, so the form can say so before asking.
@@ -2067,20 +2091,33 @@ function onBirthInput(e) {
     return
   }
   if (e.target.name === 'folder') return void (birth.target.path = e.target.value)
-  if (e.target.name !== 'name') return
+  const nameInput = birthEl.querySelector('.nb-name')
+  if (e.target.name === 'url') {
+    // The name follows the address until the user writes one of their own.
+    const { name } = birthUrl(e.target.value)
+    if (!nameInput.value || nameInput.value === birth.autoName) nameInput.value = birth.autoName = name
+  } else if (e.target.name !== 'name') return
+  checkBirth(nameInput.value, birthEl.querySelector('.nb-url').value)
+}
+
+// Says where the project would go, or what's wrong, and only then lets it be made.
+function checkBirth(nameValue, urlValue) {
   clearTimeout(birth.timer)
   const ask = ++birth.check
   const go = birthEl.querySelector('.nb-go')
   go.disabled = true
-  const { name, bad } = birthName(e.target.value)
-  if (!name) return showWhere('이름을 적으면 어디에 만들지 알려드려요.')
+  go.textContent = goLabel()
+  const url = birthUrl(urlValue)
+  const { name, bad } = birthName(nameValue)
+  if (url.bad) return showWhere('깃 주소는 https://… 또는 git@…:… 꼴이어야 해요.', true)
+  if (!name) return showWhere(url.url ? '가져올 폴더 이름을 적어 주세요.' : '이름을 적으면 어디에 만들지 알려드려요.')
   if (bad) return showWhere('이름에는 / \\ : * ? " < > | 를 쓸 수 없고, 점으로 시작할 수 없어요. 60자까지예요.', true)
   birth.timer = setTimeout(async () => {
     const res = await api('/api/project', { name, check: true })
     if (ask !== birth.check || birthEl.hidden) return
     if (!res.ok) return showWhere(res.error?.message || '어디에 만들지 확인하지 못했어요.', true)
     if (res.result.taken) return showWhere(`이미 있는 폴더예요 · ${shortPath(res.result.path)}`, true)
-    showWhere(`만들 곳 · ${shortPath(res.result.path)}`)
+    showWhere(`${url.url ? '가져올 곳' : '만들 곳'} · ${shortPath(res.result.path)}`)
     go.disabled = birth.busy
   }, 250)
 }
@@ -2092,14 +2129,15 @@ async function onBirthSubmit(e) {
   if (birth.busy || !go || go.disabled) return
   const { name, bad } = target ? { name: target.app } : birthName(birthEl.querySelector('.nb-name').value)
   if (!name || bad) return
+  const url = target ? '' : birthUrl(birthEl.querySelector('.nb-url').value).url
   const agent = birthEl.querySelector('input[name="agent"]:checked')?.value || 'claude'
   const prompt = agent === 'shell' ? '' : birthEl.querySelector('.nb-prompt').value.trim()
   // Terminals already in that folder, so the camera can tell the new one.
   const known = new Set(target ? [...sessions.keys()].filter((h) => sessions.get(h).path === target.path) : [])
   birth.busy = true
   go.disabled = true
-  go.textContent = target ? '띄우는 중…' : '만드는 중…'
-  const res = target ? await api('/api/session', { path: target.path, agent, prompt }) : await api('/api/project', { name, agent, prompt })
+  go.textContent = target ? '띄우는 중…' : url ? '가져오는 중…' : '만드는 중…'
+  const res = target ? await api('/api/session', { path: target.path, agent, prompt }) : await api('/api/project', { name, agent, prompt, ...(url && { url }) })
   birth.busy = false
   if (!res.ok) {
     const message = res.error?.message || (target ? '새 행성을 만들지 못했어요' : '새 별을 만들지 못했어요')
@@ -2109,9 +2147,52 @@ async function onBirthSubmit(e) {
     return showWhere(message, true)
   }
   if (birth.target === target) toggleBirth(false)
-  birth.wait = { path: res.result.path, known, until: Date.now() + BIRTH_WAIT_MS }
-  if (!res.result.started) toast(res.result.warning, 6000)
-  else toast(target ? `🪐 ${name} · 행성이 생기고 있어요` : `✨ ${name} · 별이 태어나고 있어요`, 3500)
+  if (target) {
+    birth.wait = { path: res.result.path, known, until: Date.now() + BIRTH_WAIT_MS }
+    if (!res.result.started) toast(res.result.warning, 6000)
+    else toast(`🪐 ${name} · 행성이 생기고 있어요`, 3500)
+    return
+  }
+  // A new star: the work goes on in the background while its cloud gathers. The camera
+  // goes to watch, and waits there until the terminal opens.
+  birth.wait = { path: res.result.path, known, until: Infinity }
+  galaxy?.forming(name, { label: BIRTH_STEPS.start, go: true })
+  toast(url ? `☄️ ${name} · 저장소를 가져오는 동안 별이 모여요` : `✨ ${name} · 별이 모이고 있어요`, 3500)
+}
+
+// News of a project being made, from this window or another.
+function onBirthNews(job) {
+  if (!job.done) {
+    forming.set(job.path, job)
+    return showForming(job)
+  }
+  const mine = birth.wait?.path === job.path
+  if (job.warning) toast(job.warning, 6000)
+  if (job.error || !job.started) {
+    // Failed, or made without a terminal: nothing to light the star.
+    forming.delete(job.path)
+    galaxy?.unform(job.name, { failed: true })
+    if (mine) birth.wait = null
+    if (job.error) toast(`${job.name} · ${job.error}`, 7000)
+    return
+  }
+  // Kept until the terminal shows up (onState clears it), within moments; if it never
+  // does, the cloud clears anyway.
+  forming.set(job.path, job)
+  if (mine) birth.wait.until = Date.now() + BIRTH_WAIT_MS
+  galaxy?.forming(job.name, { progress: 1, label: BIRTH_STEPS.done })
+  setTimeout(() => {
+    if (forming.get(job.path) !== job) return
+    forming.delete(job.path)
+    galaxy?.unform(job.name)
+  }, BIRTH_WAIT_MS)
+}
+
+function showForming(job) {
+  if (!galaxy) return
+  if (job.done) return galaxy.forming(job.name, { progress: 1, label: BIRTH_STEPS.done })
+  const percent = job.step === 'clone' && job.progress > 0.05 ? ` ${Math.round(((job.progress - 0.04) / 0.82) * 100)}%` : ''
+  galaxy.forming(job.name, { progress: job.progress, label: `${BIRTH_STEPS[job.step] || ''}${percent}` })
 }
 
 // The terminal just started from here: the camera goes to meet its star or planet.
@@ -2163,6 +2244,7 @@ function ensureGalaxy() {
       galaxy.setRemnants(remnants)
       galaxy.setActive(prefs.view === 'galaxy' && !maximized)
       renderAll()
+      for (const job of forming.values()) showForming(job)
       // Only a session the user chose; the opening view is the whole galaxy.
       if (focusedHandle && prefs.view === 'galaxy' && userPicked) galaxy.flyTo(focusedHandle)
       checkUnlocks()

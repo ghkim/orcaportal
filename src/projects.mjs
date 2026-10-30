@@ -1,12 +1,20 @@
 // A new project from the galaxy: a folder beside the user's other projects, a git repo in
-// it with the same empty "Initial commit" Orca starts projects with, added to Orca, and an
-// agent (or a plain shell) in a terminal there. That terminal is what lights the new star.
+// it with the same empty "Initial commit" Orca starts projects with (or a clone of a repo
+// the user named), added to Orca, and an agent (or a plain shell) in a terminal there.
+// That terminal is what lights the new star. The work runs in the background and reports
+// how far it has got, so the page can show the star gathering meanwhile.
+import { EventEmitter } from 'node:events'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { execFile } from 'node:child_process'
+import crypto from 'node:crypto'
+import { execFile, spawn } from 'node:child_process'
 
 export const AGENTS = ['claude', 'codex', 'shell']
+// A clone that takes longer than this is stopped.
+const CLONE_TIMEOUT_MS = 30 * 60_000
+// How far along the whole birth is when each step starts; a clone fills the gap after it.
+const STEPS = { start: 0, clone: 0.04, repo: 0.4, orca: 0.86, agent: 0.92 }
 
 export class ProjectError extends Error {
   constructor(code, message) {
@@ -20,6 +28,32 @@ export function projectName(value) {
   const name = typeof value === 'string' ? value.normalize('NFC').trim().replace(/\s+/g, ' ') : ''
   if (!name || name.length > 60 || name.startsWith('.') || /[/\\:*?"<>|\u0000-\u001f]/.test(name)) return null
   return name
+}
+
+// A repository address to clone: https, ssh or git, or the short `git@host:owner/repo`.
+// Never an option, a local path or one of git's command-running transports. A bare
+// `github.com/owner/repo` gets https in front.
+export function gitUrl(value) {
+  let url = typeof value === 'string' ? value.trim() : ''
+  if (!url || url.length > 500 || /\s/.test(url) || url.startsWith('-')) return null
+  if (/^[\w.-]+\.[a-z]{2,}\/[^:]+$/i.test(url)) url = `https://${url}`
+  if (/^(?:https?|ssh|git):\/\/[^/@\s]+(?:@[^/\s]+)?\/[^\s]+$/.test(url)) return url
+  if (/^[\w.-]+@[\w.-]+:[\w./~-]+$/.test(url)) return url
+  return null
+}
+
+// The folder name a clone would get, as git names it: the address's last part without .git.
+export function repoNameOf(url) {
+  const last = (url || '').replace(/[/\\]+$/, '').split(/[/:]/).pop() || ''
+  return last.replace(/\.git$/i, '')
+}
+
+// How far along a clone is, 0..1, from one line of git's progress (null for other lines).
+export function cloneShare(line) {
+  const match = /(Counting objects|Compressing objects|Receiving objects|Resolving deltas|Updating files):\s+(\d+)%/.exec(line)
+  if (!match) return null
+  const [from, to] = { 'Counting objects': [0, 0.04], 'Compressing objects': [0.04, 0.08], 'Receiving objects': [0.08, 0.82], 'Resolving deltas': [0.82, 0.93], 'Updating files': [0.93, 1] }[match[1]]
+  return from + ((to - from) * Number(match[2])) / 100
 }
 
 // Where new projects go: the folder most of Orca's projects already share.
@@ -37,12 +71,15 @@ export function projectsHome(repoPaths, fallback = path.join(os.homedir(), 'orca
   return home
 }
 
-export class Projects {
-  constructor(client, { git = runGit, attempts = 4, retryMs = 600 } = {}) {
+export class Projects extends EventEmitter {
+  constructor(client, { git = runGit, clone = runClone, attempts = 4, retryMs = 600 } = {}) {
+    super()
     this.client = client
     this.git = git
+    this.clone = clone
     this.attempts = attempts
     this.retryMs = retryMs
+    this.jobs = new Map() // path -> a birth under way, as last told
   }
 
   async home() {
@@ -53,23 +90,61 @@ export class Projects {
   // Where a project of this name would go, and whether something is already there.
   async check(name) {
     const dir = path.join(await this.home(), name)
-    return { path: dir, taken: await exists(dir) }
+    return { path: dir, taken: this.jobs.has(dir) || (await exists(dir)) }
   }
 
-  async create({ name, agent = 'claude', prompt = '' }) {
+  // Starts a birth and answers once it is under way: the rest is told as 'birth' events,
+  // { id, name, path, clone, step, progress } and at the end done with started, a
+  // warning or an error.
+  async begin({ name, agent = 'claude', prompt = '', url = null }) {
+    const { path: dir, taken } = await this.check(name)
+    if (taken) throw new ProjectError('exists', '같은 이름의 폴더가 이미 있어요.')
+    const job = { id: crypto.randomUUID(), name, path: dir, clone: Boolean(url), step: 'start', progress: 0, done: false }
+    this.jobs.set(dir, job)
+    const tell = (patch) => {
+      // Progress only ever goes forward, and small steps aren't worth a message.
+      const progress = Math.max(job.progress, patch.progress ?? job.progress)
+      if (patch.step === job.step && progress - job.progress < 0.01 && !patch.done) return
+      Object.assign(job, patch, { progress })
+      this.emit('birth', { ...job })
+    }
+    this.emit('birth', { ...job })
+    this.create({ name, agent, prompt, url }, tell)
+      .then(
+        (result) => ({ step: 'done', progress: 1, done: true, started: result.started, warning: result.warning }),
+        (error) => ({ done: true, error: error.message })
+      )
+      .then((last) => {
+        this.jobs.delete(dir)
+        tell(last)
+      })
+    return { path: dir, name }
+  }
+
+  async create({ name, agent = 'claude', prompt = '', url = null }, tell = () => {}) {
     const home = await this.home()
     const dir = path.join(home, name)
     try {
       await fsp.mkdir(home, { recursive: true })
-      await fsp.mkdir(dir)
+      // A clone makes its own folder; it only has to be free.
+      if (url && (await exists(dir))) throw Object.assign(new Error('exists'), { code: 'EEXIST' })
+      if (!url) await fsp.mkdir(dir)
     } catch (error) {
       if (error.code === 'EEXIST') throw new ProjectError('exists', '같은 이름의 폴더가 이미 있어요.')
       throw new ProjectError('mkdir_failed', `폴더를 만들지 못했어요: ${error.message}`)
     }
-    await this.git(dir, ['init', '-b', 'main'])
-    // Without a git identity the commit fails; the repo works without one, as Orca's do.
-    await this.git(dir, ['commit', '--allow-empty', '-m', 'Initial commit']).catch(() => {})
+    if (url) {
+      tell({ step: 'clone', progress: STEPS.clone })
+      await this.clone(url, dir, (share) => tell({ step: 'clone', progress: STEPS.clone + share * (STEPS.orca - STEPS.clone) }))
+    } else {
+      tell({ step: 'repo', progress: STEPS.repo })
+      await this.git(dir, ['init', '-b', 'main'])
+      // Without a git identity the commit fails; the repo works without one, as Orca's do.
+      await this.git(dir, ['commit', '--allow-empty', '-m', 'Initial commit']).catch(() => {})
+    }
+    tell({ step: 'orca', progress: STEPS.orca })
     await this.client.cli(['repo', 'add', `--path=${dir}`])
+    tell({ step: 'agent', progress: STEPS.agent })
     try {
       await this.launch(dir, { agent, prompt })
     } catch (error) {
@@ -110,6 +185,48 @@ function runGit(cwd, args) {
       else resolve(stdout)
     })
   })
+}
+
+// `git clone` with its progress read as it goes. It never waits on a prompt: a private
+// repo without saved credentials fails at once instead of hanging the clone.
+export function runClone(url, dir, onShare) {
+  return new Promise((resolve, reject) => {
+    const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+    if (!env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes'
+    const child = spawn('git', ['clone', '--progress', '--', url, dir], { env, stdio: ['ignore', 'ignore', 'pipe'] })
+    let tail = ''
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGTERM')
+    }, CLONE_TIMEOUT_MS)
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk) => {
+      tail = (tail + chunk).slice(-4000)
+      for (const line of chunk.split(/[\r\n]+/)) {
+        const share = cloneShare(line)
+        if (share !== null) onShare(share)
+      }
+    })
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(new ProjectError('git_missing', `git을 실행하지 못했어요: ${error.message}`))
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) return resolve()
+      reject(new ProjectError('clone_failed', timedOut ? '클론이 30분 넘게 걸려서 멈췄어요.' : cloneTrouble(tail)))
+    })
+  })
+}
+
+// What went wrong, from the end of git's output, in words the user can act on.
+export function cloneTrouble(output) {
+  if (/could not read Username|Authentication failed|Permission denied \(publickey\)|terminal prompts disabled|Host key verification failed/i.test(output)) return '저장소를 찾을 수 없거나 들어갈 권한이 없어요. 주소를 확인하고, 비공개 저장소라면 이 맥에서 git 로그인(인증)을 먼저 해 주세요.'
+  if (/not found|does not exist|does not appear to be a git repository/i.test(output)) return '저장소를 찾을 수 없어요. 주소를 확인해 주세요.'
+  if (/Could not resolve host|unable to access|Connection refused|timed out/i.test(output)) return '저장소 주소에 연결하지 못했어요. 인터넷 연결이나 주소를 확인해 주세요.'
+  const fatal = output.split(/[\r\n]+/).filter((line) => /^(fatal|error):/.test(line.trim())).pop()
+  return `클론하지 못했어요${fatal ? `: ${fatal.trim().replace(/^(fatal|error):\s*/, '')}` : '.'}`
 }
 
 async function exists(p) {

@@ -182,6 +182,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   const systems = new Map() // app name -> system
   const spots = new Map(Object.entries(knownSpots)) // app name -> which of its spots it took
   const planets = new Map() // terminal handle -> planet
+  const protostars = new Map() // app name -> a star still forming, see forming()
   let order = []
   let layoutKey = ''
   let selected = null
@@ -351,6 +352,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     pointerDirty = Boolean(pointer)
     const homes = homesOf(apps, (app) => byApp.get(app).some((i) => i.pinned))
     apps.forEach((app) => {
+      // A star forming here: its terminal opened, so it ignites and the cloud clears.
+      if (protostars.has(app)) unform(app)
       const system = systems.get(app) || createSystem(app)
       system.home.copy(homes.get(app))
       if (!system.placed) {
@@ -514,6 +517,128 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     pivot.add(craft)
     planet.holder.add(pivot)
     planet.satellite = { pivot, craft, light }
+  }
+
+  // ---------- stars forming ----------
+
+  // A project being made from the page shows as a cloud of gas gathering at the spot its
+  // star will take: dust spirals in, the cloud turns faster and draws together, and a glow
+  // grows in its middle as the work goes on (a clone, as it downloads). When the project's
+  // terminal opens the star ignites right there and the cloud clears. If the work fails,
+  // the cloud drifts apart.
+  function forming(app, { progress = 0, label = '', go = false } = {}) {
+    if (systems.has(app)) return
+    let proto = protostars.get(app)
+    if (proto?.leaving) {
+      dropProtostar(proto)
+      proto = null
+    }
+    if (!proto) {
+      proto = createProtostar(app)
+      protostars.set(app, proto)
+    }
+    proto.goal = Math.max(proto.goal, Math.min(1, Math.max(0, progress)))
+    proto.note.textContent = label
+    if (go) flyToSystem(proto, '별이 모이는 중')
+  }
+
+  function unform(app, { failed = false } = {}) {
+    const proto = protostars.get(app)
+    if (proto && !proto.leaving) proto.leaving = { start: performance.now(), failed }
+  }
+
+  function createProtostar(app) {
+    const taken = [...systems.values()].map((s) => s.home).concat([...protostars.values()].map((p) => p.group.position))
+    const spot = spots.has(app) ? spots.get(app) : takeSpot(app, taken)
+    const group = new THREE.Group()
+    group.position.copy(spotOf(app, spot, false))
+    const clouds = ['#a493ff', '#ff9fc8', '#86d8ff'].map((color) => {
+      const cloud = sprite(tex.nebula[Math.floor(Math.random() * tex.nebula.length)], 0.001, 0)
+      cloud.material.color.set(color)
+      cloud.material.rotation = Math.random() * Math.PI * 2
+      return cloud
+    })
+    const core = sprite(tex.glow, 0.001, 0)
+    core.material.color.set('#ffe6c4')
+    // Dust falling in along two arms: each grain starts outside near an arm, and as it
+    // falls it turns faster, so the arms wind into a spiral. Once in, it starts again.
+    const count = 700
+    const position = new Float32Array(count * 3)
+    const tint = new Float32Array(count * 3)
+    const size = new Float32Array(count)
+    const c = new THREE.Color()
+    const grains = Array.from({ length: count }, (_, i) => {
+      c.set(PASTELS[i % PASTELS.length]).multiplyScalar(0.6 + Math.random() * 0.6)
+      tint.set([c.r, c.g, c.b], i * 3)
+      size[i] = 0.8 + Math.random() * 1.4
+      return { r: Math.random(), a: 0, arm: i % 2, y: gauss(Math.random), speed: 0.6 + Math.random() * 0.8 }
+    })
+    for (const g of grains) g.a = g.arm * Math.PI + gauss(Math.random) * 0.35 - Math.log(0.15 + g.r) * 1.6
+    const swirl = new THREE.Points(geometryOf(position, tint, size), pointsMaterial(pointUniforms, THREE.AdditiveBlending, 0))
+    swirl.rotation.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5)
+    const label = labelObject('gx-star gx-forming', app)
+    label.center.set(0.5, 0)
+    label.position.y = -4
+    const note = el('small', '')
+    label.element.append(note)
+    group.add(...clouds, core, swirl, label)
+    disc.add(group)
+    // Enough of a system's shape for the camera to fly to it and ride along.
+    return { app, group, clouds, core, swirl, grains, label, note, goal: 0, shown: 0, born: performance.now(), leaving: null, reach: 9, planets: [], stats: null, ageDays: 0, busy: 0, seed: hash(app) }
+  }
+
+  function stepForming(now, dt) {
+    for (const proto of [...protostars.values()]) {
+      proto.shown += (proto.goal - proto.shown) * Math.min(1, dt * 1.2)
+      const age = (now - proto.born) / 1000
+      let fade = smooth(0, 2.5, age)
+      let spread = 1
+      if (proto.leaving) {
+        const k = Math.min(1, (now - proto.leaving.start) / (proto.leaving.failed ? 2800 : 1500))
+        if (k >= 1) {
+          dropProtostar(proto)
+          continue
+        }
+        fade *= 1 - smooth(0, 1, k)
+        spread = proto.leaving.failed ? 1 + k * 1.6 : 1 - k * 0.75
+      }
+      // Without news the cloud still turns and slowly draws in, so a long step never looks stuck.
+      const pull = Math.min(1, proto.shown * 0.85 + Math.min(0.15, age / 300))
+      const breath = 1 + 0.05 * Math.sin(age * 1.6)
+      proto.clouds.forEach((cloud, i) => {
+        cloud.scale.setScalar(Math.max(0.001, (42 - i * 8) * (1 - pull * 0.6) * spread * breath))
+        cloud.material.opacity = fade * (0.75 - i * 0.15) * (0.75 + 0.25 * pull)
+        cloud.material.rotation += dt * (0.04 + pull * 0.3) * (i % 2 ? -1 : 1)
+      })
+      proto.core.scale.setScalar(1.5 + 8 * proto.shown)
+      proto.core.material.opacity = fade * (0.12 + 0.7 * proto.shown) * (0.85 + 0.15 * Math.sin(age * 3.1))
+      const outer = (24 - 11 * pull) * spread
+      const position = proto.swirl.geometry.attributes.position
+      proto.grains.forEach((g, i) => {
+        g.r -= dt * g.speed * (0.04 + 0.22 * pull)
+        if (g.r <= 0.05) {
+          g.r = 1
+          g.a = g.arm * Math.PI + gauss(Math.random) * 0.35 + age * 0.3
+        }
+        // Faster the closer in, as round a star.
+        g.a += (dt * g.speed * (0.35 + 1.4 * pull)) / (0.25 + g.r)
+        const r = g.r * outer
+        position.setXYZ(i, Math.cos(g.a) * r, g.y * r * 0.08, Math.sin(g.a) * r)
+      })
+      position.needsUpdate = true
+      proto.swirl.material.uniforms.uAlpha.value = fade
+      proto.label.element.style.opacity = String(fade)
+    }
+  }
+
+  function dropProtostar(proto) {
+    if (protostars.get(proto.app) === proto) protostars.delete(proto.app)
+    disc.remove(proto.group)
+    proto.label.element.remove()
+    for (const s of [...proto.clouds, proto.core]) s.material.dispose()
+    proto.swirl.geometry.dispose()
+    proto.swirl.material.dispose()
+    if (follow === proto) follow = null
   }
 
   // ---------- arriving ----------
@@ -1781,22 +1906,25 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     const homes = new Map()
     for (const app of apps) if (spots.has(app)) homes.set(app, spotOf(app, spots.get(app), pinned(app)))
     const fresh = apps.filter((app) => !spots.has(app)).sort((a, b) => hash(a) - hash(b) || a.localeCompare(b))
-    for (const app of fresh) {
-      let best = 0
-      let room = -1
-      for (let i = 0; i < SPOT_CHOICES; i++) {
-        const spot = spotOf(app, i, pinned(app))
-        const nearest = Math.min(Infinity, ...[...homes.values()].map((other) => other.distanceTo(spot)))
-        if (nearest > room) {
-          room = nearest
-          best = i
-        }
-      }
-      spots.set(app, best)
-      onSpot?.(app, best)
-      homes.set(app, spotOf(app, best, pinned(app)))
-    }
+    for (const app of fresh) homes.set(app, spotOf(app, takeSpot(app, [...homes.values()], pinned(app)), pinned(app)))
     return homes
+  }
+
+  // Of an app's spots, the one farthest from the stars already placed; kept from then on.
+  function takeSpot(app, taken, pinned = false) {
+    let best = 0
+    let room = -1
+    for (let i = 0; i < SPOT_CHOICES; i++) {
+      const spot = spotOf(app, i, pinned)
+      const nearest = Math.min(Infinity, ...taken.map((other) => other.distanceTo(spot)))
+      if (nearest > room) {
+        room = nearest
+        best = i
+      }
+    }
+    spots.set(app, best)
+    onSpot?.(app, best)
+    return best
   }
 
   // A star's i-th possible spot. along: 0 at the inner end of the arms, 1 at the rim,
@@ -2521,6 +2649,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     stepFlashes(now)
     stepDying(now)
     stepBirths(now)
+    stepForming(now, dt)
     stepComets(now)
     stepRemnants(dt)
     stepJets(dt)
@@ -2838,6 +2967,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       const system = systems.get(app)
       if (system) flyToSystem(system)
     },
+    forming,
+    unform,
     overview,
     setArea(rect, { animate = false } = {}) {
       const box = host.getBoundingClientRect()
