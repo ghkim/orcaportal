@@ -17,13 +17,16 @@
   ],
   "type": "module",
   "private": true,
+  "main": "electron/main.mjs",
   "bin": {
     "orrery": "bin/orrery.mjs"
   },
   "scripts": {
     "start": "node server.mjs",
     "portal": "node server.mjs --open",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "app": "electron .",
+    "dist": "electron-builder --mac"
   },
   "engines": {
     "node": ">=20"
@@ -35,5 +38,41 @@
     "public/",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "devDependencies": {
+    "electron": "41.7.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "io.github.ghkim.orrery",
+    "productName": "Orrery",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "server.mjs",
+      "src/**",
+      "public/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "identity": null
+    },
+    "dmg": {
+      "title": "Orrery"
+    }
+  }
 }

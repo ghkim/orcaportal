@@ -10,6 +10,10 @@ const PROMPT_LINE = /^\s*[❯›>](\s|$)/
 const FREE_TEXT = /^(Type something|Other|직접 입력|기타)(?=$|[\s.:…(])/i
 const MENU_SCAN_ROWS = 50
 const MAX_OPTION_GAP = 6
+// Claude Code can open a panel beside the conversation (changed files, a diff), drawn
+// after a │ that stands in the same screen column on most rows.
+const DIVIDERS = new Set(['│', '┃', '║'])
+const MIN_PANEL_COLUMN = 30
 
 export function isRule(line) {
   return RULE.test(line)
@@ -19,8 +23,67 @@ function strip(line) {
   return line.replace(BOX_EDGE, '')
 }
 
+// The rows without a side panel, if there is one: only the conversation is read.
+export function mainColumn(lines) {
+  const counts = new Map()
+  let filled = 0
+  for (const line of lines) {
+    if (!line.trim()) continue
+    filled++
+    const seen = new Set()
+    let column = 0
+    for (const ch of line) {
+      if (DIVIDERS.has(ch) && column >= MIN_PANEL_COLUMN && !seen.has(column)) {
+        seen.add(column)
+        counts.set(column, (counts.get(column) || 0) + 1)
+      }
+      column += cellWidth(ch)
+    }
+  }
+  let divider = -1
+  let most = 0
+  for (const [column, n] of counts) {
+    if (n > most) {
+      most = n
+      divider = column
+    }
+  }
+  if (divider < 0 || most < Math.max(6, filled * 0.6)) return lines
+  return lines.map((line) => cutAt(line, divider))
+}
+
+function cutAt(line, column) {
+  let at = 0
+  let end = 0
+  for (const ch of line) {
+    if (at >= column) break
+    at += cellWidth(ch)
+    end += ch.length
+  }
+  return line.slice(0, end).trimEnd()
+}
+
+// Columns a character takes in the terminal: two for Hangul, CJK, fullwidth forms and
+// most emoji, one for the rest.
+function cellWidth(ch) {
+  const cp = ch.codePointAt(0)
+  const wide =
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe4f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1f64f) ||
+    (cp >= 0x1f900 && cp <= 0x1faff) ||
+    (cp >= 0x20000 && cp <= 0x3fffd)
+  return wide ? 2 : 1
+}
+
 export function parseMenu(lines, { agentWaiting = false } = {}) {
   if (!lines || lines.length === 0) return null
+  lines = mainColumn(lines)
   const start = Math.max(0, lines.length - MENU_SCAN_ROWS)
   const options = []
   for (let i = start; i < lines.length; i++) {
@@ -64,7 +127,19 @@ export function parseMenu(lines, { agentWaiting = false } = {}) {
   }
   while (context.length && !context[0]) context.shift()
   while (context.length && !context[context.length - 1]) context.pop()
-  const question = [...context].reverse().find((t) => /[?？]$/.test(t)) || context[context.length - 1] || ''
+  // The question: the last row that asks something. When the text runs on past the
+  // question mark, the row was wrapped, and the rows after it to the paragraph's end belong.
+  let asks = context.length - 1
+  for (let i = context.length - 1; i >= 0; i--) {
+    if (/[?？]/.test(context[i])) {
+      asks = i
+      break
+    }
+  }
+  let upTo = asks
+  if (asks >= 0 && !/[?？]$/.test(context[asks])) while (upTo + 1 < context.length && context[upTo + 1]) upTo++
+  const asking = asks < 0 ? [] : context.slice(asks, upTo + 1)
+  const question = asking.join(' ')
 
   let hint = ''
   for (let i = last + 1; i < Math.min(lines.length, last + 6); i++) {
@@ -78,7 +153,7 @@ export function parseMenu(lines, { agentWaiting = false } = {}) {
   return {
     header,
     question,
-    context: context.filter((t) => t !== question).slice(-8),
+    context: context.filter((t) => !asking.includes(t)).slice(-8),
     options: run.map(({ n, label, desc, cursor: c }) => ({ n, label, desc, cursor: c, freeText: FREE_TEXT.test(label) })),
     cursor: cursor === -1 ? null : run[cursor].n,
     multiSelect: run.some((o) => /^\[[ x✔]\]|^[☐☒✔]/.test(o.label)),

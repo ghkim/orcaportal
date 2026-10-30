@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseMenu, keysForOption, lineKind } from '../public/screen.js'
+import { parseMenu, keysForOption, lineKind, mainColumn } from '../public/screen.js'
 import { keyBytes } from '../public/keys.js'
 
 const rule = '─'.repeat(120)
@@ -152,4 +152,36 @@ test('line kinds', () => {
   assert.equal(lineKind('❯ 리포트에 추가해줘'), 'you')
   assert.equal(lineKind('  ⎿  Read file (20 lines)'), 'out')
   assert.equal(lineKind('plain text'), '')
+})
+
+test('a side panel beside the conversation stays out of the menu', () => {
+  // Claude Code's changed-files panel after a │ in column 60; Hangul takes two columns.
+  const row = (left, right = '') => {
+    const width = [...left].reduce((w, ch) => w + (/[가-힣🪐]/u.test(ch) ? 2 : 1), 0)
+    return `${left}${' '.repeat(60 - width)}│${right}`
+  }
+  const lines = [
+    row('⏺ 고쳤어요.', ' 43  const LOOK = {'),
+    row('', ' 44 -const SETTINGS ='),
+    row(' ☐ 행성 추가', "    -['sea', '파"),
+    row('', '    -0],'),
+    row('"안 사라지는 행성 추가 버튼"은 어느 쪽인가요? 🪐 행성', ' 50 -  ['),
+    row('추가는 새로고침하면 없어져요.', '    -50],'),
+    row('', ' 53 - ["music",'),
+    row('❯ 1. 가짜 행성 유지 (Recommended)', '    -150],'),
+    row('     새로고침해도 남아요.', ' 57 - }'),
+    row('  2. 진짜 터미널 추가', '+GS = ['),
+    row('  3. 둘 다', ''),
+    row('  4. Type something.', ''),
+    row('', ''),
+    row('Enter to select · ↑/↓ to navigate · Esc to cancel', '')
+  ]
+  const menu = parseMenu(lines)
+  assert.deepEqual(menu.options.map((o) => o.label), ['가짜 행성 유지 (Recommended)', '진짜 터미널 추가', '둘 다', 'Type something.'])
+  assert.equal(menu.options[0].desc, '새로고침해도 남아요.')
+  assert.equal(menu.question, '"안 사라지는 행성 추가 버튼"은 어느 쪽인가요? 🪐 행성 추가는 새로고침하면 없어져요.')
+  assert.equal(menu.header, '행성 추가')
+  assert.equal(menu.hint, 'Enter to select · ↑/↓ to navigate · Esc to cancel')
+  // Rows that only line up by chance are left alone.
+  assert.deepEqual(mainColumn(['a │ b', 'plain']), ['a │ b', 'plain'])
 })

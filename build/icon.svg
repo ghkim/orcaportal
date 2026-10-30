@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The app icon: the page's orrery mark on the macOS icon grid (824 square, 100 margin). -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14123a"/>
+      <stop offset="0.55" stop-color="#0a0b22"/>
+      <stop offset="1" stop-color="#050611"/>
+    </linearGradient>
+    <radialGradient id="nebula-pink" cx="0.28" cy="0.72" r="0.5">
+      <stop offset="0" stop-color="#ff7fbf" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#ff7fbf" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="nebula-blue" cx="0.76" cy="0.24" r="0.5">
+      <stop offset="0" stop-color="#6ee7ff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#6ee7ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sun" cx="0.4" cy="0.36" r="0.7">
+      <stop offset="0" stop-color="#fffaf0"/>
+      <stop offset="0.45" stop-color="#ffd9a6"/>
+      <stop offset="1" stop-color="#ff9cc6"/>
+    </radialGradient>
+    <radialGradient id="halo" r="0.5">
+      <stop offset="0" stop-color="#ffe2b8" stop-opacity="0.75"/>
+      <stop offset="0.4" stop-color="#ffd9a6" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#ffd9a6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0" x2="1" y1="0" y2="0.4">
+      <stop offset="0" stop-color="#a6ecff"/>
+      <stop offset="1" stop-color="#cdb8ff"/>
+    </linearGradient>
+    <radialGradient id="planet-cyan" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#e6fbff"/>
+      <stop offset="1" stop-color="#5fc9f0"/>
+    </radialGradient>
+    <radialGradient id="planet-pink" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#fff0f8"/>
+      <stop offset="1" stop-color="#f59ccb"/>
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000" flood-opacity="0.38"/>
+    </filter>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <clipPath id="tile">
+      <rect x="100" y="100" width="824" height="824" rx="185"/>
+    </clipPath>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sky)"/>
+  </g>
+  <g clip-path="url(#tile)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#nebula-pink)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#nebula-blue)"/>
+    <g fill="#fff">
+      <circle cx="232" cy="262" r="5" opacity="0.8"/>
+      <circle cx="760" cy="770" r="4.5" opacity="0.6"/>
+      <circle cx="700" cy="208" r="3.5" opacity="0.6"/>
+      <circle cx="300" cy="740" r="3" opacity="0.5"/>
+      <circle cx="830" cy="430" r="3" opacity="0.5"/>
+      <circle cx="180" cy="520" r="2.5" opacity="0.45"/>
+      <circle cx="560" cy="160" r="2.5" opacity="0.5"/>
+      <circle cx="610" cy="860" r="2.5" opacity="0.45"/>
+    </g>
+    <g transform="rotate(-20 512 512)" fill="none" stroke="url(#ring)">
+      <ellipse cx="512" cy="512" rx="330" ry="146" stroke-width="22" opacity="0.85"/>
+      <ellipse cx="512" cy="512" rx="198" ry="86" stroke-width="16" opacity="0.55"/>
+    </g>
+    <circle cx="512" cy="512" r="210" fill="url(#halo)"/>
+    <circle cx="512" cy="512" r="104" fill="#ffd9a6" filter="url(#glow)" opacity="0.8"/>
+    <circle cx="512" cy="512" r="100" fill="url(#sun)"/>
+    <circle cx="756" cy="345" r="50" fill="url(#planet-cyan)"/>
+    <circle cx="365" cy="610" r="36" fill="url(#planet-pink)"/>
+    <circle cx="208" cy="572" r="27" fill="#c8fff0" opacity="0.9"/>
+  </g>
+</svg>

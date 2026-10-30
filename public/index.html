@@ -20,19 +20,21 @@
       <h1>Orrery</h1>
       <span class="conn" data-state="connecting" title="연결 중"><span class="conn-dot"></span><span class="conn-text">연결 중</span></span>
     </div>
-    <nav class="filters" aria-label="상태 필터">
-      <button type="button" data-filter="all">전체 <b data-count="all">0</b></button>
-      <button type="button" data-filter="attention" class="f-attention">확인 필요 <b data-count="attention">0</b></button>
-      <button type="button" data-filter="working" class="f-working">작업 중 <b data-count="working">0</b></button>
-      <button type="button" data-filter="done" class="f-done">완료 <b data-count="done">0</b></button>
-    </nav>
-    <div class="tools">
+    <div class="middle">
+      <nav class="filters" aria-label="상태 필터">
+        <button type="button" data-filter="all">전체 <b data-count="all">0</b></button>
+        <button type="button" data-filter="attention" class="f-attention">확인 필요 <b data-count="attention">0</b></button>
+        <button type="button" data-filter="working" class="f-working">작업 중 <b data-count="working">0</b></button>
+        <button type="button" data-filter="done" class="f-done">완료 <b data-count="done">0</b></button>
+      </nav>
       <span class="search-wrap">
         <input type="search" class="search" placeholder="찾기 · Enter로 이동" aria-label="세션 찾기, Enter로 찾은 곳으로 이동">
         <span class="search-hint" aria-live="polite" hidden></span>
       </span>
       <label class="toggle" title="질문이 뜨거나 작업이 끝난 세션으로 자동으로 이동해요"><input type="checkbox" class="auto-follow"> 자동 이동</label>
       <label class="toggle" title="에이전트 없이 셸만 열린 터미널도 보여줘요 (은하에선 작은 행성)"><input type="checkbox" class="show-shells"> 셸</label>
+    </div>
+    <div class="tools">
       <div class="seg size-seg" role="group" aria-label="카드 크기">
         <button type="button" data-size="s">작게</button>
         <button type="button" data-size="m">보통</button>
@@ -83,6 +85,7 @@
             <span data-status="new"><i class="dot"></i>새 결과</span>
             <span data-status="done"><i class="dot"></i>완료</span>
           </div>
+          <button type="button" class="gx-chip gx-birth-btn" aria-expanded="false" title="새 별 만들기: 새 프로젝트 (C)">✨ 새 별 <kbd class="key">C</kbd></button>
           <button type="button" class="gx-chip gx-guide-btn" aria-expanded="false" title="보는 법 (I)">보는 법 <kbd class="key">I</kbd></button>
           <button type="button" class="gx-chip gx-log-btn" aria-expanded="false" title="우주 도감 (L)">📖 도감 <kbd class="key">L</kbd></button>
         </div>
@@ -91,6 +94,7 @@
     <button type="button" class="pane-toggle" aria-expanded="false" title="세션 패널 열기"><span aria-hidden="true"></span></button>
     <aside class="gx-report" aria-label="항성 보고" aria-live="polite" hidden></aside>
     <aside class="gx-log" aria-label="우주 도감" hidden></aside>
+    <form class="gx-birth" aria-label="새 별 만들기" autocomplete="off" hidden></form>
     <div class="gx-confirm" role="alertdialog" aria-labelledby="cf-title" hidden></div>
     <div class="pane">
       <div class="pane-notice" hidden></div>

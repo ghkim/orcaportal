@@ -162,6 +162,10 @@ button:disabled { cursor: default; opacity: 0.55; }
   border-bottom: 1px solid var(--border);
 }
 .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
+/* In the Mac app the window has no title bar: the top bar leaves room for the window's
+   buttons and moves the window when dragged. */
+body.in-app .top { padding-left: 88px; -webkit-app-region: drag; }
+body.in-app .top :is(button, input, label, a, select, .search-wrap) { -webkit-app-region: no-drag; }
 .brand h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
 .logo { display: block; width: 22px; height: 22px; border-radius: 6px; }
 .conn { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
@@ -184,7 +188,17 @@ button:disabled { cursor: default; opacity: 0.55; }
 .filters .f-attention b { color: var(--amber); }
 .filters .f-working b { color: var(--blue); }
 .filters .f-done b { color: var(--green); }
+.middle { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* Wide enough: the filters, search and toggles sit in the middle, the brand left, the buttons right.
+   The grid view's card-size buttons need more room before they fit beside them. */
+@media (min-width: 1150px) {
+  .top { display: grid; grid-template-columns: minmax(max-content, 1fr) auto minmax(max-content, 1fr); }
+  .tools { justify-self: end; }
+}
+@media (min-width: 1150px) and (max-width: 1339px) {
+  body[data-view='grid'] .top { display: flex; }
+}
 .search {
   width: 220px;
   max-width: 100%;
@@ -304,7 +318,7 @@ button:disabled { cursor: default; opacity: 0.55; }
 .menu-q { font-weight: 600; margin-bottom: 8px; }
 .menu-hint { color: var(--faint); font-size: 12px; margin-top: 6px; }
 .opts { display: flex; flex-direction: column; gap: 4px; }
-.opts.compact { flex-direction: row; flex-wrap: wrap; justify-content: flex-end; }
+.opts.compact { align-items: stretch; }
 .opt {
   display: flex;
   align-items: baseline;
@@ -319,6 +333,9 @@ button:disabled { cursor: default; opacity: 0.55; }
 .opt:hover:not(:disabled) { border-color: var(--amber); }
 .opt.current { border-color: var(--amber); box-shadow: inset 3px 0 0 var(--amber); }
 .opt.sending { opacity: 1; border-color: var(--accent); }
+/* Picked with the arrow keys, waiting for Enter. */
+.opt.picked { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--panel)); box-shadow: 0 0 0 1px var(--accent), 0 0 12px color-mix(in srgb, var(--accent) 45%, transparent); }
+.opt.picked kbd { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .opt kbd {
   flex: none;
   min-width: 18px;
@@ -338,8 +355,12 @@ button:disabled { cursor: default; opacity: 0.55; }
 .card:not(.expanded) .menu-q { margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .card:not(.expanded) .opt { padding: 4px 8px; }
 .card:not(.expanded) .opts { gap: 3px; }
-.opts.compact .opt { max-width: 260px; padding: 4px 8px; }
+/* In the report and the attention band: one option a row, number, label, and its
+   description on a faint line under the label. */
+.opts.compact .opt { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 8px; padding: 5px 9px; }
 .opts.compact .opt-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.opts.compact .opt-desc { grid-column: 2; margin: 1px 0 0; padding: 0; overflow: hidden; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.opts.compact .opt.submit { display: block; text-align: center; }
 .opt.submit { justify-content: center; font-weight: 600; }
 
 .reply { display: flex; align-items: flex-end; gap: 4px; padding: 8px; border-top: 1px solid var(--border); }
@@ -580,7 +601,7 @@ kbd.key {
   .top { position: static; padding: 10px 16px; }
   .help-btn { display: none; }
   .search { width: 100%; }
-  .tools { width: 100%; }
+  .middle, .tools { width: 100%; }
   .att { grid-template-columns: 1fr; gap: 6px; }
   .opts.compact { justify-content: flex-start; }
   .card.expanded { inset: 0; border-radius: 0; }
@@ -1040,6 +1061,8 @@ body[data-view='galaxy'] .gx-hud { display: flex; flex-direction: column; justif
 .palette-empty { padding: 28px; color: rgb(200 205 240 / 50%); text-align: center; }
 .palette-foot { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 10px 18px; border-top: 1px solid rgb(170 160 255 / 12%); color: rgb(200 205 240 / 50%); font-size: 11.5px; }
 .sound-btn[aria-pressed='true'] { color: var(--accent); }
+/* Sound is on, but another open Orrery page is the one playing it. */
+.sound-btn.elsewhere { color: rgb(200 205 240 / 45%); }
 @media (prefers-reduced-motion: reduce) {
   .palette, .palette-panel { transition-duration: 0.01s; }
   .palette-panel::before, .palette-results.intro .palette-item { animation: none; opacity: 1; transform: none; }
@@ -1209,7 +1232,7 @@ body[data-view='galaxy'] ::-webkit-scrollbar-track { background: transparent; }
 body[data-view='galaxy'] ::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 8px; background: linear-gradient(180deg, rgb(110 231 255 / 40%), rgb(167 139 250 / 40%)) padding-box; }
 
 /* ---------- play: the log, the black hole's question, a planet in hand ---------- */
-.gx-log, .gx-confirm { display: none; }
+.gx-log, .gx-confirm, .gx-birth { display: none; }
 .gx-chip {
   display: inline-flex;
   align-items: center;
@@ -1278,6 +1301,39 @@ body[data-view='galaxy'] .gx-log:not([hidden]) {
 .lg-badges b { font-family: var(--display-ko); font-weight: 400; font-size: 12.5px; letter-spacing: -0.02em; }
 .lg-badges small { color: var(--faint); font-size: 11px; line-height: 1.35; }
 .lg-how { margin: 0; padding: 10px 14px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; line-height: 1.6; }
+/* Stardust: what the agents' tokens have piled up, what it buys, and what opens up next. */
+.lg-dust { padding: 12px 14px; border-bottom: 1px solid var(--border); background: linear-gradient(135deg, rgb(255 226 168 / 6%), rgb(200 216 255 / 5%)); }
+.lg-dust-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.lg-dust-head b { color: #ffe2a8; font-family: var(--display-ko); font-weight: 400; font-size: 15px; letter-spacing: -0.01em; text-shadow: 0 0 12px rgb(255 226 168 / 45%); }
+.lg-dust-head small { color: var(--muted); font-size: 11.5px; }
+.lg-dust-events { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.lg-dust-events button {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid rgb(255 226 168 / 30%);
+  border-radius: 10px;
+  background: rgb(255 226 168 / 6%);
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.lg-dust-events button:hover:not(:disabled) { border-color: rgb(255 226 168 / 70%); background: rgb(255 226 168 / 12%); box-shadow: 0 0 14px rgb(255 226 168 / 18%); }
+.lg-dust-events button:disabled { opacity: 0.4; cursor: default; }
+.lg-dust-events i { font-style: normal; font-size: 15px; }
+.lg-dust-events small { color: #ffe2a8; font-family: var(--display); font-size: 11px; }
+.lg-dust h4 { margin: 12px 0 6px; color: var(--muted); font-family: var(--display-ko); font-weight: 400; font-size: 12px; }
+.lg-unlocks { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.lg-unlocks li { display: grid; grid-template-columns: 20px auto 1fr; align-items: baseline; column-gap: 6px; font-size: 12.5px; opacity: 0.75; }
+.lg-unlocks li.open { opacity: 1; }
+.lg-unlocks li.open i { color: #ffe2a8; text-shadow: 0 0 8px rgb(255 226 168 / 60%); }
+.lg-unlocks i { font-style: normal; font-size: 12px; }
+.lg-unlocks b { font-family: var(--display-ko); font-weight: 400; letter-spacing: -0.02em; }
+.lg-unlocks small { color: var(--faint); font-size: 11px; text-align: right; }
+.lg-bar { grid-column: 2 / -1; height: 3px; margin-top: 3px; border-radius: 2px; background: linear-gradient(90deg, #ffe2a8 var(--at), rgb(255 255 255 / 10%) var(--at)); }
 
 /* Asked just above the black hole, which sits low in the free part of the view. */
 body[data-view='galaxy'] .gx-confirm:not([hidden]) {
@@ -1307,6 +1363,91 @@ body[data-view='galaxy'] .gx-confirm:not([hidden]) {
 .cf-yes { border: 1px solid rgb(255 170 200 / 50%); background: linear-gradient(135deg, rgb(255 140 180 / 28%), rgb(167 139 250 / 28%)); color: #ffe8f2; }
 .cf-yes:hover { background: linear-gradient(135deg, rgb(255 140 180 / 42%), rgb(167 139 250 / 42%)); }
 .cf-actions button:focus-visible { outline: 2px solid var(--holo-cyan); outline-offset: 2px; }
+
+/* A new star: the form for a new project, over the middle of the galaxy. */
+body[data-view='galaxy'] .gx-birth:not([hidden]) {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 4;
+  display: grid;
+  gap: 10px;
+  width: min(400px, calc(100% - 32px));
+  padding: 14px 16px 16px;
+  border: 1px solid rgb(255 226 168 / 32%);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgb(18 14 34 / 90%), rgb(8 6 18 / 95%));
+  box-shadow: 0 0 44px rgb(255 226 168 / 14%), 0 24px 70px rgb(0 0 0 / 55%);
+  pointer-events: auto;
+  backdrop-filter: blur(16px);
+  transform: translate(-50%, -50%);
+  animation: nb-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes nb-in { from { opacity: 0; transform: translate(-50%, calc(-50% + 10px)) scale(0.98); } }
+.gx-birth .lg-head { padding: 0 0 8px; }
+.gx-birth .lg-head b { color: #ffe9c2; }
+.gx-birth p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.gx-birth .nb-where { min-height: 1.5em; color: var(--faint); font-size: 12px; overflow-wrap: anywhere; }
+.gx-birth .nb-where.warn { color: #ffc2b8; }
+.nb-name, .nb-prompt {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 4%);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  resize: vertical;
+}
+.nb-name { font-family: var(--display-ko); font-size: 15px; letter-spacing: -0.02em; }
+.nb-name:focus, .nb-prompt:focus { outline: none; border-color: rgb(255 226 168 / 55%); box-shadow: 0 0 0 3px rgb(255 226 168 / 10%); }
+.nb-prompt:disabled { opacity: 0.4; }
+.nb-agents { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; padding: 0; border: 0; }
+.nb-agents legend { float: left; margin-right: 4px; color: var(--faint); font-size: 12px; }
+.nb-agent { position: relative; cursor: pointer; }
+.nb-agent input { position: absolute; opacity: 0; pointer-events: none; }
+.nb-agent span {
+  display: inline-block;
+  padding: 4px 12px;
+  border: 1px solid rgb(140 170 255 / 18%);
+  border-radius: 999px;
+  color: var(--muted);
+  font-family: var(--display-ko);
+  font-size: 12.5px;
+  letter-spacing: -0.02em;
+}
+.nb-agent input:checked + span { border-color: rgb(255 226 168 / 55%); background: rgb(255 226 168 / 12%); color: #ffe9c2; }
+.nb-agent input:focus-visible + span { outline: 2px solid var(--holo-cyan); outline-offset: 2px; }
+.nb-go:disabled { opacity: 0.45; cursor: default; }
+.nb-folder { display: flex; align-items: center; gap: 8px; }
+.nb-folder select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 4%);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.rp-new {
+  margin-left: auto;
+  align-self: center;
+  padding: 3px 10px;
+  border: 1px solid rgb(255 226 168 / 30%);
+  border-radius: 999px;
+  background: rgb(255 226 168 / 8%);
+  color: #ffe9c2;
+  font: inherit;
+  font-family: var(--display-ko);
+  font-size: 11.5px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.rp-new:hover { background: rgb(255 226 168 / 16%); }
 
 /* A planet picked up for the black hole: a glowing orb with its name, under the pointer. */
 .gx-ghost { position: absolute; top: 0; left: 0; z-index: 2; width: 0; height: 0; pointer-events: none; will-change: transform; }
@@ -1391,6 +1532,10 @@ body[data-view='galaxy'] .gx-confirm:not([hidden]) {
   cursor: pointer;
 }
 .st-reset:hover { color: var(--text); border-color: rgb(110 231 255 / 45%); }
+/* Admin test mode: a wrap of buttons and a note under them. */
+.st-admin { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 6px; }
+.st-admin .st-reset { margin-left: 0; }
+.st-note { display: block; color: var(--faint); font-size: 11px; line-height: 1.5; }
 
 /* ---------- search: what it finds lights up ---------- */
 
@@ -1440,3 +1585,38 @@ body[data-view='galaxy'] .gx-confirm:not([hidden]) {
 }
 /* Star names step back so the found planets' names read on their own. */
 .gx-searching .gx-star span { opacity: 0.4; transition: opacity 0.4s ease; }
+
+/* Settings: a switch per sound and per decoration. */
+.st-row.st-sound { grid-template-columns: auto 1fr 104px 40px; }
+.st-row.st-decor { grid-template-columns: auto auto 1fr; cursor: pointer; }
+.st-row.st-decor small { color: var(--faint); font-size: 11px; text-align: right; }
+.st-row.st-decor.locked { cursor: default; }
+.st-row.st-decor.locked span { color: var(--faint); }
+.st-row.off span, .st-row.off output { opacity: 0.4; }
+.st-row input[type='range']:disabled { opacity: 0.35; cursor: default; }
+.st-switch {
+  appearance: none;
+  position: relative;
+  width: 26px;
+  height: 15px;
+  margin: 0;
+  border: 1px solid rgb(140 170 255 / 28%);
+  border-radius: 999px;
+  background: rgb(10 14 30 / 80%);
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+.st-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), background 0.2s;
+}
+.st-switch:checked { border-color: rgb(185 168 255 / 70%); background: rgb(120 100 230 / 45%); }
+.st-switch:checked::after { transform: translateX(11px); background: #e6deff; box-shadow: 0 0 6px rgb(185 168 255 / 70%); }
+.st-switch:focus-visible { outline: 2px solid rgb(110 231 255 / 60%); outline-offset: 2px; }

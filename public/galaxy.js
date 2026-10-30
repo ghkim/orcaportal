@@ -11,8 +11,15 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 const GALAXY_RADIUS = 320
 const ARMS = 3
 const SPIN = 0.0145 // arm twist, radians per unit of radius
+const SPOT_CHOICES = 16 // a new star looks at this many spots of its own and takes the emptiest
+const MILESTONES = [1e7, 5e7, 1e8, 5e8, 1e9] // an app's tokens: each one passed is celebrated
+const CROWN_GLINTS = [0, 3, 5, 7, 9, 12] // glints in a star's crown, by milestones passed
+const WARMUP_MS = 60_000 // tokens still being counted after the page opens: no celebrations yet
 const DISC_SPIN = 0.012 // galaxy rotation, radians per second (about 9 minutes a turn)
+const UP = new THREE.Vector3(0, 1, 0)
 const OVERVIEW_DIR = new THREE.Vector3(0, 0.6, 0.8).normalize()
+const PIXEL_BUDGET = 3.7e6 // about 2560×1440 drawn pixels
+const DISK_DAYS = [2.5, 7] // a new star's dusty disc: thick until here, gone by here
 const LABEL_NEAR = 95 // planet names show once the camera is this close to their system
 const FLY_MS = 1700
 const WARP_MS = 2600 // jumping to another app's system takes the warp drive
@@ -35,6 +42,8 @@ const SOFTEN = 4
 const MAX_THROW = 320
 const AIM_STEPS = 90 // the predicted path: 3 seconds, 30 points a second
 const TRAIL = 48
+// A thrown comet takes two of these: its head, and the shade its tail fades into.
+const COMET_COLORS = ['#ff9fd0', '#9fe8ff', '#ffd27a', '#b9a6ff', '#8fffc6', '#ffb38a', '#ff8fa3', '#a6c8ff', '#f0ff9f']
 const CATCH_PX = 44
 const HOLE_PX = 80 // the black hole's radius on screen
 const HOLE_DEPTH = 20
@@ -76,7 +85,7 @@ const UNKNOWN_STAR = new THREE.Color('#f4f2ff') // until a star's colour is know
 // onPlay hears about play (a meteor caught, a comet swallowed) for the page's log.
 // onClean is asked when a planet is dropped into the black hole; the page confirms
 // with the user, closes the terminal and then calls swallow(), or cancelClean().
-export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOverview, onPlay, onClean }) {
+export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSound, onOverview, onPlay, onClean, onRemnant, spots: knownSpots = {}, onSpot, onGlide, onMilestone }) {
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
@@ -148,8 +157,18 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   const disc = new THREE.Group()
   scene.add(disc)
   const clouds = armNebulae(tex.nebula)
+  // Decorations the viewer can switch off one by one in the settings.
+  // Supernova remnants turn with the disc; the others sit in the sky around it.
+  const jets = coreJets(tex.glow)
+  const decor = { magellan: magellanicClouds(tex, pointUniforms), remnants: new THREE.Group(), jets: jets.group }
+  scene.add(decor.magellan, decor.jets)
+  disc.add(decor.remnants)
+  let jetLevel = 0
+  let decorOn = {} // which decorations the viewer left on (anything not named is on)
   const auroraRing = aurora()
-  disc.add(...galaxyDisc(pointUniforms), ...galaxyCore(tex.glow), clouds, globularClusters(pointUniforms), auroraRing)
+  const core = galaxyCore(tex.glow)
+  let breathAt = 0 // where the core is in its breathing, in radians
+  disc.add(...galaxyDisc(pointUniforms), ...core, clouds, globularClusters(pointUniforms), auroraRing)
   const hole = blackHole(tex.thinRing)
   camera.add(hole.group)
   let nextMeteor = 8 + Math.random() * 12
@@ -160,6 +179,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   const bursts = [] // flashes from catches and collisions
 
   const systems = new Map() // app name -> system
+  const spots = new Map(Object.entries(knownSpots)) // app name -> which of its spots it took
   const planets = new Map() // terminal handle -> planet
   let order = []
   let layoutKey = ''
@@ -170,10 +190,16 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   const spotPos = new THREE.Vector3()
   let hovered = null
   let follow = null // system the camera rides along with
+  let watchKey = null // what the page was last told about it
+  let watchedAt = 0
   let flight = null
   let area = { x: 0, y: 0, width: 1, height: 1 }
   let areaGoal = null // the pane slides in and out; the view centre follows smoothly
   let size = { width: 1, height: 1 }
+  let quality = 1 // eased down when frames run slow, back up when there's room
+  let frameEma = 0
+  let frameBusy = false
+  let qualityAt = performance.now() + 4000 // let the first heavy frames (shader builds) pass
   let active = false
   let lastFrame = 0
   let lastInput = 0
@@ -188,6 +214,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   let glow = BLOOM // the viewer can turn the bloom and the exposure down (or up)
   let busyAgents = 0 // agents working right now, for the aurora
   let auroraLevel = 0
+  let auroraUntil = 0 // an aurora bought with stardust lasts until then (scene time)
+  const openedAt = performance.now()
   let auroraSeen = false
   let hold = null // a press that may turn into a throw or a grab
   let aim = null // pulling back a comet
@@ -320,9 +348,10 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     }
     // Whatever was under the pointer may be gone; look again on the next frame.
     pointerDirty = Boolean(pointer)
-    apps.forEach((app, i) => {
+    const homes = homesOf(apps, (app) => byApp.get(app).some((i) => i.pinned))
+    apps.forEach((app) => {
       const system = systems.get(app) || createSystem(app)
-      system.home.copy(homeOf(i, apps.length, app))
+      system.home.copy(homes.get(app))
       if (!system.placed) {
         system.group.position.copy(system.home)
         system.placed = true
@@ -351,13 +380,16 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     for (const m of planet.moons) m.glint.material.dispose()
     planet.satellite?.light.material.dispose()
     for (const p of planet.probes.values()) p.glow.material.dispose()
+    planet.aura?.material.dispose()
+    planet.ring?.material.dispose()
   }
 
   function disposeSystem(system) {
     system.label.element.remove()
     for (const planet of system.planets) planet.label.element.remove()
     system.core.material.dispose()
-    for (const s of [system.glow, system.corona, system.spikes, system.spikes2, ...system.beacons, ...system.sparkles.map((x) => x.sprite)]) s.material.dispose()
+    system.disk?.material.dispose()
+    for (const s of [system.glow, system.corona, system.spikes, system.spikes2, ...system.beacons, ...system.sparkles.map((x) => x.sprite), ...system.crown.children]) s.material.dispose()
     for (const c of system.companions) {
       c.body.material.dispose()
       c.halo.material.dispose()
@@ -676,11 +708,10 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     meteors.push({ line, head, tint, from, velocity, begin: performance.now() + delay, duration: 1000 + Math.random() * 600 })
   }
 
-  function meteorShower() {
+  function meteorShower(count = 4 + Math.floor(Math.random() * 4)) {
     if (reduceMotion || !active) return
     const { right, up } = cameraBasis()
     const dir = right.multiplyScalar(Math.random() < 0.5 ? -1 : 1).addScaledVector(up, -0.6).normalize()
-    const count = 4 + Math.floor(Math.random() * 4)
     for (let i = 0; i < count; i++) {
       shootingStar({
         velocity: dir.clone().multiplyScalar(420 + Math.random() * 140),
@@ -715,6 +746,62 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     }
   }
 
+  // ---------- stardust ----------
+
+  // The page pays for these with the stardust that agents' tokens pile up. False when
+  // nothing can be shown right now (another view, or reduced motion).
+  function spend(kind) {
+    if (reduceMotion || !active) return false
+    if (kind === 'shower') meteorShower(16)
+    else if (kind === 'aurora') auroraUntil = time + 120
+    else if (kind === 'swarm') cometSwarm()
+    else if (kind === 'fireworks') {
+      for (let i = 0; i < 7; i++) setTimeout(() => active && farNova({ show: true }), i * (550 + Math.random() * 500))
+    }
+    return true
+  }
+
+  // Six comets in pastel colours, one after another from beside the viewer, each steered
+  // through the galaxy's pull into a planet on screen (the core if there are none).
+  function cometSwarm() {
+    const onScreen = [...planets.values()].filter((planet) => {
+      if (planet.swallowing) return false
+      const p = planet.holder.getWorldPosition(tmp).project(camera)
+      return p.z < 1 && Math.abs(p.x) < 0.9 && Math.abs(p.y) < 0.9
+    })
+    const targets = onScreen.sort(() => Math.random() - 0.5).slice(0, 6)
+    for (let i = 0; i < 6; i++) setTimeout(() => active && swarmComet(targets[i % Math.max(1, targets.length)]), i * 420)
+  }
+
+  function swarmComet(planet) {
+    if (planet && planets.get(planet.handle) !== planet) return
+    const { forward, right, up } = cameraBasis()
+    const goal = planet ? planet.holder.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3()
+    const range = camera.position.distanceTo(goal)
+    const from = camera.position
+      .clone()
+      .addScaledVector(forward, range * 0.12)
+      .addScaledVector(right, (Math.random() < 0.5 ? -1 : 1) * range * (0.35 + Math.random() * 0.25))
+      .addScaledVector(up, range * (0.1 + Math.random() * 0.25))
+    const v = goal.clone().sub(from).setLength(Math.min(MAX_THROW, 60 + range * 0.5))
+    const reach = planet ? 1.1 * planet.size + 0.3 : 9
+    steer({ at: goal, reach, system: null, turns: Boolean(planet) }, v, from)
+    launch(from, v, cometTint(), true)
+  }
+
+  // An app's tokens passed a milestone: bursts of colour round its star.
+  function celebrate(system) {
+    const s = system.size * system.grow
+    PASTELS.forEach((color, i) => {
+      setTimeout(() => {
+        if (systems.get(system.app) !== system) return
+        const at = new THREE.Vector3((Math.random() - 0.5) * 7, Math.random() * 5, (Math.random() - 0.5) * 7).multiplyScalar(s)
+        burst(at, { color, size: 15 * s, parent: system.group, sparks: 12, ms: 1900 })
+      }, i * 380)
+    })
+    onSound?.('celebrate')
+  }
+
   // ---------- far events ----------
 
   // Now and then something happens out there: a supernova flares in the sky, or gas in an
@@ -725,14 +812,16 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     farNova()
   }
 
-  function farNova() {
+  // show: one of a stardust firework display, spread wider and up the sky, not counted as
+  // a supernova seen.
+  function farNova({ show = false } = {}) {
     const { forward, right, up } = cameraBasis()
     const group = new THREE.Group()
     group.position
       .copy(camera.position)
       .addScaledVector(forward, 2600)
-      .addScaledVector(right, (Math.random() - 0.5) * 1700)
-      .addScaledVector(up, (Math.random() - 0.3) * 900)
+      .addScaledVector(right, (Math.random() - 0.5) * (show ? 2600 : 1700))
+      .addScaledVector(up, (Math.random() - (show ? 0.1 : 0.3)) * 900)
     const tint = Math.floor(Math.random() * PASTELS.length)
     const color = new THREE.Color(PASTELS[tint])
     const core = sprite(tex.glow, 0.001, 0)
@@ -751,7 +840,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     })
     group.add(...remnant, core, spikes, shell)
     scene.add(group)
-    events.push({ kind: 'nova', parent: scene, group, core, spikes, shell, remnant, begin: time, duration: 45 })
+    events.push({ kind: 'nova', parent: scene, group, core, spikes, shell, remnant, begin: time, duration: show ? 30 : 45 })
+    if (show) return onSound?.('firework')
     onSound?.('far-nova')
     onPlay?.({ type: 'supernova' })
   }
@@ -838,6 +928,104 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     }
   }
 
+  // ---------- supernova remnants ----------
+
+  // Where an app's star died, a shell of gas stays for three days: pink and teal threads
+  // like the Veil, a faint glow inside and a neutron star blinking at the heart. It spreads
+  // slowly and fades out over the last day and a half.
+  const REMNANT_MS = 3 * 86_400_000
+  const remnantTex = [remnantTexture(5), remnantTexture(17), remnantTexture(31)]
+  const remnants = new Map() // app@diedAt -> its sprites
+
+  function setRemnants(list) {
+    const keep = new Set()
+    for (const remnant of list) {
+      const key = `${remnant.app}@${remnant.diedAt}`
+      keep.add(key)
+      if (!remnants.has(key)) remnants.set(key, makeRemnant(remnant))
+    }
+    for (const key of remnants.keys()) if (!keep.has(key)) dropRemnant(key)
+  }
+
+  function makeRemnant({ at, color, diedAt, seed }) {
+    const group = new THREE.Group()
+    group.position.fromArray(at)
+    const pink = sprite(remnantTex[seed % 3], 1, 0)
+    pink.material.color.set(color).lerp(new THREE.Color('#ff9fd0'), 0.6)
+    pink.material.rotation = (seed % 628) / 100
+    const teal = sprite(remnantTex[(seed + 1) % 3], 1, 0)
+    teal.material.color.set('#8fe8ff')
+    teal.material.rotation = ((seed >>> 5) % 628) / 100
+    const haze = sprite(tex.nebula[seed % tex.nebula.length], 1, 0)
+    haze.material.color.set('#c9b4ff')
+    const pulsar = sprite(tex.glow, 1, 0)
+    pulsar.material.color.set('#e6f4ff')
+    group.add(haze, pink, teal, pulsar)
+    decor.remnants.add(group)
+    return { group, pink, teal, haze, pulsar, diedAt, phase: (seed % 100) / 16, spin: seed % 2 ? 0.012 : -0.012 }
+  }
+
+  function dropRemnant(key) {
+    const remnant = remnants.get(key)
+    decor.remnants.remove(remnant.group)
+    for (const part of remnant.group.children) part.material.dispose()
+    remnants.delete(key)
+  }
+
+  function stepRemnants(dt) {
+    if (!remnants.size || !decor.remnants.visible) return
+    const now = Date.now()
+    for (const [key, r] of remnants) {
+      const age = now - r.diedAt
+      if (age > REMNANT_MS) {
+        dropRemnant(key)
+        continue
+      }
+      const k = age / REMNANT_MS
+      // Settles in as the blast clears, fades over the last day and a half.
+      const show = smooth(0, 20_000, age) * (1 - smooth(0.5, 1, k))
+      const size = 26 + 22 * Math.sqrt(k)
+      const d = r.group.getWorldPosition(tmp).distanceTo(camera.position)
+      const near = smooth(size * 0.3, size * 1.2, d)
+      const breathe = 0.85 + 0.15 * Math.sin(time * 0.3 + r.phase)
+      r.pink.scale.setScalar(size)
+      r.pink.material.opacity = 0.5 * show * near * breathe
+      r.pink.material.rotation += r.spin * dt
+      r.teal.scale.setScalar(size * 0.82)
+      r.teal.material.opacity = 0.38 * show * near * (1.7 - breathe)
+      r.teal.material.rotation -= r.spin * 0.7 * dt
+      r.haze.scale.setScalar(size * 0.9)
+      r.haze.material.opacity = 0.12 * show * near
+      // The neutron star at the heart flashes like a lighthouse, a few times a second.
+      r.pulsar.scale.setScalar(Math.max(1.2, d * 0.006))
+      r.pulsar.material.opacity = show * (0.3 + 0.7 * Math.pow(Math.max(0, Math.sin(time * 8.2 + r.phase)), 8))
+    }
+  }
+
+  // Jets from the galactic core: while agents work, two thin beams shoot out of the core's
+  // poles with knots of light running up them. More agents, brighter and longer.
+  function stepJets(dt) {
+    jetLevel += (Math.min(1, busyAgents / 3) - jetLevel) * Math.min(1, dt * 0.4)
+    jets.group.visible = decorOn.jets !== false && jetLevel > 0.01
+    if (!jets.group.visible) return
+    const length = 130 + 130 * jetLevel
+    // Each beam is a flat strip that turns about its own axis to face the camera.
+    const facing = Math.atan2(camera.position.x, camera.position.z)
+    for (const beam of jets.beams) {
+      beam.rotation.set(0, facing, beam.userData.dir > 0 ? 0 : Math.PI)
+      beam.scale.set(9 + 5 * jetLevel, length, 1)
+      beam.position.y = (beam.userData.dir * length) / 2
+      beam.material.opacity = jetLevel * (0.5 + 0.06 * Math.sin(time * 7 + beam.userData.dir))
+    }
+    for (const knot of jets.knots) {
+      const u = knot.userData
+      u.t = (u.t + dt * u.speed) % 1
+      knot.position.y = u.dir * u.t * length
+      knot.scale.setScalar(2.5 + 4 * u.t)
+      knot.material.opacity = jetLevel * Math.sin(Math.PI * u.t) * 0.55
+    }
+  }
+
   // ---------- play ----------
 
   // Comets the viewer throws: pull back and let go. Every star and the galactic core pull
@@ -845,15 +1033,120 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   const aimLine = new THREE.Line(lineGeometry(AIM_STEPS), glowLine())
   const pullLine = new THREE.Line(lineGeometry(2), new THREE.LineBasicMaterial({ color: '#8fa4d8', transparent: true, opacity: 0.45, depthWrite: false }))
   const aimHead = sprite(tex.glow, 3, 0.95)
-  aimHead.material.color.set('#e6f0ff')
-  for (const part of [aimLine, pullLine, aimHead]) {
+  // A ring round whatever the aimed throw will fall into.
+  const aimMark = sprite(tex.ring, 1, 0)
+  aimMark.material.depthTest = false
+  aimMark.renderOrder = 40
+  for (const part of [aimLine, pullLine, aimHead, aimMark]) {
     part.frustumCulled = false
     part.visible = false
   }
-  scene.add(aimLine, pullLine, aimHead)
+  scene.add(aimLine, pullLine, aimHead, aimMark)
   const spot = new THREE.Vector3()
   const proj1 = new THREE.Vector3()
   const proj2 = new THREE.Vector3()
+  const screenA = new THREE.Vector3()
+  const screenB = new THREE.Vector3()
+  const shade = new THREE.Color()
+  let lastTint = -1
+
+  // Every throw gets its own colours, never the same head twice running. Now and then one
+  // trails a whole rainbow.
+  function cometTint() {
+    let i
+    do i = Math.floor(Math.random() * COMET_COLORS.length)
+    while (i === lastTint)
+    lastTint = i
+    const tail = COMET_COLORS[(i + 2 + Math.floor(Math.random() * 4)) % COMET_COLORS.length]
+    return { head: new THREE.Color(COMET_COLORS[i]), tail: new THREE.Color(tail), rainbow: Math.random() < 0.1 ? Math.random() : -1 }
+  }
+
+  // The colour k of the way back from the head (0) to the tail's end (1).
+  function tintAt(tint, k, out) {
+    if (tint.rainbow >= 0) return out.setHSL((tint.rainbow + k * 0.85 + time * 0.15) % 1, 0.85, 0.72)
+    return out.copy(tint.head).lerp(tint.tail, Math.min(1, k * 1.3))
+  }
+
+  // How far one screen pixel reaches this far in front of the camera.
+  function worldPerPixel(depth) {
+    return (2 * depth * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / Math.max(1, canvas.clientHeight)
+  }
+
+  function toScreen(at, rect, out) {
+    out.copy(at).project(camera)
+    return out.set(((out.x + 1) * rect.width) / 2, ((1 - out.y) * rect.height) / 2, 0)
+  }
+
+  // The first thing a throw from the aim's start, heading (sx, sy) across the screen, would
+  // seem to run into: the core, a star or a planet.
+  function aimedAt(sx, sy) {
+    const rect = canvas.getBoundingClientRect()
+    const forward = camera.getWorldDirection(tmp2)
+    toScreen(aim.from, rect, screenA)
+    let best = null
+    // system: the star itself; null for the core and for planets. turns: moves with the disc.
+    const consider = (at, radius, reach, system = null, turns = true) => {
+      const depth = tmp.subVectors(at, camera.position).dot(forward)
+      if (depth <= 1) return
+      toScreen(at, rect, screenB)
+      const wx = screenB.x - screenA.x
+      const wy = screenB.y - screenA.y
+      const along = wx * sx + wy * sy
+      const off = Math.abs(wx * sy - wy * sx)
+      if (along < 6 || off > Math.max(12, (1.3 * radius) / worldPerPixel(depth)) + along * 0.03) return
+      if (!best || along < best.along) best = { at: at.clone(), along, reach, system, turns }
+    }
+    consider(spot.set(0, 0, 0), 12, 9, null, false)
+    for (const system of systems.values()) {
+      const s = system.size * system.grow
+      consider(system.group.getWorldPosition(spot), 2.5 * s, 1.6 * s, system)
+    }
+    for (const planet of planets.values()) {
+      if (!planet.swallowing) consider(planet.holder.getWorldPosition(spot), 1.1 * planet.size + 0.3, 1.1 * planet.size + 0.3)
+    }
+    return best
+  }
+
+  // The galaxy turns while a comet flies: everything but the core moves on with the disc.
+  function turnWithDisc(sources, dt) {
+    for (const source of sources) if (source.system) source.at.applyAxisAngle(UP, DISC_SPIN * dt)
+  }
+
+  // Gravity bends every path, so a throw sent straight at its target falls short or wide.
+  // Fly it ahead of time, see where it misses, and turn the heading to cancel the miss.
+  function steer(target, v, from = aim.from) {
+    const speed = v.length()
+    const p = new THREE.Vector3()
+    const velocity = new THREE.Vector3()
+    const goal = new THREE.Vector3()
+    const miss = new THREE.Vector3()
+    for (let n = 0; n < 5; n++) {
+      const sources = attractors()
+      p.copy(from)
+      velocity.copy(v)
+      goal.copy(target.at)
+      let best = Infinity
+      let bestAt = 0
+      for (let i = 1; i <= 180; i++) {
+        const hit = fall(p, velocity, 1 / 30, sources)
+        turnWithDisc(sources, 1 / 30)
+        if (target.turns) goal.applyAxisAngle(UP, DISC_SPIN / 30)
+        const gap = p.distanceTo(goal)
+        if (gap < best) {
+          best = gap
+          bestAt = i / 30
+          miss.subVectors(p, goal)
+        } else if (gap > best * 1.5 + 20) break // past it and leaving
+        if (hit) {
+          if (hit.system === target.system && (hit.system || !target.turns)) return
+          break
+        }
+      }
+      if (best < target.reach) return
+      // Moving the start velocity by dv moves the point reached at time t by about dv * t.
+      v.addScaledVector(miss, -1 / Math.max(0.2, bestAt)).setLength(speed)
+    }
+  }
 
   function attractors() {
     const list = [{ at: new THREE.Vector3(), gm: CORE_GM, reach: 9, system: null }]
@@ -901,68 +1194,110 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       Math.abs(forward.y) > 0.3 ? new THREE.Plane(new THREE.Vector3(0, 1, 0), -controls.target.y) : new THREE.Plane().setFromNormalAndCoplanarPoint(forward.negate(), controls.target)
     const from = pointOn(plane, event, new THREE.Vector3())
     if (!from || from.distanceTo(camera.position) > 3000) return false
-    aim = { plane, from, to: from.clone(), x: event.clientX, y: event.clientY, pulled: 0, v: new THREE.Vector3() }
+    aim = { plane, from, to: from.clone(), x: event.clientX, y: event.clientY, pulled: 0, v: new THREE.Vector3(), tint: cometTint() }
     controls.enabled = false
     canvas.style.cursor = 'crosshair'
     tip.hidden = true
     aimHead.position.copy(from)
+    aimHead.material.color.copy(aim.tint.head)
     aimHead.visible = aimLine.visible = pullLine.visible = true
     moveAim(event)
     return true
   }
 
   function moveAim(event) {
-    pointOn(aim.plane, event, aim.to)
-    aim.pulled = Math.hypot(event.clientX - aim.x, event.clientY - aim.y)
-    // A slingshot: it flies away from where it was pulled to, faster the further. Up
-    // close, where everything is small, a pull counts for more.
-    const reach = Math.max(1, Math.pow(400 / Math.max(1, camera.position.distanceTo(aim.from)), 0.6))
-    aim.v.subVectors(aim.from, aim.to).multiplyScalar(1.6 * reach)
-    if (aim.v.length() > MAX_THROW) aim.v.setLength(MAX_THROW)
+    // Pulled out past the horizon of the disc's plane: carry on in one facing the camera.
+    if (!pointOn(aim.plane, event, aim.to)) {
+      const facing = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(tmp).negate(), aim.from)
+      pointOn(facing, event, aim.to)
+    }
+    const sx = aim.x - event.clientX
+    const sy = aim.y - event.clientY
+    aim.pulled = Math.hypot(sx, sy)
+    // A slingshot: it flies away from where it was pulled to, faster the further. The pull
+    // is measured on screen, so a tug towards the horizon counts the same as one sideways;
+    // up close, where everything is small, a pull counts for more.
+    const depth = camera.position.distanceTo(aim.from)
+    const reach = Math.max(1, Math.pow(400 / Math.max(1, depth), 0.6))
+    const speed = Math.min(MAX_THROW, aim.pulled * worldPerPixel(depth) * 1.6 * reach)
+    // The screen can't show how deep a throw goes. Aimed at something, it goes for that
+    // thing, at its depth; aimed at empty space, it stays in the aiming plane.
+    const target = aim.pulled < 14 ? null : aimedAt(sx / aim.pulled, sy / aim.pulled)
+    aim.target = target
+    aim.v.subVectors(target ? target.at : aim.from, target ? aim.from : aim.to).setLength(speed)
+    if (target && speed > 1) steer(target, aim.v)
   }
 
   // The path it will take, bent by the stars, drawn while aiming.
   function stepAim() {
-    const { from, to, v } = aim
+    const { from, to, v, tint } = aim
     pullLine.geometry.attributes.position.array.set([from.x, from.y, from.z, to.x, to.y, to.z])
     pullLine.geometry.attributes.position.needsUpdate = true
     aimHead.position.copy(from)
+    if (tint.rainbow >= 0) tintAt(tint, 0, aimHead.material.color)
     aimHead.scale.setScalar(Math.max(1.4, camera.position.distanceTo(from) * 0.014) * (1 + 0.15 * Math.sin(time * 9)))
     const sources = attractors()
     const p = from.clone()
+    const last = new THREE.Vector3()
     const velocity = v.clone()
     const pos = aimLine.geometry.attributes.position
     const col = aimLine.geometry.attributes.color
+    const near = camera.position.distanceTo(from)
     let stopped = aim.pulled < 14
+    let end = null
     for (let i = 0; i < AIM_STEPS; i++) {
-      if (i && !stopped) stopped = Boolean(fall(p, velocity, 1 / 30, sources))
+      if (i && !stopped) {
+        last.copy(p)
+        const hit = fall(p, velocity, 1 / 30, sources)
+        turnWithDisc(sources, 1 / 30)
+        const planet = hit ? null : planetAlong(last, p)
+        if (planet) end = { at: planet.holder.getWorldPosition(new THREE.Vector3()), size: 6 * planet.size + 2 }
+        else if (hit) end = { at: hit.at, size: hit.system ? 10 * hit.system.size * hit.system.grow : 50 }
+        stopped = Boolean(end)
+      }
       pos.setXYZ(i, p.x, p.y, p.z)
-      const f = stopped ? 0 : Math.pow(1 - i / AIM_STEPS, 1.3) * 0.8
-      col.setXYZ(i, 0.75 * f, 0.85 * f, f)
+      // Fainter where the path runs away from the eye, brighter where it comes closer.
+      const depth = Math.min(1.25, Math.max(0.4, Math.pow(near / Math.max(1, camera.position.distanceTo(p)), 0.7)))
+      const f = stopped ? 0 : Math.pow(1 - i / AIM_STEPS, 1.3) * 0.8 * depth
+      tintAt(tint, i / AIM_STEPS, shade).lerp(WHITE, 0.25)
+      col.setXYZ(i, shade.r * f, shade.g * f, shade.b * f)
     }
     pos.needsUpdate = true
     col.needsUpdate = true
+    aimMark.visible = Boolean(end)
+    if (end) {
+      const beat = Math.sin(time * 6)
+      aimMark.position.copy(end.at)
+      aimMark.scale.setScalar(end.size * (1 + 0.12 * beat))
+      aimMark.material.opacity = 0.6 + 0.25 * beat
+      aimMark.material.color.copy(tint.head)
+    }
   }
 
   function endAim() {
     aim = null
     controls.enabled = true
     canvas.style.cursor = ''
-    aimHead.visible = aimLine.visible = pullLine.visible = false
+    aimHead.visible = aimLine.visible = pullLine.visible = aimMark.visible = false
   }
 
   function releaseAim() {
-    const { from, v, pulled } = aim
+    const { from, v, pulled, tint } = aim
     endAim()
     if (pulled < 14 || v.lengthSq() < 1) return
+    launch(from, v, tint)
+    onPlay?.({ type: 'throw' })
+  }
+
+  // gift: a comet of the stardust swarm, which the play log doesn't count.
+  function launch(from, v, tint, gift = false) {
     const head = sprite(tex.glow, 2, 0)
-    head.material.color.set('#e6f0ff')
+    head.material.color.copy(tint.head)
     const tail = new THREE.Line(lineGeometry(TRAIL), glowLine())
     tail.frustumCulled = false
     scene.add(head, tail)
-    thrown.push({ p: from.clone(), v: v.clone(), head, tail, trail: [], age: 0, end: 0 })
+    thrown.push({ p: from.clone(), v: v.clone(), head, tail, trail: [], age: 0, end: 0, tint, gift, near: camera.position.distanceTo(from) })
     onSound?.('throw')
-    onPlay?.({ type: 'throw' })
   }
 
   function stepThrown(dt) {
@@ -974,7 +1309,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
         const start = c.p.clone()
         const hit = fall(c.p, c.v, dt, sources)
         const planet = hit ? null : planetAlong(start, c.p)
-        if (hit || planet) collide(hit, planet)
+        if (hit || planet) collide(hit, planet, c.tint, c.gift)
         if (hit || planet || c.age > 30 || c.p.length() > 2400) c.end = c.age
         c.trail.unshift(c.p.clone())
         c.trail.length = Math.min(c.trail.length, TRAIL)
@@ -994,32 +1329,73 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
         const q = c.trail[Math.min(i, c.trail.length - 1)]
         pos.setXYZ(i, q.x, q.y, q.z)
         const f = i < c.trail.length ? Math.pow(1 - i / TRAIL, 1.6) : 0
-        col.setXYZ(i, 0.65 * f, 0.8 * f, f)
+        tintAt(c.tint, i / TRAIL, shade)
+        col.setXYZ(i, shade.r * f, shade.g * f, shade.b * f)
       }
       pos.needsUpdate = true
       col.needsUpdate = true
       c.head.position.copy(c.p)
-      c.head.scale.setScalar(Math.max(1.4, camera.position.distanceTo(c.p) * 0.012))
+      if (c.tint.rainbow >= 0) tintAt(c.tint, 0, c.head.material.color)
+      // Bigger as it comes towards the eye, smaller as it flies off into the deep.
+      const far = Math.max(1, camera.position.distanceTo(c.p))
+      c.head.scale.setScalar(Math.max(1.4, far * 0.012 * Math.min(2.5, Math.sqrt(c.near / far))))
       c.head.material.opacity = c.end ? 0 : Math.min(1, c.age * 4)
     }
   }
 
-  function collide(hit, planet) {
+  function collide(hit, planet, tint, gift = false) {
+    const play = gift ? () => {} : (event) => onPlay?.(event)
     if (planet) {
-      burst(new THREE.Vector3(), { color: '#e6f0ff', size: 5 * planet.size, parent: planet.holder, sparks: 6 })
+      burst(new THREE.Vector3(), { color: tint.head.clone().lerp(WHITE, 0.3), size: 5 * planet.size, parent: planet.holder, sparks: 6 })
+      strike(planet, tint.head)
       onSound?.('comet')
-      onPlay?.({ type: 'splash', app: planet.system.app })
+      play({ type: 'splash', app: planet.system.app })
     } else if (hit.system) {
       const s = hit.system.size * hit.system.grow
       burst(new THREE.Vector3(), { color: hit.system.color, size: 16 * s, parent: hit.system.group, sparks: 8 })
       hit.system.gulp = 1
       onSound?.('gulp')
-      onPlay?.({ type: 'swallow', app: hit.system.app })
+      play({ type: 'swallow', app: hit.system.app })
     } else {
-      burst(new THREE.Vector3(), { color: '#ffe9cf', size: 70, parent: disc, sparks: 12, ms: 1600 })
+      burst(new THREE.Vector3(), { color: new THREE.Color('#ffe9cf').lerp(tint.head, 0.5), size: 70, parent: disc, sparks: 12, ms: 1600 })
       onSound?.('core')
-      onPlay?.({ type: 'core' })
+      play({ type: 'core' })
     }
+  }
+
+  // A comet leaves its mark on the planet it hits: knocked a little off its orbit, set
+  // spinning and wobbling, and wrapped in a glow of the comet's colour that fades over a few
+  // minutes (hits add up, colours mix). The third hit leaves a dust ring of that colour for
+  // as long as the page is open.
+  function strike(planet, color) {
+    planet.holder.position.x += 1.4 * planet.size
+    planet.knock = 1
+    if (!planet.aura) {
+      planet.aura = sprite(tex.glow, 1, 0)
+      planet.aura.material.color.copy(color)
+      planet.holder.add(planet.aura)
+    } else planet.aura.material.color.lerp(color, 0.5)
+    planet.auraHeat = Math.min(1.6, (planet.auraHeat || 0) + 0.6)
+    planet.hits = (planet.hits || 0) + 1
+    if (planet.hits === 3 && !planet.ring) {
+      planet.ring = planetRing(hash(planet.handle), color.clone().lerp(WHITE, 0.25))
+      planet.ring.scale.setScalar(0.001)
+      planet.holder.add(planet.ring)
+      onPlay?.({ type: 'ring', app: planet.system.app, planet: planet.item.planet })
+    }
+  }
+
+  function stepStrike(planet, dt) {
+    if (planet.knock > 0.001) {
+      planet.knock *= Math.exp(-dt * 1.4)
+      planet.mesh.rotation.y += dt * 6 * planet.knock
+      planet.mesh.scale.setScalar(planet.size * (1 + 0.14 * planet.knock * Math.sin(time * 22)))
+    }
+    if (planet.auraHeat > 0.002) {
+      planet.auraHeat *= Math.exp(-dt / 180)
+      planet.aura.scale.setScalar(5 * planet.size * (1 + 0.15 * planet.auraHeat))
+      planet.aura.material.opacity = Math.min(0.55, 0.38 * planet.auraHeat) * (0.85 + 0.15 * Math.sin(time * 2))
+    } else if (planet.aura) planet.aura.material.opacity = 0
   }
 
   // A flash and a spreading ring; with sparks, a few glints flung outwards.
@@ -1380,6 +1756,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       return
     }
     const { system } = entry
+    // The page keeps the shell of gas it leaves, so it outlasts a reload.
+    const at = system.group.position.toArray().map((v) => Math.round(v * 10) / 10)
+    onRemnant?.({ app: system.app, at, color: `#${system.color.getHexString()}`, diedAt: Date.now(), seed: system.seed })
     disc.remove(system.group)
     disposeSystem(system)
     for (const s of [...entry.remnant, entry.flash, entry.shock]) s.material.dispose()
@@ -1390,14 +1769,50 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     else overview()
   }
 
-  // Apps sit on the spiral arms, spread from the core outwards in name order.
-  function homeOf(i, n, app) {
-    const h = hash(app)
-    const radius = 78 + ((i + 0.5) / n) * (GALAXY_RADIUS - 100)
-    const arm = i % ARMS
-    const angle = (arm / ARMS) * Math.PI * 2 + radius * SPIN + ((h % 1000) / 1000 - 0.5) * 0.2
-    const y = (((h >>> 10) % 1000) / 1000 - 0.5) * 8
-    return new THREE.Vector3(Math.cos(angle) * radius, y, Math.sin(angle) * radius)
+  // Apps sit on the spiral arms. Each one's place comes from its name alone, so a star stays
+  // put while other apps come and go. Pinned apps sit near the core. A star that would land
+  // on top of one already placed slides further out along its arm.
+  // Names alone scattered stars unevenly: half of them could land on one arm, bunched
+  // up. So a new star looks at a handful of spots of its own and takes the one farthest
+  // from the stars already there, and keeps that spot from then on (remembered by the
+  // page), so stars coming and going never move the others.
+  function homesOf(apps, pinned) {
+    const homes = new Map()
+    for (const app of apps) if (spots.has(app)) homes.set(app, spotOf(app, spots.get(app), pinned(app)))
+    const fresh = apps.filter((app) => !spots.has(app)).sort((a, b) => hash(a) - hash(b) || a.localeCompare(b))
+    for (const app of fresh) {
+      let best = 0
+      let room = -1
+      for (let i = 0; i < SPOT_CHOICES; i++) {
+        const spot = spotOf(app, i, pinned(app))
+        const nearest = Math.min(Infinity, ...[...homes.values()].map((other) => other.distanceTo(spot)))
+        if (nearest > room) {
+          room = nearest
+          best = i
+        }
+      }
+      spots.set(app, best)
+      onSpot?.(app, best)
+      homes.set(app, spotOf(app, best, pinned(app)))
+    }
+    return homes
+  }
+
+  // A star's i-th possible spot. along: 0 at the inner end of the arms, 1 at the rim,
+  // measured along the arm; the inner turns of a spiral are short, and spreading stars by
+  // radius instead piled them around the core. Pinned stars stay near the core. The disc
+  // is thick like a real one: up to 46 above or below near the core's bulge, thinning to
+  // 18 at the rim.
+  function spotOf(app, i, pinned) {
+    const h = mix(hash(`${app}#${i}`))
+    const along = ((h >>> 8) / 2 ** 24) * (pinned ? 0.2 : 1)
+    const radius = armRadius(along)
+    const depth = (radius - ARM_INNER) / (ARM_OUTER - ARM_INNER)
+    // Height off the disc's middle plane, from -1 to 1: most stars near it, a few far.
+    const k = hash(`${app}~height`)
+    const lift = ((k % 1000) + ((k >>> 12) % 1000)) / 1000 - 1
+    const angle = ((h % ARMS) / ARMS) * Math.PI * 2 + radius * SPIN + (((h >>> 2) % 1000) / 1000 - 0.5) * 0.2
+    return new THREE.Vector3(Math.cos(angle) * radius, lift * (46 - 28 * depth), Math.sin(angle) * radius)
   }
 
   function createSystem(app) {
@@ -1430,7 +1845,16 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     // A star with a terminal waiting on the user sends out slow amber rings.
     const beacons = [sprite(tex.thinRing, 1, 0), sprite(tex.thinRing, 1, 0)]
     for (const beacon of beacons) beacon.material.color.copy(AMBER)
-    group.add(tilt, core, corona, glow, spikes, spikes2, hit, label, ...sparkles.map((s) => s.sprite), ...beacons)
+    // A crown of glints over the star, one more for each token milestone the app has passed.
+    const crown = new THREE.Group()
+    crown.rotation.set((rand() - 0.5) * 0.4, 0, (rand() - 0.5) * 0.4)
+    for (let i = 0; i < CROWN_GLINTS.at(-1); i++) {
+      const glint = sprite(tex.spikes, 1, 0)
+      glint.material.color.set(i % 3 === 2 ? '#ffd0ec' : '#ffe2a8')
+      crown.add(glint)
+    }
+    crown.visible = false
+    group.add(tilt, core, corona, glow, spikes, spikes2, hit, label, crown, ...sparkles.map((s) => s.sprite), ...beacons)
     disc.add(group)
     const system = {
       app,
@@ -1445,6 +1869,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       label,
       sparkles,
       beacons,
+      crown,
+      tier: null, // token milestones passed, once its tokens are known
       companions: [],
       look: { angle: rand() * Math.PI, eight: rand() < 0.45, coronaSpin: (rand() - 0.5) * 0.08, spin: 0.04 + rand() * 0.1 },
       color: UNKNOWN_STAR.clone(),
@@ -1471,13 +1897,24 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   // project doesn't swallow the screen. Colour from age. Old stars also get sunspots.
   function applyStats(system, stats) {
     system.stats = stats || null
+    // The first count only sets where it stands; passing a milestone later is celebrated.
+    // Counts are still coming in for a minute after the page opens.
+    if (stats) {
+      const tier = MILESTONES.filter((m) => stats.tokens >= m).length
+      if (system.tier !== null && tier > system.tier && performance.now() - openedAt > WARMUP_MS) {
+        celebrate(system)
+        onMilestone?.(system.app, MILESTONES[tier - 1])
+      }
+      system.tier = Math.max(system.tier ?? 0, tier)
+    }
     const days = stats?.firstAt ? Math.max(0, (Date.now() - stats.firstAt) / 86_400_000) : null
     // No agent records (yet): still give each app its own place on the spectrum.
-    if (days === null) spectral(Math.expm1(((system.seed % 1000) / 1000) * SPECTRAL[SPECTRAL.length - 1][0]), system.colorGoal)
-    else spectral(days, system.colorGoal)
+    system.ageDays = days ?? Math.expm1(((system.seed % 1000) / 1000) * SPECTRAL[SPECTRAL.length - 1][0])
+    spectral(system.ageDays, system.colorGoal)
     // Stars of the same age still differ a little in hue.
     system.colorGoal.offsetHSL((((system.seed >>> 3) % 100) / 100 - 0.5) * 0.09, 0.08, 0)
     system.core.material.uniforms.spots.value = days === null ? 0 : smooth(10, 60, days) * 0.9
+    setDisk(system, days)
     const tokens = (stats?.tokens || 0) / 1e6
     const hours = (stats?.activeMs || 0) / 3.6e6
     const size = stats ? Math.min(2.3, Math.max(0.75, 0.75 + 0.2 * Math.log2(1 + tokens) + 0.08 * Math.log2(1 + hours))) : 1
@@ -1535,6 +1972,39 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       }
     })
     system.reach = radius
+    fitDisk(system)
+  }
+
+  // A star only a few days old still has the dusty disc it formed from, with dark
+  // lanes where its planets are clearing their orbits. It thins away within a week.
+  function setDisk(system, days) {
+    const fade = days === null ? 0 : 1 - smooth(DISK_DAYS[0], DISK_DAYS[1], days)
+    if (fade <= 0) {
+      if (system.disk) {
+        system.tilt.remove(system.disk)
+        system.disk.material.dispose()
+        system.disk = null
+      }
+      return
+    }
+    if (!system.disk) {
+      system.disk = new THREE.Mesh(plane, diskMaterial(pointUniforms.uTime))
+      system.disk.rotation.x = -Math.PI / 2
+      system.disk.visible = decorOn.disks !== false
+      system.tilt.add(system.disk)
+    }
+    system.disk.material.uniforms.uFade.value = fade
+    fitDisk(system)
+  }
+
+  function fitDisk(system) {
+    if (!system.disk) return
+    const u = system.disk.material.uniforms
+    const outer = system.reach + 6
+    u.uInner.value = 1.25 * system.sizeGoal * 1.6
+    u.uOuter.value = outer
+    u.uGaps.value = Array.from({ length: 8 }, (_, i) => system.planets[i]?.orbitRadius ?? 1e4)
+    system.disk.scale.setScalar(outer * 2)
   }
 
   function createPlanet(system, item) {
@@ -1683,7 +2153,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     // Another app's system: engage the warp drive. Same system: just glide over.
     const jump = !reduceMotion && follow !== system && camera.position.distanceTo(system.group.getWorldPosition(tmp)) > 60
     if (jump) {
-      onWarp?.(WARP_MS / 1000)
+      onWarp?.(WARP_MS / 1000, voiceOf(system))
       warpHud.querySelector('b').textContent = system.app
       warpHud.querySelector('small').textContent = subtitle
       warpHud.style.left = `${area.x + area.width / 2}px`
@@ -1706,11 +2176,35 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       system
     }
     follow = system
+    if (jump || reduceMotion) return
+    // Same system: a breath of air passes the way the camera moves.
+    const goal = flight.end()
+    if (goal.position.distanceTo(camera.position) > 4) onGlide?.(FLY_MS / 1000, Math.max(-1, Math.min(1, goal.target.clone().project(camera).x)))
+  }
+
+  // What the music hears about a star: how old it looks (0 young and blue … 1 old and red),
+  // whether its agents are at work, how much work went in (0 … 1, a hundred thousand
+  // tokens to a hundred million), and a seed so stars of one age still differ.
+  function voiceOf(system) {
+    const tokens = system.stats?.tokens || 0
+    const size = tokens ? Math.min(1, Math.max(0, Math.log10(tokens / 1e5) / 3)) : 0.4
+    return { warmth: Math.min(1, Math.log1p(system.ageDays ?? 0) / Math.log1p(120)), busy: system.busy >= 0.5, size, seed: system.seed }
+  }
+
+  // Tells the page when the camera takes up with another star, or that star's agents start
+  // or stop work.
+  function tellWatch() {
+    const voice = follow && voiceOf(follow)
+    const key = voice ? `${follow.app}|${voice.busy}|${voice.warmth.toFixed(2)}|${voice.size.toFixed(1)}` : ''
+    if (key === watchKey) return
+    watchKey = key
+    onWatch?.(voice)
   }
 
   function overview() {
     follow = null
     const distance = overviewDistance()
+    if (!reduceMotion && camera.position.distanceTo(OVERVIEW_DIR.clone().multiplyScalar(distance)) > 30) onGlide?.((FLY_MS * 1.75) / 1000, 0)
     flight = {
       from: camera.position.clone(),
       fromTarget: controls.target.clone(),
@@ -1862,11 +2356,40 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     const height = host.clientHeight || 1
     if (width === size.width && height === size.height) return applyViewOffset()
     size = { width, height }
-    renderer.setSize(width, height, false)
-    composer.setSize(width, height)
     labelRenderer.setSize(width, height)
-    pointUniforms.uPixel.value = renderer.getPixelRatio()
+    applyPixelRatio(true)
+  }
+
+  // A big monitor shouldn't cost more than a laptop: past PIXEL_BUDGET drawn pixels the
+  // picture renders a little softer instead of slower, and lower still while frames lag.
+  function applyPixelRatio(force = false) {
+    const fit = Math.sqrt(PIXEL_BUDGET / Math.max(1, size.width * size.height))
+    const ratio = Math.max(0.5, Math.min(window.devicePixelRatio || 1, 1.5, fit) * quality)
+    if (!force && Math.abs(ratio - renderer.getPixelRatio()) < 0.01) return
+    renderer.setPixelRatio(ratio)
+    composer.setPixelRatio(ratio)
+    renderer.setSize(size.width, size.height, false)
+    composer.setSize(size.width, size.height)
+    pointUniforms.uPixel.value = ratio
     applyViewOffset()
+  }
+
+  // Frames that keep running long (a slow machine, a huge window) bring the resolution
+  // down a step; smooth motion for a while lets it climb back. The 30 fps idle pace
+  // can only show slowness, so only moving frames count as room to spare.
+  function watchSpeed(interval, busy, now) {
+    if (interval > 250) return
+    if (busy !== frameBusy) {
+      frameBusy = busy
+      frameEma = 0
+    }
+    frameEma = frameEma ? frameEma * 0.92 + interval * 0.08 : interval
+    if (now - qualityAt < 3000) return
+    if ((busy ? frameEma > 26 : frameEma > 52) && quality > 0.55) quality *= 0.85
+    else if (busy && frameEma < 18.5 && quality < 1) quality = Math.min(1, quality / 0.9)
+    else return
+    qualityAt = now
+    applyPixelRatio()
   }
 
   // ---------- frame loop ----------
@@ -1880,12 +2403,17 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     // 60 fps while something moves on purpose, 30 fps for the ambient drift.
     if (now - lastFrame < (busy ? 0 : 32)) return
     const dt = Math.min(0.1, (now - (lastFrame || now)) / 1000)
+    if (lastFrame) watchSpeed(now - lastFrame, Boolean(busy), now)
     lastFrame = now
     time += dt
     pointUniforms.uTime.value = time
 
     // The universe keeps turning; only the camera's own drift pauses while the user drags.
     disc.rotation.y += DISC_SPIN * dt
+    if (now - watchedAt > 500) {
+      watchedAt = now
+      tellWatch()
+    }
     sky.position.copy(camera.position)
     for (const star of beacons.children) {
       const { phase, rate, base } = star.userData
@@ -1905,7 +2433,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       cloud.material.opacity = u.base * life * breathe * smooth(u.size * 0.35, u.size * 1.4, d)
     }
     // The far nebulae and the Milky Way's clouds turn and brighten more slowly still.
-    for (const group of [veils, band]) {
+    for (const group of [veils, band, decor.magellan]) {
       for (const veil of group.children) {
         const u = veil.userData
         if (!u.rate) continue
@@ -1914,8 +2442,21 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       }
     }
     // Space weather: the more agents at work, the brighter the aurora round the disc.
-    auroraLevel += (Math.min(1, Math.max(0, (busyAgents - 1) / 4)) - auroraLevel) * Math.min(1, dt * 0.3)
+    const auroraGoal = Math.max(Math.min(1, Math.max(0, (busyAgents - 1) / 4)), time < auroraUntil ? 1 : 0)
+    auroraLevel += (auroraGoal - auroraLevel) * Math.min(1, dt * 0.3)
     auroraRing.visible = auroraLevel > 0.005
+    // The galactic core breathes: slow breaths, in a little quicker than out, each one
+    // spreading from the hot heart out to the violet halo. Every sixth is a deeper sigh,
+    // and the more agents at work, the quicker it breathes.
+    breathAt += (dt * Math.PI * 2) / (8.5 - 2 * auroraLevel)
+    for (const part of core) {
+      const u = part.userData
+      const at = breathAt - u.lag
+      const deep = Math.floor(at / (Math.PI * 2)) % 6 === 5 ? 1.7 : 1
+      const b = (Math.pow(0.5 - 0.5 * Math.cos(at), 1.5) - 0.35) * deep * (reduceMotion ? 0.3 : 1)
+      part.scale.setScalar(u.size * (1 + u.swell * b))
+      part.material.opacity = u.opacity * (1 + u.glow * b)
+    }
     auroraRing.material.uniforms.uTime.value = time
     auroraRing.material.uniforms.uLevel.value = auroraLevel
     if (auroraLevel > 0.6 && !auroraSeen) {
@@ -1946,7 +2487,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       planet.mesh.rotation.y += dt * 0.25
       planet.size += (planet.sizeGoal - planet.size) * Math.min(1, dt * 1.6)
       planet.mesh.scale.setScalar(planet.size)
-      planet.ring?.scale.setScalar(planet.size)
+      if (planet.ring) planet.ring.scale.setScalar(planet.ring.scale.x + (planet.size - planet.ring.scale.x) * Math.min(1, dt * 0.8))
+      if (planet.knock || planet.aura) stepStrike(planet, dt)
       planet.hit.scale.setScalar(2.6 * Math.max(0.8, planet.size))
       if (planet.satellite) planet.satellite.craft.position.x = 2.2 * planet.size
       const alert = ALERT.has(planet.item.status) && planet.item.show
@@ -1977,6 +2519,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     stepDying(now)
     stepBirths(now)
     stepComets(now)
+    stepRemnants(dt)
+    stepJets(dt)
     stepMeteors(now)
     stepEvents(dt)
     if (aim) stepAim()
@@ -2061,6 +2605,21 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       s.sprite.material.opacity = glint * (0.6 + busy * 0.4)
       s.sprite.scale.setScalar(s.size * size * (0.6 + glint))
     }
+    const glints = CROWN_GLINTS[system.tier || 0]
+    system.crown.visible = decorOn.crowns !== false && glints > 0 && system.grow > 0.95
+    if (!system.crown.visible) return
+    system.crown.position.y = 2.2 * size
+    system.crown.rotation.y += dt * 0.22
+    system.crown.children.forEach((s, i) => {
+      s.visible = i < glints
+      if (!s.visible) return
+      const a = (i / glints) * Math.PI * 2
+      s.position.set(Math.cos(a) * 2.7 * size, 0, Math.sin(a) * 2.7 * size)
+      const shine = Math.pow(Math.max(0, Math.sin(t * 1.3 + i * 2.4)), 6)
+      s.material.opacity = system.anyShown ? 0.6 + 0.4 * shine : 0.15
+      s.material.rotation = t * 0.2 + i
+      s.scale.setScalar(size * (1.1 + 1.1 * shine))
+    })
   }
 
   function updateLabels() {
@@ -2298,6 +2857,25 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     },
     cancelClean,
     // Light from the settings panel: glow scales the bloom, brightness the exposure (1 = as designed).
+    // flags: { name: false } hides that decoration; anything not named stays on.
+    setRemnants,
+    spend,
+    // Admin test mode: a crown's celebration on any star.
+    celebrate(app) {
+      const system = systems.get(app)
+      if (system) celebrate(system)
+    },
+    // Admin test mode: the sky's rare events on demand.
+    test(kind) {
+      if (kind === 'shower') nextShower = time
+      else if (kind === 'far-nova') cosmicEvent('nova')
+      else if (kind === 'far-birth') cosmicEvent('birth')
+    },
+    setDecor(flags = {}) {
+      decorOn = flags
+      for (const [name, group] of Object.entries(decor)) group.visible = flags[name] !== false
+      for (const system of systems.values()) if (system.disk) system.disk.visible = flags.disks !== false
+    },
     // The planet Enter in the search box goes to next: its light stands out.
     setSearchTarget(handle) {
       if (searchTarget === handle) return
@@ -2842,6 +3420,132 @@ function globularClusters(uniforms) {
   return new THREE.Points(geometryOf(position, tint, size), pointsMaterial(uniforms, THREE.AdditiveBlending))
 }
 
+// A young star's protoplanetary disc: peach dust near the star cooling to lavender at
+// the rim, turning slowly, streaked and ringed, with a dark lane at each planet's orbit.
+// The geometry is a unit plane laid flat and scaled to the disc's diameter.
+function diskMaterial(time) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: time,
+      uInner: { value: 2 },
+      uOuter: { value: 10 },
+      uFade: { value: 1 },
+      uGaps: { value: new Array(8).fill(1e4) },
+      uWarm: { value: new THREE.Color('#ffcfae') },
+      uCool: { value: new THREE.Color('#c7a8ff') }
+    },
+    vertexShader: `
+      uniform float uOuter; varying vec2 vPos;
+      void main() {
+        vPos = position.xy * 2.0 * uOuter;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform float uTime; uniform float uInner; uniform float uOuter; uniform float uFade;
+      uniform float uGaps[8]; uniform vec3 uWarm; uniform vec3 uCool; varying vec2 vPos;
+      void main() {
+        float r = length(vPos);
+        if (r > uOuter) discard;
+        float t = clamp((r - uInner) / (uOuter - uInner), 0.0, 1.0);
+        float a = atan(vPos.y, vPos.x) + uTime * 0.05;
+        // Bright rings with thin dark lanes between them, like HL Tauri.
+        float ring = 0.35 + 0.65 * smoothstep(0.15, 0.85, 0.5 + 0.5 * sin(r * 3.1 + sin(a * 2.0) * 0.25));
+        float streak = 0.82 + 0.18 * sin(a * 3.0 + r * 1.3) * sin(a * 7.0 - r * 0.6 + 1.7);
+        // Fine grains, so it reads as dust rather than haze.
+        vec2 cell = floor(vec2(a * 90.0, r * 14.0));
+        float grain = 0.9 + 0.2 * fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+        float edge = smoothstep(uInner * 0.7, uInner * 1.2, r) * (1.0 - smoothstep(uOuter * 0.6, uOuter, r));
+        float gap = 1.0;
+        for (int i = 0; i < 8; i++) gap *= 0.12 + 0.88 * smoothstep(0.15, 0.85, abs(r - uGaps[i]));
+        float alpha = edge * gap * ring * streak * grain * uFade * 0.5;
+        gl_FragColor = vec4(mix(uWarm, uCool, t) * alpha, alpha);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending
+  })
+}
+
+// The Magellanic Clouds: two small, ragged galaxies hanging below ours, the larger
+// with a barred heart and the pink glow of the Tarantula, the smaller a lavender
+// smudge, and a faint bridge of stars and gas between them. They sit outside the
+// disc, so as it turns they seem to drift slowly round it.
+function magellanicClouds(tex, uniforms) {
+  const rand = mulberry32(151)
+  const group = new THREE.Group()
+  const stars = []
+  const c = new THREE.Color()
+  const add = (x, y, z, color, bright, size) => {
+    c.set(color).multiplyScalar(bright)
+    stars.push(x, y, z, c.r, c.g, c.b, size)
+  }
+  const young = ['#c9d8ff', '#b4c8ff', '#d9ccff', '#c2b4ff', '#ffd0ea']
+  const pick = (list) => list[Math.floor(rand() * list.length)]
+  // Each cloud: a tilted frame, a bar (or a lump), clumps along one side, a thin haze.
+  const cloud = (centre, tilt, radius, { bar, thick, clumps, haze, knots }) => {
+    const m = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(...tilt))
+    const v = new THREE.Vector3()
+    const put = (x, y, z, color, bright, size) => {
+      v.set(x, y, z).applyMatrix4(m).add(centre)
+      add(v.x, v.y, v.z, color, bright, size)
+    }
+    for (let i = 0; i < bar; i++) put(gauss(rand) * radius * 0.42, gauss(rand) * radius * 0.06, gauss(rand) * radius * thick, rand() < 0.75 ? pick(young) : '#ffe6c4', 0.13 + rand() * 0.17, 0.8 + rand() * 1.1)
+    for (let k = 0; k < clumps; k++) {
+      const a = -0.3 + rand() * 2.2
+      const r = radius * (0.35 + rand() * 0.6)
+      const cx = Math.cos(a) * r
+      const cz = Math.sin(a) * r * 0.8
+      const spread = radius * (0.08 + rand() * 0.12)
+      for (let i = 0; i < 420; i++) put(cx + gauss(rand) * spread, gauss(rand) * spread * 0.4, cz + gauss(rand) * spread, pick(young), 0.25 + rand() * 0.3, 0.7 + rand() * 1)
+    }
+    for (let i = 0; i < haze; i++) put(gauss(rand) * radius * 0.7, gauss(rand) * radius * 0.12, gauss(rand) * radius * 0.55, rand() < 0.5 ? '#ffe6c4' : pick(young), 0.12 + rand() * 0.14, 0.6 + rand() * 0.8)
+    // Star-forming knots: small, bright and pink.
+    for (let i = 0; i < knots; i++) put(gauss(rand) * radius * 0.5, gauss(rand) * radius * 0.05, gauss(rand) * radius * 0.35, rand() < 0.7 ? '#ff9fd0' : '#9fe8ff', 0.6 + rand() * 0.3, 1.4 + rand() * 1.2)
+  }
+  // Just past the disc's rim, a little below it, so the overview catches them at its edge.
+  const large = new THREE.Vector3(-385, -40, 280)
+  const small = new THREE.Vector3(-480, -70, 120)
+  cloud(large, [0.5, 0.4, 0.25], 80, { bar: 2400, thick: 0.15, clumps: 9, haze: 2600, knots: 90 })
+  cloud(small, [0.9, -0.3, 0.5], 42, { bar: 900, thick: 0.32, clumps: 4, haze: 1400, knots: 30 })
+  // The bridge: thin stars strung from one to the other.
+  for (let i = 0; i < 900; i++) {
+    const k = rand()
+    add(small.x + (large.x - small.x) * k + gauss(rand) * 9, small.y + (large.y - small.y) * k + gauss(rand) * 5, small.z + (large.z - small.z) * k + gauss(rand) * 9, pick(young), 0.12 + rand() * 0.12, 0.6 + rand() * 0.7)
+  }
+  const n = stars.length / 7
+  const position = new Float32Array(n * 3)
+  const tint = new Float32Array(n * 3)
+  const size = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    position.set(stars.slice(i * 7, i * 7 + 3), i * 3)
+    tint.set(stars.slice(i * 7 + 3, i * 7 + 6), i * 3)
+    size[i] = stars[i * 7 + 6]
+  }
+  group.add(new THREE.Points(geometryOf(position, tint, size), pointsMaterial(uniforms, THREE.AdditiveBlending)))
+  // Their gas: soft pastel veils that breathe like the far nebulae.
+  const veil = (at, color, scale, opacity) => {
+    const s = sprite(tex.nebula[Math.floor(rand() * tex.nebula.length)], scale, opacity)
+    s.material.color.set(color)
+    s.material.rotation = rand() * Math.PI * 2
+    s.position.copy(at)
+    s.userData = breath(rand, opacity, 0.01)
+    group.add(s)
+  }
+  const near = (centre, r) => centre.clone().add(new THREE.Vector3(gauss(rand) * r, gauss(rand) * r * 0.25, gauss(rand) * r))
+  for (const color of ['#b49bff', '#ff9fd0', '#8fd8ff', '#c9a6ff', '#ffb8d8']) veil(near(large, 26), color, 110 + rand() * 70, 0.16 + rand() * 0.08)
+  for (const color of ['#c2a8ff', '#9fe0ff', '#ffb3dc']) veil(near(small, 12), color, 65 + rand() * 35, 0.15 + rand() * 0.07)
+  for (let i = 1; i <= 3; i++) veil(small.clone().lerp(large, i / 4), '#b8d8ff', 60 + rand() * 30, 0.05)
+  // The Tarantula: the brightest star-forming cloud nearby, a pink glow with a lacy halo.
+  const tarantula = large.clone().add(new THREE.Vector3(28, 6, -18))
+  veil(tarantula, '#ff9fd0', 60, 0.45)
+  const heart = sprite(tex.glow, 24, 0.7)
+  heart.material.color.set('#ffb3da')
+  heart.position.copy(tarantula)
+  group.add(heart)
+  return group
+}
+
 // A comet far out, crossing the sky over a minute or two with its tail turned away
 // from the galaxy's core.
 function driftingComet(glow) {
@@ -3007,6 +3711,14 @@ function galaxyCore(glow) {
   mid.material.color.set('#ffcf94')
   const hot = sprite(glow, 5, 0.9)
   hot.material.color.setRGB(1.5, 1.3, 1.05)
+  // How each layer breathes: how far behind the heart, how much it swells and brightens.
+  const breath = [
+    [hot, 0, 0.14, 0.12],
+    [mid, 0.35, 0.13, 0.4],
+    [big, 0.8, 0.09, 0.45],
+    [halo, 1.3, 0.05, 0.55]
+  ]
+  for (const [part, lag, swell, glow] of breath) part.userData = { size: part.scale.x, opacity: part.material.opacity, lag, swell, glow }
   return [halo, big, mid, hot]
 }
 
@@ -3147,19 +3859,19 @@ function planetTexture(variant) {
   return texture
 }
 
-function planetRing(seed) {
+function planetRing(seed, color = new THREE.Color(0.85, 0.77, 0.62)) {
   const geometry = new THREE.RingGeometry(1.5, 2.5, 96, 1)
   const material = new THREE.ShaderMaterial({
-    uniforms: { seed: { value: (seed % 1000) / 1000 } },
+    uniforms: { seed: { value: (seed % 1000) / 1000 }, tint: { value: color } },
     vertexShader: `varying vec3 vP; void main() { vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
     fragmentShader: `
-      uniform float seed; varying vec3 vP;
+      uniform float seed; uniform vec3 tint; varying vec3 vP;
       void main() {
         float r = length(vP.xy);
         float t = (r - 1.5);
         float bands = 0.55 + 0.45 * sin(t * 38.0 + seed * 20.0) * sin(t * 11.0 + seed * 7.0);
         float edge = smoothstep(0.0, 0.08, t) * smoothstep(1.0, 0.85, t);
-        gl_FragColor = vec4(vec3(0.85, 0.77, 0.62) * 0.8, bands * edge * 0.55);
+        gl_FragColor = vec4(tint * 0.8, bands * edge * 0.55);
       }`,
     transparent: true,
     depthWrite: false,
@@ -3253,6 +3965,72 @@ function spiralTexture(seed) {
       ctx.fillStyle = `rgba(255,255,255,${0.12 + rand() * 0.25})`
       ctx.fillRect(s / 2 + Math.cos(angle) * r, s / 2 + Math.sin(angle) * r, 1.2, 1.2)
     }
+  })
+}
+
+// Two jets along the galaxy's axis: a strip for each beam and a few knots riding up it.
+function coreJets(glow) {
+  const group = new THREE.Group()
+  const map = jetTexture()
+  const beams = [1, -1].map((dir) => {
+    const material = new THREE.MeshBasicMaterial({ map, color: '#a8c2ff', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })
+    const beam = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material)
+    beam.userData.dir = dir
+    return beam
+  })
+  const knots = Array.from({ length: 12 }, (_, i) => {
+    const knot = sprite(glow, 3, 0)
+    knot.material.color.set(i % 3 ? '#c4d2ff' : '#dcc2ff')
+    knot.userData = { dir: i % 2 ? 1 : -1, t: i / 12, speed: 0.05 + (i % 4) * 0.012 }
+    return knot
+  })
+  group.add(...beams, ...knots)
+  for (const part of group.children) part.frustumCulled = false
+  return { group, beams, knots }
+}
+
+// A jet: a thin bright spine in a soft sheath, flaring a little and fading towards its tip.
+// The foot is at the bottom.
+function jetTexture() {
+  return canvasTexture(128, (ctx, s) => {
+    const image = ctx.createImageData(s, s)
+    for (let y = 0; y < s; y++) {
+      const t = 1 - y / (s - 1) // 0 at the foot, 1 at the tip
+      const along = Math.pow(1 - t, 1.3) * Math.min(1, (1 - t) * 30) * Math.min(1, t * 12 + 0.2)
+      const width = 1 + t * 1.6
+      for (let x = 0; x < s; x++) {
+        const u = ((x / (s - 1)) * 2 - 1) / width
+        const a = along * (Math.exp(-u * u * 90) * 0.8 + Math.exp(-u * u * 9) * 0.25)
+        image.data.set([255, 255, 255, Math.round(255 * Math.min(1, a))], (y * s + x) * 4)
+      }
+    }
+    ctx.putImageData(image, 0, 0)
+  })
+}
+
+// A supernova remnant's shell: thin tangled threads round a wandering ring, brighter on
+// one side, with a little glow inside. Ridged noise (bright where the noise crosses its
+// middle) draws the threads.
+function remnantTexture(seed) {
+  return canvasTexture(256, (ctx, s) => {
+    const noise = makeNoise(seed)
+    const image = ctx.createImageData(s, s)
+    for (let y = 0; y < s; y++) {
+      for (let x = 0; x < s; x++) {
+        const u = x / s - 0.5
+        const v = y / s - 0.5
+        const r = Math.hypot(u, v)
+        const a = Math.atan2(v, u)
+        const edge = 0.33 + 0.14 * (fbm(noise, Math.cos(a) * 1.4, Math.sin(a) * 1.4, seed * 0.7, 3) - 0.5)
+        const band = Math.exp(-(((r - edge) / 0.075) ** 2))
+        const thread = Math.pow(1 - Math.abs(fbm(noise, u * 9, v * 9, seed * 0.37, 4) - 0.5) * 2, 7)
+        const side = 0.5 + 0.5 * Math.cos(a - seed)
+        const inner = Math.max(0, 1 - r / edge) * 0.1 * fbm(noise, u * 4, v * 4, seed * 1.3, 3)
+        const alpha = Math.min(1, band * (thread * (0.4 + side) * 1.5 + 0.08) + inner) * Math.min(1, (0.5 - r) * 12)
+        image.data.set([255, 255, 255, Math.max(0, alpha) * 255], (y * s + x) * 4)
+      }
+    }
+    ctx.putImageData(image, 0, 0)
   })
 }
 
@@ -3429,6 +4207,46 @@ function ramp(out, stops, t) {
   const x = Math.max(0, Math.min(0.9999, t)) * (stops.length - 1)
   const i = Math.floor(x)
   return out.copy(stops[i]).lerp(stops[i + 1], x - i)
+}
+
+// Where stars sit on an arm: from just outside the core's bulge to near the rim.
+const ARM_INNER = 78
+const ARM_OUTER = GALAXY_RADIUS - 22
+// Radius a given share of the way along an arm, by length. An arm's length out to radius
+// r is ∫ √(1 + (r·SPIN)²) dr; it is tabulated once and read back by interpolation.
+const ARM_RADII = (() => {
+  const length = (r) => {
+    const u = r * SPIN
+    return (u * Math.sqrt(1 + u * u) + Math.asinh(u)) / (2 * SPIN)
+  }
+  const from = length(ARM_INNER)
+  const total = length(ARM_OUTER) - from
+  return Array.from({ length: 129 }, (_, i) => {
+    let lo = ARM_INNER
+    let hi = ARM_OUTER
+    for (let n = 0; n < 40; n++) {
+      const mid = (lo + hi) / 2
+      if (length(mid) - from < (i / 128) * total) lo = mid
+      else hi = mid
+    }
+    return (lo + hi) / 2
+  })
+})()
+
+function armRadius(along) {
+  const at = Math.min(1, Math.max(0, along)) * 128
+  const i = Math.min(127, Math.floor(at))
+  return ARM_RADII[i] + (ARM_RADII[i + 1] - ARM_RADII[i]) * (at - i)
+}
+
+// Murmur3's finalizer: every bit of the input stirs every bit of the output.
+function mix(h) {
+  h ^= h >>> 16
+  h = Math.imul(h, 0x85ebca6b)
+  h ^= h >>> 13
+  h = Math.imul(h, 0xc2b2ae35)
+  h ^= h >>> 16
+  return h >>> 0
 }
 
 function hash(text) {

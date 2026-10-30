@@ -1,4 +1,4 @@
-import { parseMenu, keysForOption, lineKind } from './screen.js'
+import { parseMenu, keysForOption, lineKind, mainColumn } from './screen.js'
 import { KEYS } from './keys.js'
 import { createSound, MIX_DEFAULTS } from './sound.js'
 
@@ -40,22 +40,73 @@ const ICONS = {
   sliders: '<path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/>'
 }
 // The settings panel: light in the galaxy and the listener's sound mix, in percent.
-const LOOK_DEFAULTS = { glow: 100, brightness: 100 }
-const SETTINGS = [
-  { title: '빛', group: 'look', items: [['glow', '빛 번짐', 0, 150], ['brightness', '밝기', 50, 130]] },
-  {
-    title: '소리',
-    group: 'mix',
-    items: [
-      ['sea', '파도 · 바람', 0, 150],
-      ['nature', '새 · 풀벌레 · 물방울', 0, 150],
-      ['bamboo', '대나무 숲', 0, 150],
-      ['music', '음악', 0, 150],
-      ['bells', '풍경 · 범종', 0, 150],
-      ['alerts', '알림 · 효과음', 0, 150]
-    ]
-  }
+const LOOK_DEFAULTS = { glow: 10, brightness: 50 }
+const LOOK_SETTINGS = [
+  ['glow', '빛 번짐', 0, 150],
+  ['brightness', '밝기', 50, 130]
 ]
+// Every sound has its own switch and volume.
+const SOUNDS = [
+  ['waves', '파도'],
+  ['wind', '바람'],
+  ['bamboo', '대나무 숲'],
+  ['birds', '새 (아침 · 낮)'],
+  ['crickets', '풀벌레 (밤)'],
+  ['drops', '물방울'],
+  ['music', '음악'],
+  ['windbells', '풍경'],
+  ['temple', '범종'],
+  ['alerts', '알림 · 효과음']
+]
+// Kept in this browser: the play log, the remnants of stars that died, and where each
+// star settled.
+const LOG_KEY = 'orca-portal-log'
+const REMNANT_KEY = 'orrery-remnants'
+const SPOT_KEY = 'orrery-spots'
+const STARDUST_KEY = 'orrery-stardust'
+const DUST_TOKENS = 1e7 // a grain of stardust for every ten million tokens
+const compactFormat = new Intl.NumberFormat('ko', { notation: 'compact', maximumFractionDigits: 1 })
+const REMNANT_MS = 3 * 86_400_000
+const ADMIN_KEY = 'orrery-admin'
+const TEST_KEY = 'orrery-test-items'
+// What a new project can start with, in the order offered.
+const BIRTH_AGENTS = [
+  ['claude', 'Claude'],
+  ['codex', 'Codex'],
+  ['shell', '셸만']
+]
+// How long a project made here waits for its first terminal before the camera stops waiting.
+const BIRTH_WAIT_MS = 90_000
+// Korean initial consonants, in syllable order, for searching by initials.
+const INITIALS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ'
+// Decorations in the galaxy, each of which can be switched off.
+const DECOR = [
+  ['magellan', '마젤란 구름', '은하 옆 작은 위성 은하 둘'],
+  ['disks', '원시행성 원반', '태어난 지 일주일 안 된 별의 먼지 원반'],
+  ['remnants', '초신성 잔해', '닫힌 앱의 별이 남긴 가스 껍질 · 사흘'],
+  ['jets', '은하 중심 제트', '에이전트가 일할 때 중심에서 뿜는 빛줄기'],
+  ['crowns', '별의 왕관', '앱 토큰이 1천만 · 5천만 · 1억… 넘을 때마다 빛 하나']
+]
+// A new universe starts plain, and decorations open up as it is used: by tokens the agents
+// spend from the day this browser started counting, or by things seen in the galaxy.
+const UNLOCKS = {
+  disks: { hint: '도감: 별의 탄생 보기', met: (log) => log.births >= 1 },
+  remnants: { hint: '도감: 초신성 세 번 보기', met: (log) => log.novas >= 3 },
+  magellan: { tokens: 3e7 },
+  crowns: { tokens: 6e7 },
+  jets: { tokens: 1e8 }
+}
+// What a browser that had Orrery before unlocks kept showing: everything there was then.
+const DECOR_BEFORE = ['magellan', 'disks', 'remnants', 'jets']
+// Stardust is spent on these, in the galaxy.
+const DUST_EVENTS = [
+  { id: 'shower', icon: '🌠', name: '유성우', cost: 1 },
+  { id: 'aurora', icon: '🌌', name: '오로라 2분', cost: 2 },
+  { id: 'swarm', icon: '☄️', name: '혜성 떼', cost: 2 },
+  { id: 'fireworks', icon: '🎆', name: '초신성 불꽃놀이', cost: 3 }
+]
+// Volumes saved before each sound had its own: one old channel fed several.
+const OLD_MIX = { sea: ['waves', 'wind'], nature: ['birds', 'crickets', 'drops'], bells: ['windbells', 'temple'] }
 // Shown in the ? help dialog: only what's for looking around the galaxy. The handlers
 // live in onShortcut; the older working keys (reply, maximise, views...) still work there
 // but aren't listed.
@@ -67,6 +118,7 @@ const SHORTCUTS = [
       [['N'], '신호를 보내는 행성으로 (차례로 돌아요)'],
       [['B'], '바로 전에 보던 행성'],
       [['/'], '찾기 · Enter로 찾은 행성까지 날아가기'],
+      [['↑', '↓'], '선택지가 떠 있으면 고르기 · Enter로 확정'],
       [['V'], '은하 전체 보기'],
       [['Z'], '고요 모드: 은하와 소리만 남기기']
     ]
@@ -77,6 +129,7 @@ const SHORTCUTS = [
       [['클릭'], '지나가는 별똥별·혜성 잡기'],
       [['Alt+끌기'], '빈 곳에서 당겼다 놓으면 혜성 던지기'],
       [['Alt+끌기'], '행성을 블랙홀에 넣어 터미널 닫기 (한 번 물어봐요)'],
+      [['C'], '새 별 만들기: 새 프로젝트를 시작해요'],
       [['L'], '우주 도감'],
       [['I'], '보는 법']
     ]
@@ -101,10 +154,12 @@ const DONE_EVENT_TTL_MS = 60_000
 const loadedAt = Date.now()
 
 const sessions = new Map()
-const screens = new Map()
+const screens = new Map() // handle -> screen rows, without a side panel beside the conversation
+const fullScreens = new Map() // handle -> screen rows as the terminal shows them
 const menus = new Map()
 const cards = new Map()
 const pendingChoice = new Map() // handle -> { signature, n, until }
+let menuPick = null // the option the arrow keys are on: { handle, signature, n }
 const prevStatus = new Map()
 const prevMenuSig = new Map()
 const attentionSince = new Map()
@@ -185,19 +240,46 @@ const logButton = document.querySelector('.gx-log-btn')
 const guideEl = document.querySelector('.gx-guide')
 const guideButton = document.querySelector('.gx-guide-btn')
 const confirmEl = document.querySelector('.gx-confirm')
+const birthEl = document.querySelector('.gx-birth')
+// The Mac app's bridge (Dock badge, notifications), when the page runs inside it.
+const desktop = window.orrery || null
+const birthButton = document.querySelector('.gx-birth-btn')
 const playLog = loadLog()
+let remnants = loadRemnants() // shells of gas where apps' stars died, for three days
+let spots = loadSpots() // app name -> which of its possible spots its star took
+const stardust = loadStardust() // tokens counted since this browser started, and what they bought
+// Admin test mode: fake stars and planets, and the galaxy's rare events on demand, to try
+// things out without touching a real terminal. Fake handles start with test_, which the
+// server never accepts.
+const admin = adminMode()
+const testItems = new Map() // test_ handle -> a fake galaxy item
+let testSerial = 0
+let testFocus = null // the fake star last looked at, where new fake planets go
+if (admin) loadTestItems()
 let cleanAsk = null // the terminal dropped into the black hole, while we ask
+// The new star / new planet form: its name check in flight, the star a planet joins, and
+// the folder whose next new terminal gets the camera ({ path, known, until }).
+const birth = { check: 0, timer: null, busy: false, target: null, wait: null }
 let orcaStatus = { ok: true }
+// With Orrery open in more than one place, the server lets one page play sound: the one
+// touched last. The id lives in sessionStorage, so a reload keeps the page's turn.
+const PAGE_ID = pageId()
+let speakerHere = true
+let touchedAt = 0
+let moodKey = '' // the counts the music last heard
 
 // ---------- data ----------
 
 function connect() {
-  const events = new EventSource(`/events?token=${encodeURIComponent(TOKEN)}`)
+  const visible = document.visibilityState === 'visible' ? 1 : 0
+  const events = new EventSource(`/events?token=${encodeURIComponent(TOKEN)}&page=${PAGE_ID}&visible=${visible}`)
   events.addEventListener('open', () => setConn('live'))
+  events.addEventListener('speaker', (e) => setSpeaker(JSON.parse(e.data).id))
   events.addEventListener('state', (e) => onState(JSON.parse(e.data)))
   events.addEventListener('screen', (e) => onScreen(JSON.parse(e.data)))
   events.addEventListener('usage', (e) => {
     usage = JSON.parse(e.data).paths || {}
+    trackTokens(usage)
     if (prefs.view === 'galaxy') scheduleRender()
   })
   events.addEventListener('disk', (e) => {
@@ -247,14 +329,17 @@ function onState({ sessions: list }) {
   }
   renderAll()
   if (firstState) setTimeout(settle, SETTLE_MS)
+  if (birth.wait) greetNewStar(list)
 }
 
 function onScreen({ handle, lines }) {
   if (!lines) {
     screens.delete(handle)
+    fullScreens.delete(handle)
     return
   }
-  screens.set(handle, lines)
+  screens.set(handle, mainColumn(lines))
+  fullScreens.set(handle, lines)
   const before = statusOf(handle)
   const menuChanged = updateMenu(handle)
   const card = cards.get(handle)
@@ -300,11 +385,14 @@ function sectionOf(handle) {
 // ---------- auto-follow ----------
 
 // Menus are only known once screens arrive, so the opening pick is revisited after
-// statuses settle, unless the user has already chosen a session.
+// statuses settle, unless the user has already chosen a session. The galaxy opens on the
+// whole galaxy and stays there: the camera only leaves for a question that is waiting,
+// and only with auto-follow on.
 function settle() {
   eventsReady = true
   const first = attentionHandles()[0] || displayOrder[0]
-  if (first && !userPicked && first !== focusedHandle) setFocus(first, { quiet: true })
+  const go = prefs.view !== 'galaxy' || (prefs.autoFollow && sectionOf(first) === 'attention')
+  if (first && !userPicked && first !== focusedHandle) setFocus(first, { quiet: true, stay: !go })
 }
 
 function trackEvents() {
@@ -342,9 +430,20 @@ function trackEvents() {
   }
 }
 
+// In the Mac app, a question that comes while the window is away is also a notification.
+function notifyDesktop(handle) {
+  const session = sessions.get(handle)
+  if (!desktop || !session) return
+  const question = menus.get(handle)?.question
+  desktop.notify({ handle, title: session.project, body: question || `${session.title || session.name} · ${STATUS[statusOf(handle)].label}` })
+}
+
 function queueEvent(handle, kind) {
   sound.chime(kind)
-  if (kind === 'attention') setZen(false)
+  if (kind === 'attention') {
+    setZen(false)
+    notifyDesktop(handle)
+  }
   if (kind === 'done' && prefs.view === 'galaxy') galaxy?.shootingStar()
   flashUntil.set(handle, Date.now() + 3600)
   followQueue = followQueue.filter((p) => p.handle !== handle)
@@ -400,7 +499,8 @@ function userBusy() {
 }
 
 // quiet: the opening pick, which shouldn't pop the galaxy's pane open unless something is waiting.
-function setFocus(handle, { auto = false, reason, quiet = false } = {}) {
+// stay: the galaxy's camera doesn't move.
+function setFocus(handle, { auto = false, reason, quiet = false, stay = false } = {}) {
   if (!sessions.has(handle)) return
   const previous = focusedHandle
   if (previous && previous !== handle) previousHandle = previous
@@ -414,7 +514,7 @@ function setFocus(handle, { auto = false, reason, quiet = false } = {}) {
   }
   if (auto && previous !== handle) showNotice(handle, previous, reason)
   else if (!auto) hideNotice()
-  if (prefs.view === 'galaxy') {
+  if (prefs.view === 'galaxy' && !stay) {
     galaxy?.flyTo(handle)
     // The full terminal stays in the pane only once the user has gone in; otherwise a pick
     // (or a question arriving) shows the short report.
@@ -482,6 +582,16 @@ function renderAll() {
 
   for (const [key, value] of Object.entries(counts)) {
     document.querySelector(`[data-count="${key}"]`).textContent = value
+  }
+  // The music hears how many agents work and how many questions wait.
+  const fakes = [...testItems.values()]
+  const working = counts.working + fakes.filter((i) => i.status === 'working').length
+  const attention = counts.attention + fakes.filter((i) => STATUS[i.status].group === 'attention').length
+  const mood = `${working}|${attention}`
+  if (mood !== moodKey) {
+    moodKey = mood
+    desktop?.setBadge(attention)
+    sound.setMood({ working, attention })
   }
   document.title = counts.attention ? `(${counts.attention}) Orrery` : 'Orrery'
   if (focusedHandle && !sessions.has(focusedHandle)) focusedHandle = null
@@ -809,7 +919,7 @@ function renderScreen(card) {
     return
   }
   card.dirty = false
-  const lines = trimTrailingBlank(screens.get(card.handle) || [])
+  const lines = trimTrailingBlank(fullScreens.get(card.handle) || [])
   if (lines.length === 0) {
     card.pre.innerHTML = '<span class="placeholder">화면을 불러오는 중…</span>'
     return
@@ -848,8 +958,9 @@ function menuButtons(handle, menu, { compact = false } = {}) {
   const locked = isChoicePending(handle, menu)
   for (const option of menu.options) {
     const button = el('button', { type: 'button', className: option.cursor ? 'opt current' : 'opt', title: [option.label, option.desc].filter(Boolean).join('\n') })
+    if (isPicked(handle, menu, option)) button.classList.add('picked')
     button.append(el('kbd', { textContent: option.n }), el('span', { className: 'opt-label', textContent: option.label }))
-    if (option.desc && !compact) button.append(el('span', { className: 'opt-desc', textContent: option.desc }))
+    if (option.desc) button.append(el('span', { className: 'opt-desc', textContent: option.desc }))
     if (locked && sent.n === option.n) button.classList.add('sending')
     button.disabled = !keysForOption(menu, option.n) || locked
     button.addEventListener('click', () => choose(handle, menu, option))
@@ -873,6 +984,47 @@ async function choose(handle, menu, option) {
   if (ok && option.freeText) startMenuTyping(handle)
   if (!ok) pendingChoice.delete(handle)
   setTimeout(() => refreshMenus(handle), ok ? CHOICE_LOCK_MS : 0)
+}
+
+// The arrow keys walk the options of the menu in front without touching the terminal;
+// Enter then sends the picked one, the same as clicking it.
+function isPicked(handle, menu, option) {
+  return menuPick?.handle === handle && menuPick.signature === menu.signature && menuPick.n === option.n
+}
+
+// The menu in front: the session being looked at, or in the galaxy, the first one in the
+// report that is asking.
+function menuHandle() {
+  const handle = activeHandle()
+  if (menus.has(handle)) return handle
+  if (prefs.view !== 'galaxy' || !report) return null
+  return [...reportEl.querySelectorAll('.rp-row')].map((row) => row.dataset.handle).find((h) => menus.has(h)) || null
+}
+
+function movePick(step) {
+  const handle = menuHandle()
+  const menu = handle && menus.get(handle)
+  if (!menu || isChoicePending(handle, menu)) return Boolean(menu)
+  const options = menu.options.filter((option) => keysForOption(menu, option.n))
+  if (!options.length) return false
+  const held = menuPick?.handle === handle && menuPick.signature === menu.signature
+  // The first press moves on from where the terminal's own cursor is.
+  const at = options.findIndex((option) => (held ? option.n === menuPick.n : option.cursor))
+  const next = at < 0 ? options[step > 0 ? 0 : options.length - 1] : options[Math.max(0, Math.min(options.length - 1, at + step))]
+  menuPick = { handle, signature: menu.signature, n: next.n }
+  sound.chime('seek')
+  refreshMenus(handle)
+  return true
+}
+
+function choosePicked() {
+  const handle = menuHandle()
+  const menu = handle && menus.get(handle)
+  const option = menu?.options.find((o) => isPicked(handle, menu, o))
+  if (!option) return false
+  menuPick = null
+  choose(handle, menu, option)
+  return true
 }
 
 function isChoicePending(handle, menu) {
@@ -1156,13 +1308,24 @@ function setupControls() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') scheduleRender()
     syncAmbient()
+    api('/api/speaker', { page: PAGE_ID, visible: document.visibilityState === 'visible' })
   })
+  addEventListener('pointerdown', touchSpeaker, true)
+  addEventListener('keydown', touchSpeaker, true)
   soundButton.addEventListener('click', () => setSound(!prefs.sound))
   settingsButton.innerHTML = icon('sliders')
   settingsButton.addEventListener('click', () => toggleSettings())
-  sound.setMix(mixOf(prefs.mix))
+  sound.setMix(mixLevels())
+  sound.setMoodEnabled(prefs.musicMood)
   logButton.addEventListener('click', () => toggleLog())
   guideButton.addEventListener('click', () => toggleGuide())
+  birthButton.addEventListener('click', () => toggleBirth())
+  if (desktop) {
+    document.body.classList.add('in-app')
+    desktop.onPick((handle) => sessions.has(handle) && pick(handle))
+  }
+  birthEl.addEventListener('input', onBirthInput)
+  birthEl.addEventListener('submit', onBirthSubmit)
   setSound(prefs.sound)
   setupPalette()
   setInterval(processQueue, 1000)
@@ -1200,12 +1363,13 @@ function lookOf(look) {
   return { glow: look.glow / 100, brightness: look.brightness / 100 }
 }
 
-function mixOf(mix) {
-  return Object.fromEntries(Object.keys(MIX_DEFAULTS).map((key) => [key, (mix[key] ?? MIX_DEFAULTS[key] * 100) / 100]))
+// Volume factors for the sound engine: a switched-off sound is 0.
+function mixLevels() {
+  return Object.fromEntries(Object.keys(MIX_DEFAULTS).map((key) => [key, prefs.mixOff[key] ? 0 : volumeOf(key) / 100]))
 }
 
-function settingValue(group, key) {
-  return group === 'look' ? prefs.look[key] : (prefs.mix[key] ?? MIX_DEFAULTS[key] * 100)
+function volumeOf(key) {
+  return prefs.mix[key] ?? MIX_DEFAULTS[key] * 100
 }
 
 function toggleSettings(on = settingsEl.hidden) {
@@ -1219,52 +1383,230 @@ function renderSettings() {
   const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
   close.addEventListener('click', () => toggleSettings(false))
   head.append(el('b', { textContent: '빛과 소리' }), close)
-  const parts = [head]
-  for (const section of SETTINGS) {
+  const section = (title) => {
     const box = el('section', { className: 'st-section' })
-    box.append(el('h3', { textContent: section.title }))
-    for (const [key, label, min, max] of section.items) {
-      const row = el('label', { className: 'st-row' })
-      const value = el('output', { textContent: `${settingValue(section.group, key)}%` })
-      const range = el('input', { type: 'range', min, max, step: 5, value: settingValue(section.group, key) })
-      range.addEventListener('input', () => {
-        value.textContent = `${range.value}%`
-        setSetting(section.group, key, Number(range.value))
-      })
-      // Let go of a sound slider and hear that channel at its new level.
-      if (section.group === 'mix') range.addEventListener('change', () => sound.preview(key))
-      row.append(el('span', { textContent: label }), range, value)
-      box.append(row)
-    }
-    parts.push(box)
+    box.append(el('h3', { textContent: title }))
+    return box
   }
+
+  const light = section('빛')
+  for (const [key, label, min, max] of LOOK_SETTINGS) {
+    const row = el('label', { className: 'st-row' })
+    row.append(el('span', { textContent: label }), ...slider(prefs.look[key], min, max, (value) => {
+      prefs.look = { ...prefs.look, [key]: value }
+      savePrefs()
+      galaxy?.setLook(lookOf(prefs.look))
+    }))
+    light.append(row)
+  }
+
+  const sounds = section('소리')
+  for (const [key, label] of SOUNDS) {
+    const row = el('div', { className: 'st-row st-sound' })
+    const [range, value] = slider(volumeOf(key), 0, 150, (v) => {
+      prefs.mix = { ...prefs.mix, [key]: v }
+      savePrefs()
+      sound.setMix(mixLevels())
+    })
+    // Let go of a slider and hear that sound at its new level.
+    range.addEventListener('change', () => sound.preview(key))
+    range.setAttribute('aria-label', `${label} 크기`)
+    const toggle = el('input', { type: 'checkbox', className: 'st-switch', checked: !prefs.mixOff[key], title: `${label} 켜기 / 끄기` })
+    toggle.setAttribute('aria-label', `${label} 켜기`)
+    const paint = () => {
+      row.classList.toggle('off', !toggle.checked)
+      range.disabled = !toggle.checked
+    }
+    toggle.addEventListener('change', () => {
+      const { [key]: _, ...rest } = prefs.mixOff
+      prefs.mixOff = toggle.checked ? rest : { ...rest, [key]: true }
+      savePrefs()
+      sound.setMix(mixLevels())
+      paint()
+      if (toggle.checked) sound.preview(key)
+    })
+    paint()
+    row.append(toggle, el('span', { textContent: label }), range, value)
+    sounds.append(row)
+  }
+  const moodRow = el('label', { className: 'st-row st-decor' })
+  const moodToggle = el('input', { type: 'checkbox', className: 'st-switch', checked: prefs.musicMood })
+  moodToggle.addEventListener('change', () => {
+    prefs.musicMood = moodToggle.checked
+    savePrefs()
+    sound.setMoodEnabled(prefs.musicMood)
+  })
+  moodRow.append(moodToggle, el('span', { textContent: '음악이 상태 따라 변하기' }), el('small', { textContent: '질문 · 작업량 · 보는 별 따라' }))
+  sounds.append(moodRow)
+
+  const decor = section('장식')
+  for (const [key, label, note] of DECOR) {
+    const locked = isLocked(key)
+    const row = el('label', { className: locked ? 'st-row st-decor locked' : 'st-row st-decor' })
+    const toggle = el('input', { type: 'checkbox', className: 'st-switch', checked: !locked && prefs.decor[key] !== false, disabled: locked })
+    toggle.addEventListener('change', () => {
+      prefs.decor = { ...prefs.decor, [key]: toggle.checked }
+      savePrefs()
+      galaxy?.setDecor(decorFlags())
+    })
+    row.append(toggle, el('span', { textContent: locked ? `🔒 ${label}` : label }), el('small', { textContent: locked ? unlockText(key) : note }))
+    decor.append(row)
+  }
+
+  const test = admin ? adminSection(section('관리자 테스트')) : null
   const foot = el('div', { className: 'st-foot' })
   if (!prefs.sound) foot.append(el('small', { textContent: '소리가 꺼져 있어요 · M으로 켜요' }))
   const reset = el('button', { type: 'button', className: 'st-reset', textContent: '처음대로' })
   reset.addEventListener('click', () => {
-    prefs.look = { ...LOOK_DEFAULTS }
-    prefs.mix = {}
+    Object.assign(prefs, { look: { ...LOOK_DEFAULTS }, mix: {}, mixOff: {}, decor: {}, musicMood: true })
     savePrefs()
+    sound.setMoodEnabled(true)
     galaxy?.setLook(lookOf(prefs.look))
-    sound.setMix(mixOf(prefs.mix))
+    galaxy?.setDecor(decorFlags())
+    sound.setMix(mixLevels())
     renderSettings()
   })
   foot.append(reset)
-  parts.push(foot)
-  settingsEl.replaceChildren(...parts)
+  settingsEl.replaceChildren(...[head, light, sounds, decor, test, foot].filter(Boolean))
 }
 
-function setSetting(group, key, value) {
-  prefs[group] = { ...prefs[group], [key]: value }
-  savePrefs()
-  if (group === 'look') galaxy?.setLook(lookOf(prefs.look))
-  else sound.setMix(mixOf(prefs.mix))
+function loadTestItems() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TEST_KEY) || '{}')
+    const valid = (i) => /^test_\d+$/.test(i?.handle) && typeof i.app === 'string' && typeof i.planet === 'string' && STATUS[i.status]
+    for (const item of Array.isArray(saved.items) ? saved.items.filter(valid) : []) {
+      testItems.set(item.handle, { handle: item.handle, app: item.app, path: `/test/${item.app}`, pr: null, servers: [], disk: 0, moons: 0, planet: item.planet, branch: 'test', status: item.status, statusLabel: STATUS[item.status].label, summary: '관리자 테스트', background: false, pinned: false, active: item.status === 'working', show: true })
+    }
+    testSerial = Math.max(Number(saved.serial) || 0, ...[...testItems.keys()].map((h) => Number(h.slice(5))))
+  } catch {}
+}
+
+function saveTestItems() {
+  try {
+    const items = [...testItems.values()].map(({ handle, app, planet, status }) => ({ handle, app, planet, status }))
+    localStorage.setItem(TEST_KEY, JSON.stringify({ serial: testSerial, items }))
+  } catch {}
+}
+
+function adminMode() {
+  try {
+    const flag = new URLSearchParams(location.search).get('admin')
+    if (flag !== null) localStorage.setItem(ADMIN_KEY, flag === '0' ? '' : '1')
+    return localStorage.getItem(ADMIN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+// Buttons for trying things out. Fake stars and planets are kept in this browser until
+// they're swept away; the black hole swallows them without closing anything.
+function adminSection(box) {
+  const apps = () => [...new Set([...testItems.values()].map((i) => i.app))]
+  const fake = (app, status) => {
+    const handle = `test_${++testSerial}`
+    const item = { handle, app, path: `/test/${app}`, pr: null, servers: [], disk: 0, moons: 0, planet: `테스트 행성 ${testSerial}`, branch: 'test', status, statusLabel: STATUS[status].label, summary: '관리자 테스트', background: false, pinned: false, active: false, show: true }
+    testItems.set(handle, item)
+    born.add(handle)
+  }
+  const setStatus = (item, status) => Object.assign(item, { status, statusLabel: STATUS[status].label, active: status === 'working' })
+  const drop = (app) => {
+    for (const [handle, item] of testItems) {
+      if (item.app !== app) continue
+      testItems.delete(handle)
+      vanished.add(handle)
+    }
+  }
+  const actions = [
+    ['⭐ 별 탄생', () => {
+      testFocus = `테스트별 ${String.fromCharCode(65 + (apps().length % 26))}${testSerial}`
+      fake(testFocus, 'done')
+    }],
+    // Onto the fake star last looked at, else the newest one, else a new star.
+    ['🪐 행성 하나 추가', () => {
+      const app = apps().includes(testFocus) ? testFocus : apps().at(-1) || `테스트별 A${testSerial}`
+      testFocus = app
+      fake(app, 'done')
+      toast(`🪐 ${app}에 행성을 더했어요 · ${[...testItems.values()].filter((i) => i.app === app).length}개`)
+    }],
+    ['💥 별 터뜨리기', () => (apps().length ? drop(apps().at(-1)) : toast('먼저 테스트 별을 만들어요'))],
+    ['⚙️ 일하기 ↔ 쉬기', () => {
+      const items = [...testItems.values()]
+      const busy = items.some((i) => i.status === 'working')
+      for (const item of items) setStatus(item, busy ? 'done' : 'working')
+    }],
+    ['❓ 질문 띄우기', () => {
+      const item = [...testItems.values()].find((i) => STATUS[i.status].group !== 'attention')
+      if (!item) return toast('먼저 테스트 별을 만들어요')
+      setStatus(item, 'choice')
+      sound.chime('attention')
+    }],
+    ['💬 답하기', () => {
+      const item = [...testItems.values()].find((i) => STATUS[i.status].group === 'attention')
+      if (item) setStatus(item, 'done')
+    }],
+    ['🌠 유성우', () => galaxy?.test('shower')],
+    ['💫 먼 초신성', () => galaxy?.test('far-nova')],
+    ['✨ 먼 별 탄생', () => galaxy?.test('far-birth')],
+    ['⏩ 잔해 하루 지나게', () => {
+      remnants = remnants.map((r) => ({ ...r, diedAt: r.diedAt - 86_400_000 })).filter((r) => Date.now() - r.diedAt < REMNANT_MS)
+      try {
+        localStorage.setItem(REMNANT_KEY, JSON.stringify(remnants))
+      } catch {}
+      galaxy?.setRemnants(remnants)
+    }],
+    ['🧹 테스트 별 치우기', () => apps().forEach(drop)],
+    ['🪙 토큰 +1천만', () => addTokens(1e7)],
+    ['✦ 별가루 +5', () => {
+      stardust.bonus += 5
+      saveStardust()
+      toast(`✦ 별가루 ${dustLeft()}개`)
+      if (!logEl.hidden) renderLog()
+    }],
+    ['🎉 기념 불꽃', () => {
+      const app = sessions.get(focusedHandle)?.project || apps()[0] || [...sessions.values()][0]?.project
+      if (app) galaxy?.celebrate(app)
+    }],
+    ['🔓 장식 모두 열기', () => {
+      unlock(Object.keys(UNLOCKS).filter(isLocked))
+      renderSettings()
+    }],
+    ['🔒 해금 처음부터', () => {
+      Object.assign(stardust, { since: Date.now(), earned: 0, bonus: 0, spent: 0, unlocked: [] })
+      saveStardust()
+      galaxy?.setDecor(decorFlags())
+      renderSettings()
+      if (!logEl.hidden) renderLog()
+      toast('새 우주처럼 장식을 다시 잠갔어요')
+    }]
+  ]
+  const grid = el('div', { className: 'st-admin' })
+  for (const [label, act] of actions) {
+    const button = el('button', { type: 'button', className: 'st-reset', textContent: label })
+    button.addEventListener('click', () => {
+      act()
+      saveTestItems()
+      scheduleRender()
+    })
+    grid.append(button)
+  }
+  box.append(grid, el('small', { className: 'st-note', textContent: '가짜 별과 행성은 이 브라우저에 남아 있다가 🧹로 치우면 사라져요. 행성은 마지막으로 본 테스트 별에 붙어요. 블랙홀로 보내도 실제 터미널은 닫히지 않아요.' }))
+  return box
+}
+
+// A percent slider and the number beside it.
+function slider(start, min, max, onInput) {
+  const value = el('output', { textContent: `${start}%` })
+  const range = el('input', { type: 'range', min, max, step: 5, value: start })
+  range.addEventListener('input', () => {
+    value.textContent = `${range.value}%`
+    onInput(Number(range.value))
+  })
+  return [range, value]
 }
 
 // ---------- play ----------
 
-// What the viewer caught, threw and saw in the galaxy, kept in this browser.
-const LOG_KEY = 'orca-portal-log'
+// What the viewer caught, threw and saw in the galaxy, kept in this browser (LOG_KEY).
 const TINTS = [
   ['흰', '#fff7e6'],
   ['초록', '#b3ffcc'],
@@ -1287,6 +1629,192 @@ const BADGES = [
   { id: 'birth', icon: '✨', name: '별의 탄생', hint: '팔의 가스에서 새 별이 켜질 때', earned: (l) => l.births >= 1 }
 ]
 
+// The newest eight remnants, each kept for three days after its star died.
+function loadRemnants() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(REMNANT_KEY) || '[]')
+    const valid = (r) => typeof r?.app === 'string' && Array.isArray(r.at) && r.at.length === 3 && r.at.every(Number.isFinite) && typeof r.color === 'string' && Number.isFinite(r.diedAt) && Number.isInteger(r.seed)
+    return saved.filter((r) => valid(r) && Date.now() - r.diedAt < REMNANT_MS)
+  } catch {
+    return []
+  }
+}
+
+function loadSpots() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SPOT_KEY) || '{}')
+    return Object.fromEntries(Object.entries(saved).filter(([, i]) => Number.isInteger(i) && i >= 0))
+  } catch {
+    return {}
+  }
+}
+
+// Apps long gone drop out first once there are more than a few hundred.
+function saveSpot(app, i) {
+  spots = Object.fromEntries([...Object.entries(spots).filter(([name]) => name !== app), [app, i]].slice(-300))
+  try {
+    localStorage.setItem(SPOT_KEY, JSON.stringify(spots))
+  } catch {}
+}
+
+// ---------- stardust ----------
+
+// Tokens are counted from when this browser started: a worktree seen for the first time
+// adds only what comes after, unless the whole of it is newer than the count.
+function loadStardust() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STARDUST_KEY) || 'null')
+    if (saved && Number.isFinite(saved.earned)) {
+      const number = (n) => (Number.isFinite(n) ? n : 0)
+      return { since: number(saved.since), seen: saved.seen && typeof saved.seen === 'object' ? saved.seen : {}, earned: saved.earned, bonus: number(saved.bonus), spent: number(saved.spent), unlocked: Array.isArray(saved.unlocked) ? saved.unlocked : [] }
+    }
+  } catch {}
+  let before = false
+  try {
+    before = localStorage.getItem('orca-portal-prefs') !== null
+  } catch {}
+  return { since: Date.now(), seen: {}, earned: 0, bonus: 0, spent: 0, unlocked: before ? [...DECOR_BEFORE] : [] }
+}
+
+function saveStardust() {
+  try {
+    localStorage.setItem(STARDUST_KEY, JSON.stringify(stardust))
+  } catch {}
+}
+
+function dustLeft() {
+  return Math.floor(stardust.earned / DUST_TOKENS) + stardust.bonus - stardust.spent
+}
+
+function trackTokens(paths) {
+  let gained = 0
+  let changed = false
+  for (const [p, u] of Object.entries(paths)) {
+    const tokens = u.tokens || 0
+    const before = stardust.seen[p]
+    if (before === tokens) continue
+    if (before === undefined) gained += u.firstAt > stardust.since ? tokens : 0
+    else gained += Math.max(0, tokens - before)
+    stardust.seen[p] = tokens
+    changed = true
+  }
+  if (!changed) return
+  // Worktrees long gone drop out first once there are more than a few hundred.
+  const seen = Object.keys(stardust.seen)
+  for (const p of seen.slice(0, Math.max(0, seen.length - 400))) delete stardust.seen[p]
+  addTokens(gained)
+}
+
+function addTokens(gained) {
+  const before = dustLeft()
+  stardust.earned += gained
+  saveStardust()
+  const more = dustLeft() - before
+  if (more > 0) {
+    sound.chime('stardust')
+    toast(`✦ 별가루가 ${more > 1 ? `${more}개 ` : ''}생겼어요 · 모두 ${dustLeft()}개 · 도감(L)에서 써요`, 3200)
+  }
+  checkUnlocks()
+  if (!logEl.hidden) renderLog()
+}
+
+// An app's tokens passed a milestone (the galaxy celebrates it): a grain of stardust.
+function onMilestone(app, tokens) {
+  stardust.bonus += 1
+  saveStardust()
+  toast(`🎉 ${app} 토큰이 ${compactNumber(tokens)}을 넘었어요 · 별가루 +1`, 4000)
+  if (!logEl.hidden) renderLog()
+}
+
+function isLocked(id) {
+  return Boolean(UNLOCKS[id]) && !stardust.unlocked.includes(id)
+}
+
+function unlockMet(id) {
+  const rule = UNLOCKS[id]
+  return rule.tokens ? stardust.earned >= rule.tokens : rule.met(playLog)
+}
+
+function unlockText(id) {
+  const rule = UNLOCKS[id]
+  return rule.tokens ? `함께 쓴 토큰 ${compactNumber(rule.tokens)}부터 · 지금 ${compactNumber(stardust.earned)}` : rule.hint
+}
+
+// Locked decorations stay off whatever the switches say.
+function decorFlags() {
+  const flags = { ...prefs.decor }
+  for (const id of Object.keys(UNLOCKS)) if (isLocked(id)) flags[id] = false
+  return flags
+}
+
+function checkUnlocks() {
+  const ready = Object.keys(UNLOCKS).filter((id) => isLocked(id) && unlockMet(id))
+  if (ready.length) unlock(ready)
+}
+
+// A decoration opens up: it appears in the galaxy with a bowl, a run of glass and a shower.
+function unlock(ids) {
+  if (!ids.length) return
+  stardust.unlocked.push(...ids)
+  saveStardust()
+  galaxy?.setDecor(decorFlags())
+  const names = ids.map((id) => DECOR.find(([key]) => key === id)?.[1] || id)
+  toast(`🔓 새 장식이 열렸어요 · ${names.join(', ')}`, 4500)
+  sound.chime('unlock')
+  if (prefs.view === 'galaxy') galaxy?.test('shower')
+  if (!settingsEl.hidden) renderSettings()
+  if (!logEl.hidden) renderLog()
+}
+
+function spendDust(event) {
+  if (dustLeft() < event.cost) return toast(`별가루가 ${event.cost - dustLeft()}개 모자라요`)
+  if (prefs.view !== 'galaxy' || !galaxy) return toast('은하 보기에서 써요')
+  if (!galaxy.spend(event.id)) return toast('지금은 볼 수 없어요 · 동작 줄이기가 켜져 있어요')
+  stardust.spent += event.cost
+  saveStardust()
+  toast(`${event.icon} ${event.name} · 별가루 ${dustLeft()}개 남았어요`)
+  renderLog()
+}
+
+// The top of the play log: stardust to spend, and what opens up next.
+function dustSection() {
+  const box = el('section', { className: 'lg-dust' })
+  const head = el('div', { className: 'lg-dust-head' })
+  const toNext = DUST_TOKENS - (stardust.earned % DUST_TOKENS)
+  head.append(el('b', { textContent: `✦ 별가루 ${dustLeft()}` }), el('small', { textContent: `함께 쓴 토큰 ${compactNumber(stardust.earned)} · 다음 별가루까지 ${compactNumber(toNext)}` }))
+  const buttons = el('div', { className: 'lg-dust-events' })
+  for (const event of DUST_EVENTS) {
+    const button = el('button', { type: 'button', disabled: dustLeft() < event.cost, title: `별가루 ${event.cost}개` })
+    button.append(el('i', { textContent: event.icon }), el('span', { textContent: event.name }), el('small', { textContent: `✦${event.cost}` }))
+    button.addEventListener('click', () => spendDust(event))
+    buttons.append(button)
+  }
+  const unlocks = el('ul', { className: 'lg-unlocks' })
+  for (const id of Object.keys(UNLOCKS)) {
+    const name = DECOR.find(([key]) => key === id)?.[1] || id
+    const rule = UNLOCKS[id]
+    const open = !isLocked(id)
+    const li = el('li', { className: open ? 'open' : '' })
+    li.append(el('i', { textContent: open ? '✦' : '🔒' }), el('b', { textContent: name }), el('small', { textContent: open ? '열림' : unlockText(id) }))
+    if (!open && rule.tokens) {
+      const bar = el('span', { className: 'lg-bar' })
+      bar.style.setProperty('--at', `${Math.min(100, (stardust.earned / rule.tokens) * 100).toFixed(1)}%`)
+      li.append(bar)
+    }
+    unlocks.append(li)
+  }
+  box.append(head, buttons, el('h4', { textContent: '열리는 장식' }), unlocks)
+  return box
+}
+
+function addRemnant(remnant) {
+  remnants = [...remnants.filter((r) => Date.now() - r.diedAt < REMNANT_MS), remnant].slice(-8)
+  try {
+    localStorage.setItem(REMNANT_KEY, JSON.stringify(remnants))
+  } catch {}
+  galaxy?.setRemnants(remnants)
+}
+
 function loadLog() {
   const empty = { meteors: 0, tints: [0, 0, 0, 0], comets: 0, thrown: 0, swallowed: 0, core: 0, splashes: 0, cleaned: 0, auroras: 0, novas: 0, births: 0, badges: [], since: Date.now() }
   try {
@@ -1304,6 +1832,7 @@ function saveLog() {
 }
 
 function onPlay(event) {
+  if (event.type === 'ring') return toast(`🪐 ${event.planet} 둘레에 먼지 고리가 생겼어요`)
   const field = LOG_FIELDS[event.type]
   if (!field) return
   playLog[field]++
@@ -1311,6 +1840,7 @@ function onPlay(event) {
   const fresh = BADGES.filter((b) => !playLog.badges.includes(b.id) && b.earned(playLog))
   playLog.badges.push(...fresh.map((b) => b.id))
   saveLog()
+  checkUnlocks()
   if (fresh.length) toast(`${fresh[0].icon} 새 배지 · ${fresh[0].name}`)
   else if (event.type === 'meteor') toast(`🌠 별똥별을 잡았어요 · ${playLog.meteors}개째`)
   else if (event.type === 'comet') toast('☄️ 큰 혜성을 잡았어요')
@@ -1366,14 +1896,15 @@ function renderLog() {
   }
   const how = el('p', { className: 'lg-how' })
   how.innerHTML = '지나가는 별똥별은 <b>눌러서</b> 잡아요. 빈 곳을 <kbd class="key">Alt</kbd>+끌기(또는 꾹 눌렀다 끌기)로 당겼다 놓으면 혜성이 날아가요. 별 옆을 지나면 휘어요. 행성을 같은 식으로 끌어 아래 블랙홀에 넣으면 그 터미널을 닫을지 물어봐요.'
-  logEl.replaceChildren(head, stats, badges, how)
+  logEl.replaceChildren(head, dustSection(), stats, badges, how)
 }
 
 // A planet dropped into the black hole: say what closing it means and ask first.
 function askClean(handle) {
-  const session = sessions.get(handle)
+  const test = testItems.get(handle)
+  const session = sessions.get(handle) || (test && { title: test.planet, project: test.app })
   if (!session) return galaxy?.cancelClean()
-  const status = statusOf(handle)
+  const status = test ? test.status : statusOf(handle)
   cleanAsk = { handle }
   const title = el('b', { id: 'cf-title', textContent: '🕳 블랙홀로 보낼까요?' })
   const name = el('p', { className: 'cf-name', textContent: `${session.title || session.name} · ${session.project}` })
@@ -1412,12 +1943,175 @@ function cancelClean() {
 async function confirmClean() {
   const { handle } = cleanAsk
   closeCleanAsk()
+  if (testItems.delete(handle)) {
+    saveTestItems()
+    return galaxy?.swallow(handle)
+  }
   const result = await api('/api/close', { handle, confirmed: true })
   if (!result.ok) {
     galaxy?.cancelClean()
     return toast(result.error?.message || '터미널을 닫지 못했어요')
   }
   galaxy?.swallow(handle)
+}
+
+// ---------- a new star (a new project) or a new planet (another session in one) ----------
+
+// `target` is the star a new planet joins: { app, path }. Without one, a new star.
+function toggleBirth(on = birthEl.hidden, target = null) {
+  if (on && prefs.view !== 'galaxy') return toast('새 별은 은하 보기에서 만들어요')
+  birthEl.hidden = !on
+  birth.target = on ? target : null
+  birthButton.setAttribute('aria-expanded', String(on && !target))
+  clearTimeout(birth.timer)
+  birth.check++
+  if (!on) return birthEl.replaceChildren()
+  toggleLog(false)
+  toggleGuide(false)
+  renderBirth()
+}
+
+// A new planet for the star in the report, in the folder of the planet being looked at.
+function openPlanetForm(app) {
+  const own = [...sessions.values()].filter((s) => s.project === app)
+  const looking = sessions.get(report?.handle)
+  const path = (looking?.project === app ? looking : own[0])?.path
+  if (path) toggleBirth(true, { app, path })
+}
+
+function renderBirth() {
+  const target = birth.target
+  const head = el('header', { className: 'lg-head' })
+  const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
+  close.addEventListener('click', () => toggleBirth(false))
+  head.append(el('b', { textContent: target ? `🪐 ${target.app}에 새 행성` : '✨ 새 별 만들기' }), close)
+  const about = el('p', {
+    className: 'nb-about',
+    textContent: target ? '이 프로젝트에서 에이전트를 하나 더 띄워요. 터미널이 열리면 행성이 생겨요.' : '새 프로젝트 폴더를 만들어 Orca에 넣고, 그 안에서 에이전트를 시작해요. 터미널이 열리면 별이 태어나요.'
+  })
+  const parts = [head, about]
+  if (target) {
+    parts.push(planetWhere(target))
+  } else {
+    const name = el('input', { name: 'name', className: 'nb-name', placeholder: '프로젝트 이름', maxLength: 60, required: true, spellcheck: false })
+    name.setAttribute('aria-label', '프로젝트 이름')
+    parts.push(name, el('p', { className: 'nb-where', textContent: '이름을 적으면 어디에 만들지 알려드려요.' }))
+  }
+  const agents = el('fieldset', { className: 'nb-agents' })
+  agents.append(el('legend', { textContent: '띄울 것' }))
+  const agent = BIRTH_AGENTS.some(([id]) => id === prefs.newAgent) ? prefs.newAgent : 'claude'
+  for (const [id, label] of BIRTH_AGENTS) {
+    const option = el('label', { className: 'nb-agent' })
+    option.append(el('input', { type: 'radio', name: 'agent', value: id, checked: id === agent }), el('span', { textContent: label }))
+    agents.append(option)
+  }
+  const prompt = el('textarea', { name: 'prompt', className: 'nb-prompt', rows: 3, maxLength: 4000, disabled: agent === 'shell', placeholder: target ? '할 일 (비워 둬도 돼요)\n예: 테스트를 고쳐줘' : '처음 할 일 (비워 둬도 돼요)\n예: 할일 앱을 만들어줘' })
+  prompt.setAttribute('aria-label', '할 일')
+  const actions = el('div', { className: 'cf-actions' })
+  const no = el('button', { type: 'button', className: 'cf-no', textContent: '그만두기' })
+  const go = el('button', { type: 'submit', className: 'cf-yes nb-go', textContent: goLabel(), disabled: !target })
+  no.addEventListener('click', () => toggleBirth(false))
+  actions.append(no, go)
+  birthEl.replaceChildren(...parts, agents, prompt, actions)
+  ;(target ? (prompt.disabled ? go : prompt) : birthEl.querySelector('.nb-name')).focus()
+}
+
+// Where the new planet starts: the folder, or a choice when the star has several.
+function planetWhere(target) {
+  const folders = new Map()
+  for (const s of sessions.values()) if (s.project === target.app && !folders.has(s.path)) folders.set(s.path, s.branch)
+  if (folders.size < 2) return el('p', { className: 'nb-where', textContent: `띄울 곳 · ${shortPath(target.path)}` })
+  const label = el('label', { className: 'nb-where nb-folder' })
+  const select = el('select', { name: 'folder' })
+  for (const [path, branch] of folders) select.append(el('option', { value: path, textContent: `${branch || '작업 폴더'} · ${shortPath(path)}`, selected: path === target.path }))
+  label.append(el('span', { textContent: '띄울 곳' }), select)
+  return label
+}
+
+function goLabel() {
+  return birth.target ? '🪐 행성 만들기' : '✨ 별 만들기'
+}
+
+// The same rule the server keeps, so the form can say so before asking.
+function birthName(value) {
+  const name = value.normalize('NFC').trim().replace(/\s+/g, ' ')
+  return { name, bad: name.length > 60 || name.startsWith('.') || /[/\\:*?"<>|\u0000-\u001f]/.test(name) }
+}
+
+function showWhere(text, warn = false) {
+  const where = birthEl.querySelector('.nb-where')
+  if (!where) return
+  where.textContent = text
+  where.classList.toggle('warn', warn)
+}
+
+function onBirthInput(e) {
+  if (e.target.name === 'agent') {
+    prefs.newAgent = e.target.value
+    savePrefs()
+    birthEl.querySelector('.nb-prompt').disabled = e.target.value === 'shell'
+    return
+  }
+  if (e.target.name === 'folder') return void (birth.target.path = e.target.value)
+  if (e.target.name !== 'name') return
+  clearTimeout(birth.timer)
+  const ask = ++birth.check
+  const go = birthEl.querySelector('.nb-go')
+  go.disabled = true
+  const { name, bad } = birthName(e.target.value)
+  if (!name) return showWhere('이름을 적으면 어디에 만들지 알려드려요.')
+  if (bad) return showWhere('이름에는 / \\ : * ? " < > | 를 쓸 수 없고, 점으로 시작할 수 없어요. 60자까지예요.', true)
+  birth.timer = setTimeout(async () => {
+    const res = await api('/api/project', { name, check: true })
+    if (ask !== birth.check || birthEl.hidden) return
+    if (!res.ok) return showWhere(res.error?.message || '어디에 만들지 확인하지 못했어요.', true)
+    if (res.result.taken) return showWhere(`이미 있는 폴더예요 · ${shortPath(res.result.path)}`, true)
+    showWhere(`만들 곳 · ${shortPath(res.result.path)}`)
+    go.disabled = birth.busy
+  }, 250)
+}
+
+async function onBirthSubmit(e) {
+  e.preventDefault()
+  const go = birthEl.querySelector('.nb-go')
+  const target = birth.target
+  if (birth.busy || !go || go.disabled) return
+  const { name, bad } = target ? { name: target.app } : birthName(birthEl.querySelector('.nb-name').value)
+  if (!name || bad) return
+  const agent = birthEl.querySelector('input[name="agent"]:checked')?.value || 'claude'
+  const prompt = agent === 'shell' ? '' : birthEl.querySelector('.nb-prompt').value.trim()
+  // Terminals already in that folder, so the camera can tell the new one.
+  const known = new Set(target ? [...sessions.keys()].filter((h) => sessions.get(h).path === target.path) : [])
+  birth.busy = true
+  go.disabled = true
+  go.textContent = target ? '띄우는 중…' : '만드는 중…'
+  const res = target ? await api('/api/session', { path: target.path, agent, prompt }) : await api('/api/project', { name, agent, prompt })
+  birth.busy = false
+  if (!res.ok) {
+    const message = res.error?.message || (target ? '새 행성을 만들지 못했어요' : '새 별을 만들지 못했어요')
+    if (birthEl.hidden || birth.target !== target) return toast(message, 4000)
+    go.disabled = false
+    go.textContent = goLabel()
+    return showWhere(message, true)
+  }
+  if (birth.target === target) toggleBirth(false)
+  birth.wait = { path: res.result.path, known, until: Date.now() + BIRTH_WAIT_MS }
+  if (!res.result.started) toast(res.result.warning, 6000)
+  else toast(target ? `🪐 ${name} · 행성이 생기고 있어요` : `✨ ${name} · 별이 태어나고 있어요`, 3500)
+}
+
+// The terminal just started from here: the camera goes to meet its star or planet.
+function greetNewStar(list) {
+  const wait = birth.wait
+  if (Date.now() > wait.until) return (birth.wait = null)
+  const session = list.find((s) => s.path === wait.path && !wait.known.has(s.handle))
+  if (!session) return
+  birth.wait = null
+  setTimeout(() => sessions.has(session.handle) && pick(session.handle), 600)
+}
+
+function shortPath(p) {
+  return p.replace(/^\/(?:Users|home)\/[^/]+(?=\/)/, '~')
 }
 
 // ---------- galaxy ----------
@@ -1428,11 +2122,21 @@ function ensureGalaxy() {
     .then(({ createGalaxy }) => {
       galaxy = createGalaxy(cosmos, {
         onPick: pick,
-        onPickSystem: (app) => openReport(app, null),
-        onWarp: (seconds) => sound.warp(seconds),
+        onPickSystem: (app) => {
+          if ([...testItems.values()].some((i) => i.app === app)) testFocus = app
+          openReport(app, null)
+        },
+        onWarp: (seconds, star) => sound.warp(seconds, star),
+        // The star the camera is with gives the music its colour.
+        onWatch: (star) => sound.setMood({ star }),
         onSound: (kind) => sound.chime(kind),
         onPlay,
         onClean: askClean,
+        onRemnant: addRemnant,
+        spots,
+        onSpot: saveSpot,
+        onGlide: (seconds, pan) => sound.glide(seconds, pan),
+        onMilestone,
         onOverview: () => {
           setPaneOpen(false)
           closeReport()
@@ -1441,9 +2145,13 @@ function ensureGalaxy() {
       new ResizeObserver(layoutGalaxy).observe(gxHud)
       layoutGalaxy()
       galaxy.setLook(lookOf(prefs.look))
+      galaxy.setDecor(decorFlags())
+      galaxy.setRemnants(remnants)
       galaxy.setActive(prefs.view === 'galaxy' && !maximized)
       renderAll()
-      if (focusedHandle && prefs.view === 'galaxy') galaxy.flyTo(focusedHandle)
+      // Only a session the user chose; the opening view is the whole galaxy.
+      if (focusedHandle && prefs.view === 'galaxy' && userPicked) galaxy.flyTo(focusedHandle)
+      checkUnlocks()
     })
     .catch((error) => {
       console.error(error)
@@ -1485,9 +2193,9 @@ function setZen(on) {
   zenMoved = 0
   document.body.classList.toggle('zen', on)
   if (!on) return
+  // The camera stays where it was: quiet mode only clears the screen around it.
   setPaneOpen(false)
   closeReport()
-  galaxy?.overview()
 }
 
 // Nothing to answer, nobody touching anything, the pane shut: let the galaxy have the screen.
@@ -1518,6 +2226,7 @@ function renderGalaxy(all) {
     active: Date.now() - (session.lastOutputAt || 0) < 15_000,
     show
   }))
+  items.push(...testItems.values())
   displayOrder = galaxy ? galaxy.update(items, { focused: focusedHandle, gone: vanished, born, stats: appStats(all), searching: Boolean(searchQuery()) }) : items.filter((i) => i.show).map((i) => i.handle)
   galaxy?.setSearchTarget(nextMatch())
   vanished.clear()
@@ -1552,7 +2261,7 @@ function renderReport() {
   const rows = order.filter((h) => STATUS[statusOf(h)].group !== 'shell')
   const shells = order.length - rows.length
   const minute = Math.floor(Date.now() / 60000)
-  const key = JSON.stringify([report, minute, shells, rows.map((h) => [h, statusOf(h), rowSummary(h, sessions.get(h), statusOf(h)), menus.get(h)?.signature, !!menus.get(h) && isChoicePending(h, menus.get(h)), sessions.get(h).title, servers[sessions.get(h).path], disk[sessions.get(h).path]])])
+  const key = JSON.stringify([report, minute, shells, rows.map((h) => [h, statusOf(h), rowSummary(h, sessions.get(h), statusOf(h)), menus.get(h)?.signature, !!menus.get(h) && isChoicePending(h, menus.get(h)), menuPick?.handle === h && menuPick.n, sessions.get(h).title, servers[sessions.get(h).path], disk[sessions.get(h).path]])])
   if (key === reportEl.dataset.key) return
   reportEl.dataset.key = key
   const typing = document.activeElement?.closest?.('.rp-quick')?.dataset.handle
@@ -1562,9 +2271,11 @@ function renderReport() {
   const head = el('header', { className: 'rp-head' })
   const title = el('div', { className: 'rp-title' })
   title.append(el('b', { textContent: report.app }), el('span', { textContent: reportCounts(counts) }))
+  const planet = el('button', { type: 'button', className: 'rp-new', title: '이 프로젝트에 에이전트를 하나 더 띄워요', textContent: '🪐 새 행성' })
+  planet.addEventListener('click', () => openPlanetForm(report.app))
   const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
   close.addEventListener('click', closeReport)
-  head.append(title, close)
+  head.append(title, planet, close)
 
   const list = el('div', { className: 'rp-list' })
   const serversShown = new Set()
@@ -1741,11 +2452,46 @@ function warp(node) {
 function setSound(on) {
   prefs.sound = on
   savePrefs()
-  soundButton.innerHTML = icon(on ? 'sound' : 'mute')
-  soundButton.ariaPressed = String(on)
-  soundButton.title = on ? '소리 끄기 (M)' : '소리 켜기 (M)'
-  sound.setEnabled(on)
+  paintSound()
+  sound.setEnabled(on && speakerHere)
   syncAmbient()
+}
+
+function paintSound() {
+  const elsewhere = prefs.sound && !speakerHere
+  soundButton.innerHTML = icon(prefs.sound && !elsewhere ? 'sound' : 'mute')
+  soundButton.ariaPressed = String(prefs.sound)
+  soundButton.classList.toggle('elsewhere', elsewhere)
+  soundButton.title = elsewhere ? '다른 창에서 소리가 나고 있어요 · 이 창을 누르면 여기서 나요' : prefs.sound ? '소리 끄기 (M)' : '소리 켜기 (M)'
+}
+
+function pageId() {
+  try {
+    const saved = sessionStorage.getItem('orrery-page')
+    if (saved) return saved
+    const id = crypto.randomUUID()
+    sessionStorage.setItem('orrery-page', id)
+    return id
+  } catch {
+    return crypto.randomUUID()
+  }
+}
+
+function setSpeaker(id) {
+  const here = !id || id === PAGE_ID
+  if (here === speakerHere) return
+  speakerHere = here
+  paintSound()
+  sound.setEnabled(prefs.sound && speakerHere)
+}
+
+// A click or key press brings the sound to this page (checked in again now and then, so
+// the server knows which page was touched last).
+function touchSpeaker() {
+  const now = Date.now()
+  if (speakerHere && now - touchedAt < 10_000) return
+  touchedAt = now
+  api('/api/speaker', { page: PAGE_ID, touched: true, visible: document.visibilityState === 'visible' })
 }
 
 // The drone plays while the galaxy is on screen; event bells ring in every view, even hidden.
@@ -1820,7 +2566,7 @@ function movePalette(step) {
 
 // Every word must match somewhere; names count more than screen text.
 function searchSessions(query) {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  const words = searchWords(query)
   const results = []
   for (const [handle, session] of sessions) {
     const status = statusOf(handle)
@@ -1839,10 +2585,10 @@ function searchSessions(query) {
       let best = 0
       for (const [text, weight] of fields) {
         const at = text.toLowerCase().indexOf(word)
-        if (at === -1) continue
+        if (at === -1 && !foundIn(text, word, { initials: weight >= 3 })) continue
         const value = weight * (at === 0 ? 1.5 : 1)
         if (value > best) best = value
-        if (weight === 1 && best === value) snippet = lineAround(text, at)
+        if (weight === 1 && best === value && at >= 0) snippet = lineAround(text, at)
       }
       if (!best) {
         score = 0
@@ -1925,15 +2671,50 @@ function searchQuery() {
   return search.value.trim().toLowerCase()
 }
 
+// Every word has to turn up somewhere, in any order. Spaces don't count, so '포탈모드'
+// finds '포탈 모드'. In names, Korean initials count too, so 'ㅁㄹ' finds '메모리'; on
+// screen they would match nearly everything.
+function searchWords(query) {
+  return query.toLowerCase().split(/\s+/).filter(Boolean)
+}
+
+function foundIn(text, word, { initials = false } = {}) {
+  if (!text) return false
+  const folded = text.toLowerCase().replace(/\s+/g, '')
+  if (folded.includes(word)) return true
+  return initials && /^[ㄱ-ㅎ]+$/.test(word) && folded.replace(/[가-힣]/g, (c) => INITIALS[Math.floor((c.charCodeAt(0) - 0xac00) / 588)]).includes(word)
+}
+
+// Where a session's words live, the ones that name it first.
+function searchFields(session, handle) {
+  return [
+    [session.title, session.name],
+    [session.project],
+    [session.branch, session.comment, session.agent?.prompt, session.agent?.lastAssistantMessage, (screens.get(handle) || []).join('\n')]
+  ]
+}
+
+// How well a session answers the query: 0 by its own title or name, 1 by its app, 2 by
+// anything else it holds, -1 not at all.
+function searchRank(session, handle, words = searchWords(searchQuery())) {
+  const fields = searchFields(session, handle)
+  let rank = 0
+  for (const word of words) {
+    const at = fields.findIndex((group, i) => group.some((text) => foundIn(text, word, { initials: i < 2 })))
+    if (at < 0) return -1
+    rank = Math.max(rank, at)
+  }
+  return rank
+}
+
 // Found in the planet's own name first, then in its app's, then anywhere on screen.
 function searchHits() {
-  const query = searchQuery()
-  if (!query) return []
-  const has = (text) => text && text.toLowerCase().includes(query)
-  const rank = (session) => (has(session.title) || has(session.name) ? 0 : has(session.project) ? 1 : 2)
+  const words = searchWords(searchQuery())
+  if (!words.length) return []
+  const rank = (handle) => searchRank(sessions.get(handle), handle, words)
   return displayOrder
     .filter((handle) => sessions.has(handle))
-    .map((handle, i) => ({ handle, i, rank: rank(sessions.get(handle)) }))
+    .map((handle, i) => ({ handle, i, rank: rank(handle) }))
     .sort((a, b) => a.rank - b.rank || a.i - b.i)
     .map((hit) => hit.handle)
 }
@@ -1974,8 +2755,13 @@ function renderSearchHint() {
 function onShortcut(e) {
   if (help.open || !paletteEl.hidden) return
   const typing = e.target.matches('input, textarea, select')
+  // An empty reply box lets the arrows and Enter through to a menu that is waiting.
+  const idle = e.target.matches('.reply textarea') && !e.target.value && !e.isComposing && menuHandle()
+  if (idle && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && movePick(e.key === 'ArrowDown' ? 1 : -1)) return e.preventDefault()
+  if (idle && e.key === 'Enter' && !e.shiftKey && choosePicked()) return e.preventDefault()
   if (e.key === 'Escape' && !typing) return onEscape()
   if (e.key === 'Escape' && e.target === search) return search.blur()
+  if (e.key === 'Escape' && e.target.closest('.gx-birth')) return toggleBirth(false)
   if ((e.metaKey || e.ctrlKey) && e.code === 'KeyK') {
     e.preventDefault()
     return openPalette()
@@ -1997,13 +2783,18 @@ function onShortcut(e) {
     const row = e.target.closest('.row')
     // Other buttons keep their own Enter.
     if (e.target.closest('button') && !row) return
+    if (!row && choosePicked()) return e.preventDefault()
     return run(() => {
       if (row) pick(row.dataset.handle)
       enterReply(row?.dataset.handle || handle)
     })
   }
-  // Arrows scroll a focused terminal screen instead.
-  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.target.closest('.screen')) return run(() => moveFocus(e.key === 'ArrowDown' ? 1 : -1))
+  // Arrows pick among the options of a menu in front, otherwise they move between
+  // sessions. They scroll a focused terminal screen instead.
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.target.closest('.screen')) {
+    const step = e.key === 'ArrowDown' ? 1 : -1
+    return run(() => movePick(step) || moveFocus(step))
+  }
   const actions = {
     KeyJ: () => moveFocus(1),
     KeyK: () => moveFocus(-1),
@@ -2023,6 +2814,7 @@ function onShortcut(e) {
       setPaneOpen(false)
       closeReport()
     },
+    KeyC: () => toggleBirth(),
     KeyL: () => {
       if (prefs.view !== 'galaxy') return toast('우주 도감은 은하 보기에서 봐요')
       toggleLog()
@@ -2052,6 +2844,7 @@ function onShortcut(e) {
 
 function onEscape() {
   if (cleanAsk) cancelClean()
+  else if (!birthEl.hidden) toggleBirth(false)
   else if (!settingsEl.hidden) toggleSettings(false)
   else if (zen) setZen(false)
   else if (maximized) setMaximized(false)
@@ -2150,15 +2943,19 @@ function openHelp() {
   help.showModal()
 }
 
-function toast(message) {
+function toast(message, ms = 1800) {
   clearTimeout(toastTimer)
   toastEl.textContent = message
   toastEl.hidden = false
-  toastTimer = setTimeout(() => (toastEl.hidden = true), 1800)
+  toastTimer = setTimeout(() => (toastEl.hidden = true), ms)
 }
 
 // A session the user chose themselves (as opposed to auto-follow).
 function pick(handle) {
+  if (testItems.has(handle)) {
+    testFocus = testItems.get(handle).app
+    return galaxy?.flyTo(handle)
+  }
   userPicked = true
   setFocus(handle)
 }
@@ -2201,12 +2998,18 @@ function applyPrefs() {
 }
 
 function loadPrefs() {
-  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true, look: LOOK_DEFAULTS, mix: {} }
+  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true, look: LOOK_DEFAULTS, mix: {}, mixOff: {}, decor: {}, musicMood: true, newAgent: 'claude' }
   try {
     const saved = JSON.parse(localStorage.getItem('orca-portal-prefs') || '{}')
     if (saved.version !== 2) Object.assign(saved, { version: 2, view: 'galaxy' })
     if (!VIEWS[saved.view]) delete saved.view
-    return { ...defaults, ...saved, collapsed: { ...defaults.collapsed, ...saved.collapsed }, look: { ...LOOK_DEFAULTS, ...saved.look }, mix: { ...saved.mix } }
+    const mix = { ...saved.mix }
+    for (const [old, keys] of Object.entries(OLD_MIX)) {
+      if (!(old in mix)) continue
+      for (const key of keys) mix[key] ??= mix[old]
+      delete mix[old]
+    }
+    return { ...defaults, ...saved, collapsed: { ...defaults.collapsed, ...saved.collapsed }, look: { ...LOOK_DEFAULTS, ...saved.look }, mix, mixOff: { ...saved.mixOff }, decor: { ...saved.decor } }
   } catch {
     return defaults
   }
@@ -2228,10 +3031,11 @@ function setConn(state, status) {
 // ---------- helpers ----------
 
 function matchesSearch(session, handle) {
-  const query = search.value.trim().toLowerCase()
-  if (!query) return true
-  const haystack = [session.project, session.name, session.branch, session.title, session.comment, session.agent?.prompt, session.agent?.lastAssistantMessage, ...(screens.get(handle) || [])]
-  return haystack.some((text) => text && text.toLowerCase().includes(query))
+  return !searchQuery() || searchRank(session, handle) >= 0
+}
+
+function compactNumber(n) {
+  return compactFormat.format(n)
 }
 
 function el(tag, props = {}) {

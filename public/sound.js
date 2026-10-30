@@ -9,7 +9,8 @@
 
 const CHIME_GAP_MS = 1500
 // The listener's own mix, each from 0 to 1.5 (1 is the mix as designed).
-export const MIX_DEFAULTS = { sea: 1, nature: 1, bamboo: 1, music: 1, bells: 1, alerts: 1 }
+// Every sound has its own volume (0 turns it off).
+export const MIX_DEFAULTS = { waves: 1, wind: 1, bamboo: 1, birds: 1, crickets: 1, drops: 1, music: 1, windbells: 1, temple: 1, alerts: 1 }
 // Small bronze wind bells: two of them, a little out of tune with each other.
 const WIND_BELLS = [1568, 1864.7]
 const WIND_BELL_PARTIALS = [
@@ -27,20 +28,45 @@ const TEMPLE_BELL_PARTIALS = [
   [5.02, 0.12, 1.3, 8],
   [6.41, 0.06, 1.7, 5]
 ]
-// The music: one note per voice, each repeating on its own slow loop (seconds), in the
-// spirit of Music for Airports. The loops never line up the same way twice. All notes
-// are G minor pentatonic, the key the bells and bowls are tuned to.
-const MUSIC_VOICES = [
-  [587.33, 19.7, 1.5], // D5
-  [466.16, 23.3, 6], // B♭4
-  [349.23, 29.1, 11], // F4
-  [392.0, 31.7, 3.5], // G4
-  [523.25, 37.3, 16], // C5
-  [293.66, 41.9, 22], // D4
-  [698.46, 47.6, 28] // F5
+// The music's modes, brightest first: each a pentatonic set on G (semitones above it).
+// Over the whole galaxy the music is in G minor pentatonic, the key the bells and bowls
+// are tuned to. A star brings its own mode: young blue stars the bright ones, old red
+// stars the dark ones. Every mode keeps G, so moving between stars never jars.
+export const MODES = [
+  { name: '리디안', steps: [0, 4, 6, 7, 11] }, // G B C♯ D F♯: floating
+  { name: '장조', steps: [0, 2, 4, 7, 9] }, // G A B D E: open and bright
+  { name: '서스', steps: [0, 2, 5, 7, 10] }, // G A C D F: neither bright nor dark
+  { name: '도리안', steps: [0, 2, 3, 7, 9] }, // G A B♭ D E: minor with a lift
+  { name: '단조', steps: [0, 3, 5, 7, 10] }, // G B♭ C D F: the bells' own key
+  { name: '미야코부시', steps: [0, 1, 5, 7, 8] } // G A♭ C D E♭: hushed, far away
 ]
-// Water drops are tuned an octave or two above the music: G minor pentatonic again.
-const DROP_NOTES = [783.99, 932.33, 1046.5, 1174.66, 1396.91, 1567.98]
+export const HOME_MODE = 4
+const G3 = 196
+const SCALES = MODES.map((_, mode) => modeScale(mode))
+// The whole home scale, G3 to G6. Alerts keep to it wherever the camera is.
+const SCALE = SCALES[HOME_MODE]
+// The music: one note per voice, each repeating on its own slow loop (seconds), in the
+// spirit of Music for Airports. The loops never line up the same way twice. A voice is a
+// step of the scale (in the home key: D5, B♭4, F4, G4, C5, D4, F5), so a star's mode
+// moves every voice to its own note. The music also follows the sessions: a question
+// waiting hangs an unresolved note over it, agents at work make it busier, and the star
+// the camera is with gives it its mode, its timbre and its pace.
+const MUSIC_VOICES = [
+  [8, 19.7, 1.5],
+  [6, 23.3, 6],
+  [4, 29.1, 11],
+  [5, 31.7, 3.5],
+  [7, 37.3, 16],
+  [3, 41.9, 22],
+  [9, 47.6, 28]
+]
+// The music's brightness (lowpass cutoff, Hz): in the overview, and with the youngest and
+// the oldest star.
+const TONE_OPEN = 6000
+const TONE_YOUNG = 9000
+const TONE_OLD = 1600
+// Water drops are tuned an octave or two above the music, in its mode: from this step up.
+const DROP_FROM = 10
 // Three crickets, each with its own pitch and place.
 const CRICKETS = [
   [4300, -0.5],
@@ -73,8 +99,18 @@ export function createSound() {
   let music = null
   let lastChime = 0
   let lastWarp = 0
+  let lastGlide = 0
   let waiting = false
   let mix = { ...MIX_DEFAULTS }
+  // What the sessions are doing, for the music: agents at work, questions waiting, and the
+  // star the camera is with ({ warmth: 0 young … 1 old, busy, seed }, or null).
+  let mood = { working: 0, attention: 0, star: null }
+  let moodOn = true
+  let density = 0 // eased share of agents at work, 0 to 1
+  let tension = null // { since, next } while a question waits
+  let nextRun = 0
+  let musicTone = null
+  let shimmer = null
 
   function setup() {
     ctx = new AudioContext()
@@ -97,7 +133,8 @@ export function createSound() {
     const wet = ctx.createGain()
     wet.gain.value = 0.8
     reverb.connect(clear).connect(damp).connect(wet).connect(limiter)
-    // The sea and the wind are outdoors: no reverb.
+    // The sea and the wind are outdoors: no reverb. This bus fades them in and out
+    // with the galaxy view; each has its own volume after it.
     const ambientBus = ctx.createGain()
     ambientBus.gain.value = 0
     ambientBus.connect(limiter)
@@ -108,9 +145,23 @@ export function createSound() {
     bellBus.connect(reverb)
     const musicBus = ctx.createGain()
     musicBus.gain.value = 0
-    musicBus.connect(limiter)
-    musicBus.connect(reverb)
-    // One volume per channel the listener can set. Birds and crickets stay dry like the
+    // The star the camera is with colours the music: brighter for a young star, warmer for
+    // an old one, and a slow tremolo while its agents work.
+    musicTone = ctx.createBiquadFilter()
+    musicTone.type = 'lowpass'
+    musicTone.frequency.value = TONE_OPEN
+    musicTone.Q.value = 0.5
+    const tremolo = ctx.createGain()
+    shimmer = ctx.createGain()
+    shimmer.gain.value = 0
+    const wobble = ctx.createOscillator()
+    wobble.frequency.value = 4.5
+    wobble.connect(shimmer).connect(tremolo.gain)
+    wobble.start()
+    musicBus.connect(musicTone).connect(tremolo)
+    tremolo.connect(limiter)
+    tremolo.connect(reverb)
+    // One volume per sound the listener can set. Birds and crickets stay dry like the
     // sea; water drops, bells and alerts ring out through the reverb.
     const gain = (to, level) => {
       const node = ctx.createGain()
@@ -121,14 +172,19 @@ export function createSound() {
     bus = {
       ambient: ambientBus,
       music: musicBus,
-      nature: gain(limiter, mix.nature),
-      dropsWet: gain(bellBus, mix.nature),
-      bells: gain(bellBus, mix.bells),
+      waves: gain(ambientBus, mix.waves),
+      wind: gain(ambientBus, mix.wind),
+      birds: gain(limiter, mix.birds),
+      crickets: gain(limiter, mix.crickets),
+      drops: gain(bellBus, mix.drops),
+      windbells: gain(bellBus, mix.windbells),
+      temple: gain(bellBus, mix.temple),
       alerts: gain(bellBus, mix.alerts),
       // The grove's leaves are outdoors and dry; a stem's knock carries a little.
       bamboo: gain(limiter, mix.bamboo),
       bambooWet: gain(bellBus, mix.bamboo)
     }
+    applyTone()
   }
 
   // Wait for the first click or key press before creating any audio.
@@ -162,9 +218,9 @@ export function createSound() {
     })
     if (ctx.state === 'suspended') ctx.resume().catch(() => {})
     if (ambientOn) {
-      if (!ambient) ambient = startAmbient(ctx, bus.ambient)
+      if (!ambient) ambient = startAmbient(ctx, bus.waves, bus.wind)
       if (!grove) grove = startGrove(ctx, bus.bamboo)
-      fade(bus.ambient, 0.3 * mix.sea, 5)
+      fade(bus.ambient, 0.3, 5)
       fade(grove.level, 1, 6)
       if (!bambooTimer) scheduleBamboo(2500 + Math.random() * 4000)
       fade(bus.music, 0.22 * mix.music, 10)
@@ -204,12 +260,12 @@ export function createSound() {
       const hour = new Date().getHours()
       const morning = hour >= 5 && hour < 10
       const day = hour >= 10 && hour < 18
-      if (morning || day) {
+      if ((morning || day) && mix.birds > 0) {
         const at = ctx.currentTime + 0.05
         const pan = Math.random() * 1.6 - 0.8
-        birdCall(ctx, bus.nature, { at, level: 0.028 + Math.random() * 0.02, pan })
+        birdCall(ctx, bus.birds, { at, level: 0.028 + Math.random() * 0.02, pan })
         // Sometimes another answers from across the way.
-        if (Math.random() < (morning ? 0.5 : 0.25)) birdCall(ctx, bus.nature, { at: at + 1.2 + Math.random() * 1.5, level: 0.02 + Math.random() * 0.015, pan: -pan * 0.8 })
+        if (Math.random() < (morning ? 0.5 : 0.25)) birdCall(ctx, bus.birds, { at: at + 1.2 + Math.random() * 1.5, level: 0.02 + Math.random() * 0.015, pan: -pan * 0.8 })
       }
       scheduleBirds(morning ? 5000 + Math.random() * 9000 : day ? 14000 + Math.random() * 20000 : 60000)
     }, delay)
@@ -223,17 +279,22 @@ export function createSound() {
       const hour = new Date().getHours()
       const night = hour >= 20 || hour < 5
       const dusk = hour >= 18 && hour < 20
-      if (night || (dusk && Math.random() < 0.5)) {
+      if ((night || (dusk && Math.random() < 0.5)) && mix.crickets > 0) {
         const [freq, pan] = CRICKETS[Math.floor(Math.random() * CRICKETS.length)]
         let at = ctx.currentTime + 0.05
         const chirps = 4 + Math.floor(Math.random() * 6)
         for (let i = 0; i < chirps; i++) {
-          cricket(ctx, bus.nature, { at, freq, pulses: 3 + (Math.random() < 0.3 ? 1 : 0), level: 0.01 + Math.random() * 0.004, pan })
+          cricket(ctx, bus.crickets, { at, freq, pulses: 3 + (Math.random() < 0.3 ? 1 : 0), level: 0.01 + Math.random() * 0.004, pan })
           at += 0.42 + Math.random() * 0.12
         }
       }
       scheduleCrickets(night ? 2500 + Math.random() * 4000 : 30000)
     }, delay)
+  }
+
+  // The bells on the eaves: G, and the mode's second note above it (B♭ in the home key).
+  function eaveBells() {
+    return [WIND_BELLS[0], WIND_BELLS[0] * 2 ** (MODES[moodOn ? starMode(mood.star) : HOME_MODE].steps[1] / 12)]
   }
 
   // A drop into the stone basin, sometimes followed by a smaller one.
@@ -242,10 +303,11 @@ export function createSound() {
       dropTimer = null
       if (!enabled || !ambientOn) return
       const at = ctx.currentTime + 0.05
-      const note = DROP_NOTES[Math.floor(Math.random() * DROP_NOTES.length)]
+      const drops = scale().slice(DROP_FROM)
+      const note = drops[Math.floor(Math.random() * drops.length)]
       const pan = Math.random() * 0.8 - 0.4
-      waterDrop(ctx, bus.dropsWet, note, { at, level: 0.035 + Math.random() * 0.02, pan })
-      if (Math.random() < 0.35) waterDrop(ctx, bus.dropsWet, note * (Math.random() < 0.5 ? 1.5 : 1.333), { at: at + 0.35 + Math.random() * 0.5, level: 0.02, pan })
+      if (mix.drops > 0) waterDrop(ctx, bus.drops, note, { at, level: 0.035 + Math.random() * 0.02, pan })
+      if (mix.drops > 0 && Math.random() < 0.35) waterDrop(ctx, bus.drops, note * (Math.random() < 0.5 ? 1.5 : 1.333), { at: at + 0.35 + Math.random() * 0.5, level: 0.02, pan })
       scheduleDrop(9000 + Math.random() * 20000)
     }, delay)
   }
@@ -263,7 +325,7 @@ export function createSound() {
 
   function sway(at, seconds, strength) {
     grove?.sway(at, seconds, strength)
-    if (strength < 0.45 || Math.random() < 0.3) return
+    if (strength < 0.45 || Math.random() < 0.3 || !(mix.bamboo > 0)) return
     let t = at + seconds * (0.2 + Math.random() * 0.25)
     const freq = 900 + Math.random() * 700
     const pan = Math.random() * 1.4 - 0.7
@@ -279,20 +341,106 @@ export function createSound() {
   // Looks a second and a half ahead and books every note that falls in that window.
   function scheduleMusic() {
     if (!music) {
-      music = MUSIC_VOICES.map(([freq, period, offset], i) => ({ freq, period, next: ctx.currentTime + offset, pan: ((i * 0.618) % 1) * 1.2 - 0.6 }))
+      music = MUSIC_VOICES.map(([step, period, offset], i) => ({ step, period, next: ctx.currentTime + offset, pan: ((i * 0.618) % 1) * 1.2 - 0.6 }))
     }
     musicTimer = setTimeout(() => {
       musicTimer = null
       if (!enabled || !ambientOn) return
       const horizon = ctx.currentTime + 1.5
+      // More agents at work, the loops come round sooner; all quiet, they stretch out. A
+      // big star (much work gone into it) keeps a quicker pace than a small one.
+      density += ((moodOn ? Math.min(1, mood.working / 4) : 0) - density) * 0.05
+      const star = moodOn ? mood.star : null
+      const pace = (1.25 - 0.45 * density) * (star ? 1.15 - 0.3 * (star.size ?? 0.5) : 1)
+      const notes = scale()
       for (const voice of music) {
         while (voice.next < horizon) {
-          if (voice.next > ctx.currentTime) glassNote(ctx, bus.music, voice.freq, { at: voice.next, level: 0.016 + Math.random() * 0.006, pan: voice.pan })
-          voice.next += voice.period
+          if (voice.next > ctx.currentTime && mix.music > 0) glassNote(ctx, bus.music, colour(notes[voice.step]), { at: voice.next, level: 0.016 + Math.random() * 0.006, pan: voice.pan, glass: glass() })
+          voice.next += voice.period * pace
         }
+      }
+      if (moodOn && mix.music > 0) {
+        run()
+        question()
       }
       scheduleMusic()
     }, 1000)
+  }
+
+  // The notes the music plays in now: the star's mode, or the home key.
+  function scale() {
+    return SCALES[moodOn ? starMode(mood.star) : HOME_MODE]
+  }
+
+  // How glassy the notes ring: a young star's clear and bright, an old one's warm and round.
+  function glass() {
+    const star = moodOn && mood.star
+    return star ? 1 - star.warmth : 0.5
+  }
+
+  // With a young star, a note now and then rises an octave; with an old one, it sinks.
+  function colour(freq) {
+    const star = moodOn && mood.star
+    if (!star) return freq
+    const roll = Math.random()
+    if (freq < 600 && roll < (1 - star.warmth) * 0.45) return freq * 2
+    if (freq > 330 && roll > 1 - star.warmth * 0.45) return freq / 2
+    return freq
+  }
+
+  // With agents at work, a soft run of rising notes now and then: the more work, the more
+  // often.
+  function run() {
+    const now = ctx.currentTime
+    if (density < 0.3) return void (nextRun = 0)
+    if (!nextRun) nextRun = now + 6 + Math.random() * 10
+    if (now < nextRun) return
+    let step = 5 + Math.floor(Math.random() * 4) // from G4 up to the fifth above
+    let at = now + 0.1
+    const pan = Math.random() * 1.2 - 0.6
+    const notes = scale()
+    for (let n = 3 + Math.floor(Math.random() * 3); n > 0 && step < notes.length; n--) {
+      softNote(ctx, bus.music, colour(notes[step]), { at, level: 0.007 + 0.004 * density, pan, glass: glass() })
+      step += Math.random() < 0.3 ? 2 : 1
+      at += 0.22 + Math.random() * 0.1
+    }
+    nextRun = now + (34 - 22 * density) * (0.7 + Math.random() * 0.6)
+  }
+
+  // A question waiting: a step down from D that stops on C and hangs there, unresolved.
+  // It comes every ten seconds or so, fainter and rarer once it has waited a few minutes.
+  function question() {
+    const now = ctx.currentTime
+    if (mood.attention <= 0) return void (tension = null)
+    if (!tension) tension = { since: now, next: now + 5 }
+    if (now < tension.next) return
+    const waited = now - tension.since
+    const fade = waited < 120 ? 1 : Math.max(0.3, 1 - (waited - 120) / 240)
+    glassNote(ctx, bus.music, 587.33, { at: now + 0.05, level: 0.017 * fade, pan: -0.2 })
+    glassNote(ctx, bus.music, 523.25, { at: now + 0.8, level: 0.02 * fade, pan: 0.2 })
+    tension.next = now + (9 + Math.random() * 4) * (waited < 120 ? 1 : 1.8)
+  }
+
+  // A question answered: the hanging C steps down to B♭, and once nothing is left waiting,
+  // on home to G.
+  function resolve(home) {
+    const was = tension
+    if (home) tension = null
+    if (!was || !moodOn || !enabled || !ambientOn || ctx?.state !== 'running' || !(mix.music > 0)) return
+    if (ctx.currentTime - was.since < 3) return
+    const at = ctx.currentTime + 0.3
+    glassNote(ctx, bus.music, 523.25, { at, level: 0.016, pan: 0.15 })
+    glassNote(ctx, bus.music, 466.16, { at: at + 0.6, level: 0.018, pan: -0.1 })
+    if (home) glassNote(ctx, bus.music, 392, { at: at + 1.3, level: 0.022, pan: 0 })
+  }
+
+  // Brightness and tremolo follow the star the camera is with, over several seconds.
+  function applyTone() {
+    if (!ctx) return
+    const star = moodOn ? mood.star : null
+    const cutoff = star ? TONE_YOUNG * Math.pow(TONE_OLD / TONE_YOUNG, star.warmth) : TONE_OPEN
+    musicTone.frequency.setTargetAtTime(cutoff, ctx.currentTime, 5)
+    shimmer.gain.setTargetAtTime(star?.busy ? 0.12 : 0, ctx.currentTime, 4)
   }
 
   // Waves come in one after another, never quite on a beat; now and then a bigger one.
@@ -319,8 +467,8 @@ export function createSound() {
       sway(at + 0.5, gust + 2, 0.7 + Math.random() * 0.3)
       let t = at + 0.4 + Math.random() * 0.6
       const strikes = 1 + Math.floor(Math.random() * 4)
-      for (let i = 0; i < strikes; i++) {
-        windBell(ctx, bus.bells, WIND_BELLS[Math.random() < 0.65 ? 0 : 1], { at: t, level: 0.03 + Math.random() * 0.035, pan: Math.random() * 0.8 - 0.4 })
+      for (let i = 0; i < strikes && mix.windbells > 0; i++) {
+        windBell(ctx, bus.windbells, eaveBells()[Math.random() < 0.65 ? 0 : 1], { at: t, level: 0.03 + Math.random() * 0.035, pan: Math.random() * 0.8 - 0.4 })
         // Sometimes the clapper bounces straight back.
         t += Math.random() < 0.3 ? 0.09 + Math.random() * 0.08 : 0.35 + Math.random() * 0.9
       }
@@ -332,7 +480,7 @@ export function createSound() {
     templeTimer = setTimeout(() => {
       templeTimer = null
       if (!enabled || !ambientOn) return
-      templeBell(ctx, bus.bells, 88 + Math.random() * 6, { at: ctx.currentTime + 0.05, level: 0.03 })
+      if (mix.temple > 0) templeBell(ctx, bus.temple, 88 + Math.random() * 6, { at: ctx.currentTime + 0.05, level: 0.03 })
       scheduleTemple(150000 + Math.random() * 90000)
     }, delay)
   }
@@ -341,22 +489,23 @@ export function createSound() {
     setMix(next) {
       mix = { ...MIX_DEFAULTS, ...next }
       if (!ctx) return
-      for (const key of ['nature', 'bells', 'alerts', 'bamboo']) bus[key].gain.setTargetAtTime(mix[key], ctx.currentTime, 0.15)
+      for (const key of Object.keys(MIX_DEFAULTS)) if (key !== 'music') bus[key].gain.setTargetAtTime(mix[key], ctx.currentTime, 0.15)
       bus.bambooWet.gain.setTargetAtTime(mix.bamboo, ctx.currentTime, 0.15)
-      bus.dropsWet.gain.setTargetAtTime(mix.nature, ctx.currentTime, 0.15)
-      if (enabled && ambientOn) {
-        fade(bus.ambient, 0.3 * mix.sea, 0.4)
-        fade(bus.music, 0.22 * mix.music, 0.4)
-      }
+      if (enabled && ambientOn) fade(bus.music, 0.22 * mix.music, 0.4)
     },
     // A sample of one channel, so a slider can be set by ear.
     preview(channel) {
       if (!enabled || !ctx || ctx.state !== 'running') return
       const at = ctx.currentTime + 0.02
-      if (channel === 'nature') waterDrop(ctx, bus.dropsWet, DROP_NOTES[Math.floor(Math.random() * DROP_NOTES.length)], { at, level: 0.045, pan: 0 })
-      else if (channel === 'bells') windBell(ctx, bus.bells, WIND_BELLS[0], { at, level: 0.05, pan: 0 })
+      if (channel === 'waves') ambient?.wave(at, 7, 0.8)
+      else if (channel === 'wind') ambient?.gust(at, 3)
+      else if (channel === 'birds') birdCall(ctx, bus.birds, { at, level: 0.04, pan: 0 })
+      else if (channel === 'crickets') for (let i = 0; i < 4; i++) cricket(ctx, bus.crickets, { at: at + i * 0.45, freq: CRICKETS[0][0], pulses: 3, level: 0.014, pan: 0 })
+      else if (channel === 'drops') waterDrop(ctx, bus.drops, SCALE[DROP_FROM + Math.floor(Math.random() * (SCALE.length - DROP_FROM))], { at, level: 0.045, pan: 0 })
+      else if (channel === 'windbells') windBell(ctx, bus.windbells, WIND_BELLS[0], { at, level: 0.05, pan: 0 })
+      else if (channel === 'temple') templeBell(ctx, bus.temple, 90, { at, level: 0.04 })
       else if (channel === 'alerts') windBell(ctx, bus.alerts, WIND_BELLS[0], { at, level: 0.06, pan: 0 })
-      else if (channel === 'music') glassNote(ctx, bus.music, MUSIC_VOICES[0][0], { at, level: 0.03, pan: 0 })
+      else if (channel === 'music') glassNote(ctx, bus.music, SCALE[MUSIC_VOICES[0][0]], { at, level: 0.03, pan: 0 })
       else if (channel === 'bamboo') {
         grove?.sway(at, 2.5, 0.9)
         ;[0.5, 0.58, 0.71, 0.77].forEach((dt, i) => bambooKnock(ctx, bus.bambooWet, 1150 * (1 + ((i * 37) % 9 - 4) * 0.03), { at: at + dt, level: 0.022, pan: -0.2 }))
@@ -366,18 +515,41 @@ export function createSound() {
       enabled = on
       sync()
     },
+    // What the sessions are doing ({ working, attention } counts) and the star the camera
+    // is with ({ star }), for the music to follow. Pass only what changed.
+    setMood(next) {
+      const before = mood.attention
+      mood = { ...mood, ...next }
+      if (mood.attention < before) resolve(mood.attention === 0)
+      applyTone()
+    },
+    setMoodEnabled(on) {
+      moodOn = on
+      if (!on) tension = null
+      applyTone()
+    },
     // The sea, the wind and the bells belong to the galaxy view.
     setAmbient(on) {
       ambientOn = on
       sync()
     },
-    // Warp: a rush of wind, and a bowl as we drop out.
-    warp(seconds) {
+    // Warp: a rush of wind, and a bowl as we drop out. With the music following the
+    // sessions, the bowl and a glass note sound the star's own note.
+    warp(seconds, star = null) {
       if (!enabled || !ctx || ctx.state !== 'running') return
       const now = Date.now()
       if (now - lastWarp < 700) return
       lastWarp = now
-      warpSound(ctx, bus.alerts, ctx.currentTime + 0.02, seconds)
+      warpSound(ctx, bus.alerts, ctx.currentTime + 0.02, seconds, moodOn && star ? starNote(star) : null)
+    },
+    // Gliding within a system, or out to the whole galaxy: a breath of air that passes the
+    // way the camera moves (pan: -1 left … 1 right).
+    glide(seconds, pan = 0) {
+      if (!enabled || !ctx || ctx.state !== 'running') return
+      const now = Date.now()
+      if (now - lastGlide < 400 || now - lastWarp < 700) return
+      lastGlide = now
+      glideSound(ctx, bus.alerts, ctx.currentTime + 0.02, seconds, pan)
     },
     // Event sounds ring in every view: a singing bowl when a session asks something,
     // a single wind bell when work finishes, a soft tinkle when search opens.
@@ -470,6 +642,31 @@ export function createSound() {
         windBell(ctx, bus.alerts, WIND_BELLS[1], { at: at + 0.4, level: 0.015, pan: 0.3 })
         return
       }
+      // Stardust. A firework far off is a soft low pop and a scatter of high glints; an app
+      // passing a token milestone gets a rising arpeggio and bells; a decoration opening up a
+      // warm bowl under a slow climb; a new grain of stardust two bright plucks.
+      if (kind === 'firework') {
+        const pan = Math.random() - 0.5
+        tone(ctx, panTo(ctx, bus.alerts, pan), 110 + Math.random() * 30, { at, level: 0.05, attack: 0.005, decay: 0.5 })
+        for (let i = 0; i < 4; i++) pluck(ctx, bus.alerts, SCALE[11 + Math.floor(Math.random() * 5)], { at: at + 0.25 + i * (0.05 + Math.random() * 0.08), level: 0.012, pan: pan + (Math.random() - 0.5) * 0.4 })
+        return
+      }
+      if (kind === 'celebrate') {
+        ;[392, 587.33, 783.99, 1174.66].forEach((f, i) => pluck(ctx, bus.alerts, f, { at: at + i * 0.09, level: 0.026, pan: -0.3 + i * 0.2 }))
+        windBell(ctx, bus.alerts, WIND_BELLS[0], { at: at + 0.5, level: 0.024, pan: -0.2 })
+        windBell(ctx, bus.alerts, WIND_BELLS[1], { at: at + 0.75, level: 0.02, pan: 0.25 })
+        return
+      }
+      if (kind === 'unlock') {
+        bowl(ctx, bus.alerts, 196, { at, level: 0.07 })
+        ;[392, 466.16, 587.33, 783.99, 932.33].forEach((f, i) => glassNote(ctx, bus.alerts, f, { at: at + 0.3 + i * 0.22, level: 0.02, pan: -0.4 + i * 0.2 }))
+        return
+      }
+      if (kind === 'stardust') {
+        pluck(ctx, bus.alerts, 1396.91, { at, level: 0.018, pan: -0.15 })
+        pluck(ctx, bus.alerts, 1864.7, { at: at + 0.08, level: 0.014, pan: 0.15 })
+        return
+      }
       const now = Date.now()
       if (now - lastChime < CHIME_GAP_MS) return
       lastChime = now
@@ -479,7 +676,7 @@ export function createSound() {
   }
 }
 
-function startAmbient(ctx, out) {
+function startAmbient(ctx, seaOut, windOut) {
   // The sea: a soft 'shhh' that swells as each wave rolls in. Everything below the
   // voice range is cut, so it never turns into a hum.
   const sea = ctx.createBufferSource()
@@ -499,7 +696,7 @@ function startAmbient(ctx, out) {
   const seaGain = ctx.createGain()
   seaGain.gain.value = 0.012
   const shore = ctx.createStereoPanner()
-  shore.connect(out)
+  shore.connect(seaOut)
   sea.connect(seaLow).connect(seaLow2).connect(seaTone).connect(seaGain).connect(shore)
   sea.start()
   // Foam: the hiss as a wave breaks, rising in pitch as it draws back over the pebbles.
@@ -526,7 +723,7 @@ function startAmbient(ctx, out) {
   lfo(ctx, 0.017, 350, band.frequency)
   const wind = ctx.createGain()
   wind.gain.value = 0.02
-  noise.connect(band).connect(wind).connect(out)
+  noise.connect(band).connect(wind).connect(windOut)
   noise.start()
   return {
     wave(at, seconds, size) {
@@ -699,12 +896,21 @@ function waterDrop(ctx, out, freq, { at, level, pan }) {
 
 // A soft glassy note: it swells in rather than strikes, and a twin a hair away makes it
 // shimmer as it fades.
-function glassNote(ctx, out, freq, { at, level, pan }) {
+// glass, 0 to 1: how clear it rings. Higher, the overtones come forward and it swells in
+// sooner; lower, it is rounder and slower.
+function glassNote(ctx, out, freq, { at, level, pan, glass = 0.5 }) {
   const panner = panTo(ctx, out, pan)
-  tone(ctx, panner, freq, { at, level, attack: 0.7, decay: 10 })
-  tone(ctx, panner, freq + 1.1, { at, level: level * 0.5, attack: 0.8, decay: 9 })
-  tone(ctx, panner, freq * 2, { at, level: level * 0.14, attack: 0.35, decay: 4 })
-  tone(ctx, panner, freq * 3, { at, level: level * 0.04, attack: 0.2, decay: 2 })
+  tone(ctx, panner, freq, { at, level, attack: 0.9 - 0.4 * glass, decay: 10 })
+  tone(ctx, panner, freq + 1.1, { at, level: level * 0.5, attack: 1 - 0.4 * glass, decay: 9 })
+  tone(ctx, panner, freq * 2, { at, level: level * (0.06 + 0.16 * glass), attack: 0.35, decay: 4 })
+  tone(ctx, panner, freq * 3, { at, level: level * (0.01 + 0.06 * glass), attack: 0.2, decay: 2 })
+}
+
+// A round, soft note for the music's runs: gentler than a pluck, shorter than glass.
+function softNote(ctx, out, freq, { at, level, pan, glass = 0.5 }) {
+  const panner = panTo(ctx, out, pan)
+  tone(ctx, panner, freq, { at, level, attack: 0.04, decay: 2.6 })
+  tone(ctx, panner, freq * 2, { at, level: level * (0.05 + 0.14 * glass), attack: 0.03, decay: 1.2 })
 }
 
 // A soft pluck, like a celesta: quick to sound, gone in a second or two.
@@ -725,7 +931,31 @@ function bowl(ctx, out, freq, { at, level }) {
   }
 }
 
-function warpSound(ctx, out, at, seconds) {
+// A star's own note, in its own mode: young blue stars high, old red ones low, and stars
+// of one age a step or two apart.
+function starNote(star) {
+  const notes = SCALES[starMode(star)]
+  const top = notes.length - 1
+  return notes[Math.min(top, Math.round((1 - star.warmth) * (top - 3)) + (star.seed % 3))]
+}
+
+// The mode a star sings in: its age picks the region (young bright, old dark), and its
+// seed moves it a step either way, so stars of one age still differ.
+export function starMode(star) {
+  if (!star) return HOME_MODE
+  const at = Math.round(star.warmth * (MODES.length - 1)) + ((star.seed >>> 5) % 3) - 1
+  return Math.max(0, Math.min(MODES.length - 1, at))
+}
+
+// Three octaves of a mode from G3 to G6: sixteen notes.
+export function modeScale(mode) {
+  const notes = []
+  for (let octave = 0; octave < 3; octave++) for (const step of MODES[mode].steps) notes.push(G3 * 2 ** (octave + step / 12))
+  notes.push(G3 * 8)
+  return notes
+}
+
+function warpSound(ctx, out, at, seconds, note = null) {
   const panner = panTo(ctx, out, 0)
   panner.pan.setValueAtTime(-0.35, at)
   panner.pan.linearRampToValueAtTime(0.35, at + seconds)
@@ -744,7 +974,31 @@ function warpSound(ctx, out, at, seconds) {
   noise.connect(band).connect(rush).connect(panner)
   noise.start(at)
   noise.stop(at + seconds + 0.4)
-  bowl(ctx, out, 587.33, { at: at + seconds * 0.9, level: 0.06 })
+  if (!note) return bowl(ctx, out, 587.33, { at: at + seconds * 0.9, level: 0.06 })
+  bowl(ctx, out, note < 290 ? note * 2 : note > 1200 ? note / 2 : note, { at: at + seconds * 0.9, level: 0.05 })
+  glassNote(ctx, out, note, { at: at + seconds * 0.9 + 0.2, level: 0.03, pan: 0 })
+}
+
+// Air, not wind: soft band-passed noise that swells and lets go, drifting across to pan.
+function glideSound(ctx, out, at, seconds, pan) {
+  const panner = panTo(ctx, out, 0)
+  panner.pan.setValueAtTime(-pan * 0.3, at)
+  panner.pan.linearRampToValueAtTime(pan * 0.7, at + seconds)
+  const noise = ctx.createBufferSource()
+  noise.buffer = noiseBuffer(ctx, seconds + 0.5)
+  const band = ctx.createBiquadFilter()
+  band.type = 'bandpass'
+  band.Q.value = 0.8
+  band.frequency.setValueAtTime(380, at)
+  band.frequency.exponentialRampToValueAtTime(1300, at + seconds * 0.45)
+  band.frequency.exponentialRampToValueAtTime(520, at + seconds)
+  const air = ctx.createGain()
+  air.gain.setValueAtTime(0.0001, at)
+  air.gain.exponentialRampToValueAtTime(0.022, at + seconds * 0.4)
+  air.gain.exponentialRampToValueAtTime(0.0001, at + seconds * 1.1)
+  noise.connect(band).connect(air).connect(panner)
+  noise.start(at)
+  noise.stop(at + seconds + 0.4)
 }
 
 function tone(ctx, out, freq, { at, level, attack, decay }) {
