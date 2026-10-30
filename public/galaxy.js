@@ -35,6 +35,8 @@ const BAND_CENTER = new THREE.Vector3(1, 0, -1.5).projectOnPlane(BAND_NORMAL).no
 const METEOR_TINTS = [new THREE.Color(1, 0.97, 0.9), new THREE.Color(0.7, 1, 0.8), new THREE.Color(0.7, 0.85, 1), new THREE.Color(1, 0.85, 0.6)]
 const PASTELS = ['#ffc8e8', '#c8d8ff', '#dccbff', '#c8fff0', '#ffe2c4']
 const TILT_PERIOD = 110 // seconds for the idle camera's slow rise and dip
+const CRUISE_STAY = [20, 34] // seconds the cruising camera circles a star before moving on
+const CRUISE_WIDE_EVERY = 4 // every so many legs, the cruise pulls back to the whole galaxy
 // Play: comets thrown by hand and bent by the stars, things to catch, the black hole.
 const HOLD_MS = 420 // press and hold this long without moving to throw a comet or grab a planet
 const STAR_GM = 22000 // a star's pull, times its size squared
@@ -213,6 +215,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   let down = null
   let fullView = { width: 1, height: 1 }
   let idle = 0
+  let cruising = null // quiet mode's slow tour, see setCruise()
   let glow = BLOOM // the viewer can turn the bloom and the exposure down (or up)
   let busyAgents = 0 // agents working right now, for the aurora
   let auroraLevel = 0
@@ -2353,6 +2356,78 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     return Math.min(2000, Math.max(420, (GALAXY_RADIUS * 1.08 * size.height) / (shortest * Math.tan(fov / 2))))
   }
 
+  // ---------- cruising ----------
+
+  // Quiet mode's slow tour. The camera glides to a star (no warp), circles it for a while
+  // at a height of its own (skimming the disc, from the side, or from high above), then
+  // moves on to one it hasn't seen lately. Every few legs it pulls back to show the whole
+  // galaxy from a low angle. The music follows the star in view. Anything touched stops it
+  // where it is.
+  function setCruise(on) {
+    on = on && !reduceMotion
+    if (on === Boolean(cruising)) return
+    cruising = on ? { legs: 0, recent: [], leg: null } : null
+    if (!on && flight?.cruise) flight = null
+  }
+
+  function stepCruise(now, dt, flying) {
+    const leg = cruising.leg
+    if (!leg || now > leg.until || (leg.system && systems.get(leg.system.app) !== leg.system)) return nextLeg(now)
+    if (flying) return
+    // Circling: round the star, easing towards this leg's height and distance.
+    const offset = tmp.copy(camera.position).sub(controls.target)
+    orbitSph.setFromVector3(offset)
+    orbitSph.theta += dt * leg.spin
+    orbitSph.phi += (leg.phi - orbitSph.phi) * Math.min(1, dt * 0.04)
+    orbitSph.radius += (leg.radius - orbitSph.radius) * Math.min(1, dt * 0.04)
+    camera.position.copy(controls.target).add(offset.setFromSpherical(orbitSph))
+  }
+
+  function nextLeg(now) {
+    const list = [...systems.values()]
+    const side = Math.random() < 0.5 ? -1 : 1
+    cruising.legs++
+    if (!list.length || cruising.legs % CRUISE_WIDE_EVERY === 0) {
+      // The whole galaxy, from low enough to see its depth.
+      follow = null
+      const radius = overviewDistance() * (0.75 + Math.random() * 0.25)
+      const phi = THREE.MathUtils.degToRad(64 + Math.random() * 20)
+      const at = new THREE.Vector3().setFromSphericalCoords(radius, phi, Math.random() * Math.PI * 2)
+      const ms = 15_000
+      cruiseGlide(() => ({ target: new THREE.Vector3(), position: at }), ms, null)
+      cruising.leg = { system: null, until: now + ms + 26_000, spin: side * 0.025, phi, radius }
+      return
+    }
+    const fresh = list.filter((s) => !cruising.recent.includes(s.app))
+    const pool = fresh.length ? fresh : list
+    const system = pool[Math.floor(Math.random() * pool.length)]
+    cruising.recent = [...cruising.recent.slice(-5), system.app]
+    const radius = (16 + system.reach * 2.4) * (0.85 + Math.random() * 0.6)
+    // Skimming the disc, from the side and above, or from high up.
+    const heights = [[74, 84], [52, 66], [28, 42]]
+    const [low, high] = heights[Math.floor(Math.random() * heights.length)]
+    const phi = THREE.MathUtils.degToRad(low + Math.random() * (high - low))
+    const theta = Math.random() * Math.PI * 2
+    const far = camera.position.distanceTo(system.group.getWorldPosition(tmp))
+    const ms = Math.min(18_000, 7000 + far * 9)
+    follow = system
+    cruiseGlide(
+      () => {
+        const at = system.group.getWorldPosition(tmp2).clone()
+        return { target: at, position: at.clone().add(new THREE.Vector3().setFromSphericalCoords(radius, phi, theta)) }
+      },
+      ms,
+      system
+    )
+    const stay = CRUISE_STAY[0] + Math.random() * (CRUISE_STAY[1] - CRUISE_STAY[0])
+    cruising.leg = { system, until: now + ms + stay * 1000, spin: side * (0.06 + Math.random() * 0.05), phi: phi + (Math.random() - 0.5) * 0.3, radius }
+  }
+
+  function cruiseGlide(end, duration, system) {
+    flight = { from: camera.position.clone(), fromTarget: controls.target.clone(), start: performance.now(), duration, end, system, cruise: true }
+    onGlide?.(duration / 1000, Math.max(-1, Math.min(1, end().target.clone().project(camera).x)))
+  }
+
   function stepCamera(now, dt) {
     if (follow) {
       // Ride along as the galaxy turns, without fighting the user's own orbit.
@@ -2659,7 +2734,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     stepThrown(dt)
     stepBursts(now, dt)
     stepHole(dt)
-    controls.autoRotate = !flying && !dragging && !aim && !grab && now - releasedAt > 1200
+    if (cruising) stepCruise(now, dt, flying)
+    controls.autoRotate = !cruising && !flying && !dragging && !aim && !grab && now - releasedAt > 1200
     controls.autoRotateSpeed = follow ? 0.7 : 0.45
     // Left alone, the view also rises and dips, slowly enough not to make anyone dizzy:
     // from looking down on the disc to nearly side-on and back over a couple of minutes.
@@ -2969,6 +3045,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     },
     forming,
     unform,
+    // Quiet mode's slow tour of the galaxy, on or off.
+    cruise: setCruise,
     overview,
     setArea(rect, { animate = false } = {}) {
       const box = host.getBoundingClientRect()

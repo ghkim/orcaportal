@@ -1425,6 +1425,14 @@ function renderSettings() {
     }))
     light.append(row)
   }
+  const cruiseRow = el('label', { className: 'st-row st-decor' })
+  const cruiseToggle = el('input', { type: 'checkbox', className: 'st-switch', checked: prefs.cruise })
+  cruiseToggle.addEventListener('change', () => {
+    prefs.cruise = cruiseToggle.checked
+    savePrefs()
+  })
+  cruiseRow.append(cruiseToggle, el('span', { textContent: '유람 모드' }), el('small', { textContent: '고요할 때 별 사이를 둘러봐요' }))
+  light.append(cruiseRow)
 
   const sounds = section('소리')
   for (const [key, label] of SOUNDS) {
@@ -2288,8 +2296,10 @@ function setZen(on) {
   zen = on
   zenMoved = 0
   document.body.classList.toggle('zen', on)
+  // With the cruise on, the camera tours the galaxy while it's quiet, and stops where it
+  // is the moment anything is touched. Without it, quiet mode only clears the screen.
+  galaxy?.cruise(on && prefs.cruise)
   if (!on) return
-  // The camera stays where it was: quiet mode only clears the screen around it.
   setPaneOpen(false)
   closeReport()
 }
@@ -3107,7 +3117,7 @@ function applyPrefs() {
 }
 
 function loadPrefs() {
-  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true, look: LOOK_DEFAULTS, mix: {}, mixOff: {}, decor: {}, musicMood: true, newAgent: 'claude', titles: true }
+  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true, look: LOOK_DEFAULTS, mix: {}, mixOff: {}, decor: {}, musicMood: true, newAgent: 'claude', titles: true, cruise: true }
   try {
     const saved = JSON.parse(localStorage.getItem('orca-portal-prefs') || '{}')
     if (saved.version !== 2) Object.assign(saved, { version: 2, view: 'galaxy' })
