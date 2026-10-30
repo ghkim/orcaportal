@@ -1,6 +1,6 @@
 import { parseMenu, keysForOption, lineKind } from './screen.js'
 import { KEYS } from './keys.js'
-import { createSound } from './sound.js'
+import { createSound, MIX_DEFAULTS } from './sound.js'
 
 const TOKEN = document.querySelector('meta[name="portal-token"]').content
 // group: header filter chips. section: where the session sits in the list view.
@@ -36,40 +36,57 @@ const ICONS = {
   pin: '<path d="M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3z"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   sound: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>',
-  mute: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/>'
+  mute: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/>',
+  sliders: '<path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/>'
 }
-// Shown in the ? help dialog. The handlers live in onShortcut.
+// The settings panel: light in the galaxy and the listener's sound mix, in percent.
+const LOOK_DEFAULTS = { glow: 100, brightness: 100 }
+const SETTINGS = [
+  { title: '빛', group: 'look', items: [['glow', '빛 번짐', 0, 150], ['brightness', '밝기', 50, 130]] },
+  {
+    title: '소리',
+    group: 'mix',
+    items: [
+      ['sea', '파도 · 바람', 0, 150],
+      ['nature', '새 · 풀벌레 · 물방울', 0, 150],
+      ['bamboo', '대나무 숲', 0, 150],
+      ['music', '음악', 0, 150],
+      ['bells', '풍경 · 범종', 0, 150],
+      ['alerts', '알림 · 효과음', 0, 150]
+    ]
+  }
+]
+// Shown in the ? help dialog: only what's for looking around the galaxy. The handlers
+// live in onShortcut; the older working keys (reply, maximise, views...) still work there
+// but aren't listed.
 const SHORTCUTS = [
   {
-    title: '세션 옮기기',
+    title: '둘러보기',
     keys: [
-      [['J', '↓'], '다음 세션'],
-      [['K', '↑'], '이전 세션'],
-      [['N'], '다음 확인 필요 세션 (차례로 돌아요)'],
-      [['B'], '바로 전에 보던 세션 (두 세션을 오가요)'],
-      [['/', '⌘K'], '세션 찾기'],
-      [['P'], '이 세션 고정 / 풀기 (고정한 세션이 맨 위, 자동 이동도 먼저)']
+      [['J', 'K'], '다음 행성 / 이전 행성'],
+      [['N'], '신호를 보내는 행성으로 (차례로 돌아요)'],
+      [['B'], '바로 전에 보던 행성'],
+      [['/'], '찾기 · Enter로 찾은 행성까지 날아가기'],
+      [['V'], '은하 전체 보기'],
+      [['Z'], '고요 모드: 은하와 소리만 남기기']
     ]
   },
   {
-    title: '들어가기',
+    title: '우주 놀이',
     keys: [
-      [['Enter', 'R'], '답장 칸으로 들어가기'],
-      [['1–9'], '선택지 고르기'],
-      [['O'], 'Orca 창에서 이 터미널 열기'],
-      [['Esc'], '답장 칸에서 나오기 (쓰던 글은 남아요) · 최대화 끄기 · 은하 보기에서 세션 패널 닫기']
+      [['클릭'], '지나가는 별똥별·혜성 잡기'],
+      [['Alt+끌기'], '빈 곳에서 당겼다 놓으면 혜성 던지기'],
+      [['Alt+끌기'], '행성을 블랙홀에 넣어 터미널 닫기 (한 번 물어봐요)'],
+      [['L'], '우주 도감'],
+      [['I'], '보는 법']
     ]
   },
   {
-    title: '화면',
+    title: '빛과 소리',
     keys: [
-      [['F'], '최대화 / 되돌리기'],
-      [['G'], '보기 바꾸기 (목록 → 은하 → 격자)'],
-      [['V'], '은하 전체 보기 (은하 보기에서)'],
-      [['Z'], '고요 모드: 은하와 소리만 남기기 (아무 키나 누르면 돌아와요)'],
-      [['A'], '자동 이동 켜기 / 끄기'],
-      [['M'], '우주 소리 켜기 / 끄기'],
-      [['?'], '단축키 보기']
+      [['M'], '소리 켜기 / 끄기'],
+      [['S'], '밝기 · 빛 번짐 · 소리 크기'],
+      [['?'], '단축키']
     ]
   }
 ]
@@ -104,6 +121,8 @@ const born = new Set()
 let usage = {}
 // Per worktree path: servers listening inside it, each { pid, name, ports } (from the server).
 let servers = {}
+// Per worktree path: bytes on disk without .git (from the server, refreshed every half hour).
+let disk = {}
 // In the galaxy view the session pane slides in only when a session is picked.
 let paneOpen = false
 // The galaxy's short report: one app's terminals, only what needs a decision and how work is going.
@@ -118,6 +137,9 @@ let followQueue = [] // { handle, kind: 'attention' | 'done', at }
 let eventsReady = false
 let lastInteraction = 0
 let displayOrder = []
+let searchAt = null // where Enter in the search box last went
+let searchFor = ''
+let jumpedAt = 0
 let renderQueued = false
 let noticeTimer = null
 let listScrolledTo = null
@@ -137,6 +159,7 @@ const attentionList = document.querySelector('.attention-list')
 const emptyState = document.querySelector('.empty')
 const backdrop = document.querySelector('.backdrop')
 const search = document.querySelector('.search')
+const searchHint = document.querySelector('.search-hint')
 const showShells = document.querySelector('.show-shells')
 const autoFollow = document.querySelector('.auto-follow')
 const conn = document.querySelector('.conn')
@@ -149,12 +172,21 @@ const reportEl = document.querySelector('.gx-report')
 const gxHud = document.querySelector('.gx-hud')
 const gxSignals = document.querySelector('.gx-signals')
 const soundButton = document.querySelector('.sound-btn')
+const settingsButton = document.querySelector('.settings-btn')
+const settingsEl = document.querySelector('.settings')
 const paletteEl = document.querySelector('.palette')
 const paletteInput = paletteEl.querySelector('input')
 const paletteResults = paletteEl.querySelector('.palette-results')
 const sound = createSound()
 const palette = { items: [], index: 0, closeTimer: null }
 const toastEl = document.querySelector('.toast')
+const logEl = document.querySelector('.gx-log')
+const logButton = document.querySelector('.gx-log-btn')
+const guideEl = document.querySelector('.gx-guide')
+const guideButton = document.querySelector('.gx-guide-btn')
+const confirmEl = document.querySelector('.gx-confirm')
+const playLog = loadLog()
+let cleanAsk = null // the terminal dropped into the black hole, while we ask
 let orcaStatus = { ok: true }
 
 // ---------- data ----------
@@ -166,6 +198,10 @@ function connect() {
   events.addEventListener('screen', (e) => onScreen(JSON.parse(e.data)))
   events.addEventListener('usage', (e) => {
     usage = JSON.parse(e.data).paths || {}
+    if (prefs.view === 'galaxy') scheduleRender()
+  })
+  events.addEventListener('disk', (e) => {
+    disk = JSON.parse(e.data).paths || {}
     if (prefs.view === 'galaxy') scheduleRender()
   })
   events.addEventListener('servers', (e) => {
@@ -447,7 +483,7 @@ function renderAll() {
   for (const [key, value] of Object.entries(counts)) {
     document.querySelector(`[data-count="${key}"]`).textContent = value
   }
-  document.title = counts.attention ? `(${counts.attention}) Orca Portal` : 'Orca Portal'
+  document.title = counts.attention ? `(${counts.attention}) Orrery` : 'Orrery'
   if (focusedHandle && !sessions.has(focusedHandle)) focusedHandle = null
 
   if (prefs.view === 'grid') {
@@ -458,6 +494,7 @@ function renderAll() {
     else renderList(visible)
     syncDock()
   }
+  renderSearchHint()
   renderEmpty(visible.length)
   trackEvents()
 }
@@ -897,10 +934,10 @@ async function api(path, body) {
       headers: { 'Content-Type': 'application/json', 'X-Portal-Token': TOKEN },
       body: JSON.stringify(body)
     })
-    if (res.status === 403) return { ok: false, error: { message: '포탈 서버가 다시 시작됐어요. 새로고침해 주세요.' } }
+    if (res.status === 403) return { ok: false, error: { message: '오러리 서버가 다시 시작됐어요. 새로고침해 주세요.' } }
     return await res.json()
   } catch {
-    return { ok: false, error: { message: '포탈 서버에 연결할 수 없어요.' } }
+    return { ok: false, error: { message: '오러리 서버에 연결할 수 없어요.' } }
   }
 }
 
@@ -1078,7 +1115,21 @@ function setupControls() {
     savePrefs()
     if (prefs.autoFollow) processQueue()
   })
-  search.addEventListener('input', () => renderAll())
+  search.addEventListener('input', () => {
+    const started = !searchFor && searchQuery()
+    searchFor = searchQuery()
+    searchAt = null
+    renderAll()
+    // A search just begun: step back so everything it lights up is in view.
+    if (started && prefs.view === 'galaxy' && !paneOpen) galaxy?.overview()
+  })
+  search.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    // Enter that only finishes a Korean syllable: go once the letter has landed.
+    if (e.isComposing) setTimeout(() => jumpToMatch(e.shiftKey ? -1 : 1), 30)
+    else jumpToMatch(e.shiftKey ? -1 : 1)
+  })
   backdrop.addEventListener('click', collapse)
   for (const type of ['pointerdown', 'keydown', 'wheel']) {
     document.addEventListener(type, () => (lastInteraction = Date.now()), { capture: true, passive: true })
@@ -1107,6 +1158,11 @@ function setupControls() {
     syncAmbient()
   })
   soundButton.addEventListener('click', () => setSound(!prefs.sound))
+  settingsButton.innerHTML = icon('sliders')
+  settingsButton.addEventListener('click', () => toggleSettings())
+  sound.setMix(mixOf(prefs.mix))
+  logButton.addEventListener('click', () => toggleLog())
+  guideButton.addEventListener('click', () => toggleGuide())
   setSound(prefs.sound)
   setupPalette()
   setInterval(processQueue, 1000)
@@ -1137,6 +1193,233 @@ function togglePin(handle) {
   toast(pinned ? '고정을 풀었어요' : '고정했어요 · 맨 위에 두고 먼저 챙겨요')
 }
 
+// ---------- settings ----------
+
+// Percent in the panel; factors (1 = as designed) for the galaxy and the sound.
+function lookOf(look) {
+  return { glow: look.glow / 100, brightness: look.brightness / 100 }
+}
+
+function mixOf(mix) {
+  return Object.fromEntries(Object.keys(MIX_DEFAULTS).map((key) => [key, (mix[key] ?? MIX_DEFAULTS[key] * 100) / 100]))
+}
+
+function settingValue(group, key) {
+  return group === 'look' ? prefs.look[key] : (prefs.mix[key] ?? MIX_DEFAULTS[key] * 100)
+}
+
+function toggleSettings(on = settingsEl.hidden) {
+  settingsEl.hidden = !on
+  settingsButton.setAttribute('aria-expanded', String(on))
+  if (on) renderSettings()
+}
+
+function renderSettings() {
+  const head = el('header', { className: 'st-head' })
+  const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
+  close.addEventListener('click', () => toggleSettings(false))
+  head.append(el('b', { textContent: '빛과 소리' }), close)
+  const parts = [head]
+  for (const section of SETTINGS) {
+    const box = el('section', { className: 'st-section' })
+    box.append(el('h3', { textContent: section.title }))
+    for (const [key, label, min, max] of section.items) {
+      const row = el('label', { className: 'st-row' })
+      const value = el('output', { textContent: `${settingValue(section.group, key)}%` })
+      const range = el('input', { type: 'range', min, max, step: 5, value: settingValue(section.group, key) })
+      range.addEventListener('input', () => {
+        value.textContent = `${range.value}%`
+        setSetting(section.group, key, Number(range.value))
+      })
+      // Let go of a sound slider and hear that channel at its new level.
+      if (section.group === 'mix') range.addEventListener('change', () => sound.preview(key))
+      row.append(el('span', { textContent: label }), range, value)
+      box.append(row)
+    }
+    parts.push(box)
+  }
+  const foot = el('div', { className: 'st-foot' })
+  if (!prefs.sound) foot.append(el('small', { textContent: '소리가 꺼져 있어요 · M으로 켜요' }))
+  const reset = el('button', { type: 'button', className: 'st-reset', textContent: '처음대로' })
+  reset.addEventListener('click', () => {
+    prefs.look = { ...LOOK_DEFAULTS }
+    prefs.mix = {}
+    savePrefs()
+    galaxy?.setLook(lookOf(prefs.look))
+    sound.setMix(mixOf(prefs.mix))
+    renderSettings()
+  })
+  foot.append(reset)
+  parts.push(foot)
+  settingsEl.replaceChildren(...parts)
+}
+
+function setSetting(group, key, value) {
+  prefs[group] = { ...prefs[group], [key]: value }
+  savePrefs()
+  if (group === 'look') galaxy?.setLook(lookOf(prefs.look))
+  else sound.setMix(mixOf(prefs.mix))
+}
+
+// ---------- play ----------
+
+// What the viewer caught, threw and saw in the galaxy, kept in this browser.
+const LOG_KEY = 'orca-portal-log'
+const TINTS = [
+  ['흰', '#fff7e6'],
+  ['초록', '#b3ffcc'],
+  ['파랑', '#b3d9ff'],
+  ['금빛', '#ffd999']
+]
+const LOG_FIELDS = { meteor: 'meteors', comet: 'comets', throw: 'thrown', swallow: 'swallowed', core: 'core', splash: 'splashes', clean: 'cleaned', aurora: 'auroras', supernova: 'novas', starbirth: 'births' }
+const BADGES = [
+  { id: 'meteor', icon: '🌠', name: '첫 별똥별', hint: '지나가는 별똥별을 눌러 잡기', earned: (l) => l.meteors >= 1 },
+  { id: 'hunter', icon: '🏹', name: '유성 사냥꾼', hint: '별똥별 10개 잡기', earned: (l) => l.meteors >= 10 },
+  { id: 'colors', icon: '🌈', name: '네 빛깔', hint: '네 가지 색 별똥별을 다 잡기', earned: (l) => l.tints.every(Boolean) },
+  { id: 'comet', icon: '☄️', name: '혜성 사냥꾼', hint: '멀리 지나가는 큰 혜성 잡기', earned: (l) => l.comets >= 1 },
+  { id: 'throw', icon: '🎯', name: '첫 투척', hint: '빈 곳을 Alt+끌기로 혜성 던지기', earned: (l) => l.thrown >= 1 },
+  { id: 'feed', icon: '⭐', name: '별 먹이 주기', hint: '혜성을 별에 떨어뜨리기', earned: (l) => l.swallowed >= 1 },
+  { id: 'core', icon: '🌀', name: '은하 중심으로', hint: '혜성을 은하 한가운데에 떨어뜨리기', earned: (l) => l.core >= 1 },
+  { id: 'splash', icon: '💥', name: '명중', hint: '혜성으로 행성 맞히기', earned: (l) => l.splashes >= 1 },
+  { id: 'clean', icon: '🕳', name: '우주 청소부', hint: '다 쓴 터미널을 블랙홀로 보내기', earned: (l) => l.cleaned >= 1 },
+  { id: 'aurora', icon: '🌌', name: '오로라', hint: '에이전트 여럿이 함께 일할 때 나타나요', earned: (l) => l.auroras >= 1 },
+  { id: 'nova', icon: '💫', name: '초신성 목격', hint: '먼 하늘에서 별이 터질 때', earned: (l) => l.novas >= 1 },
+  { id: 'birth', icon: '✨', name: '별의 탄생', hint: '팔의 가스에서 새 별이 켜질 때', earned: (l) => l.births >= 1 }
+]
+
+function loadLog() {
+  const empty = { meteors: 0, tints: [0, 0, 0, 0], comets: 0, thrown: 0, swallowed: 0, core: 0, splashes: 0, cleaned: 0, auroras: 0, novas: 0, births: 0, badges: [], since: Date.now() }
+  try {
+    const saved = JSON.parse(localStorage.getItem(LOG_KEY) || '{}')
+    return { ...empty, ...saved, tints: empty.tints.map((n, i) => saved.tints?.[i] || n), badges: Array.isArray(saved.badges) ? saved.badges : [] }
+  } catch {
+    return empty
+  }
+}
+
+function saveLog() {
+  try {
+    localStorage.setItem(LOG_KEY, JSON.stringify(playLog))
+  } catch {}
+}
+
+function onPlay(event) {
+  const field = LOG_FIELDS[event.type]
+  if (!field) return
+  playLog[field]++
+  if (event.type === 'meteor' && event.tint >= 0) playLog.tints[event.tint]++
+  const fresh = BADGES.filter((b) => !playLog.badges.includes(b.id) && b.earned(playLog))
+  playLog.badges.push(...fresh.map((b) => b.id))
+  saveLog()
+  if (fresh.length) toast(`${fresh[0].icon} 새 배지 · ${fresh[0].name}`)
+  else if (event.type === 'meteor') toast(`🌠 별똥별을 잡았어요 · ${playLog.meteors}개째`)
+  else if (event.type === 'comet') toast('☄️ 큰 혜성을 잡았어요')
+  if (!logEl.hidden) renderLog()
+}
+
+function toggleGuide(on = guideEl.hidden) {
+  guideEl.hidden = !on
+  guideButton.setAttribute('aria-expanded', String(on))
+}
+
+function toggleLog(on = logEl.hidden) {
+  logEl.hidden = !on
+  logButton.setAttribute('aria-expanded', String(on))
+  if (on) renderLog()
+}
+
+function renderLog() {
+  const head = el('header', { className: 'lg-head' })
+  const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
+  close.addEventListener('click', () => toggleLog(false))
+  head.append(el('b', { textContent: '우주 도감' }), el('span', { textContent: `${playLog.badges.length} / ${BADGES.length} 배지` }), close)
+
+  const stats = el('dl', { className: 'lg-stats' })
+  const stat = (name, value, extra) => {
+    const dd = el('dd', { textContent: String(value) })
+    if (extra) dd.append(extra)
+    stats.append(el('dt', { textContent: name }), dd)
+  }
+  const tints = el('span', { className: 'lg-tints' })
+  TINTS.forEach(([name, color], i) => {
+    const dot = el('i', { title: `${name} ${playLog.tints[i]}개`, textContent: String(playLog.tints[i]) })
+    dot.style.setProperty('--tint', color)
+    tints.append(dot)
+  })
+  stat('잡은 별똥별', playLog.meteors, tints)
+  stat('잡은 큰 혜성', playLog.comets)
+  stat('던진 혜성', playLog.thrown)
+  stat('별이 삼킨 혜성', playLog.swallowed)
+  stat('은하 중심으로', playLog.core)
+  stat('행성 명중', playLog.splashes)
+  stat('블랙홀로 정리', playLog.cleaned)
+  stat('본 오로라', playLog.auroras)
+  stat('본 초신성', playLog.novas)
+  stat('본 별의 탄생', playLog.births)
+
+  const badges = el('ul', { className: 'lg-badges' })
+  for (const b of BADGES) {
+    const earned = playLog.badges.includes(b.id)
+    const li = el('li', { className: earned ? 'earned' : '', title: b.hint })
+    li.append(el('i', { textContent: earned ? b.icon : '·' }), el('b', { textContent: earned ? b.name : '???' }), el('small', { textContent: b.hint }))
+    badges.append(li)
+  }
+  const how = el('p', { className: 'lg-how' })
+  how.innerHTML = '지나가는 별똥별은 <b>눌러서</b> 잡아요. 빈 곳을 <kbd class="key">Alt</kbd>+끌기(또는 꾹 눌렀다 끌기)로 당겼다 놓으면 혜성이 날아가요. 별 옆을 지나면 휘어요. 행성을 같은 식으로 끌어 아래 블랙홀에 넣으면 그 터미널을 닫을지 물어봐요.'
+  logEl.replaceChildren(head, stats, badges, how)
+}
+
+// A planet dropped into the black hole: say what closing it means and ask first.
+function askClean(handle) {
+  const session = sessions.get(handle)
+  if (!session) return galaxy?.cancelClean()
+  const status = statusOf(handle)
+  cleanAsk = { handle }
+  const title = el('b', { id: 'cf-title', textContent: '🕳 블랙홀로 보낼까요?' })
+  const name = el('p', { className: 'cf-name', textContent: `${session.title || session.name} · ${session.project}` })
+  const what = el('p', { textContent: '이 터미널을 닫아요. 안에서 돌던 프로그램도 같이 끝나고, 되돌릴 수 없어요.' })
+  const parts = [title, name, what]
+  if (status === 'working' || STATUS[status].group === 'attention') {
+    parts.push(el('p', { className: 'cf-warn', textContent: `⚠ 지금 ${STATUS[status].label} 상태예요. 하던 일이 그대로 사라져요.` }))
+  }
+  const actions = el('div', { className: 'cf-actions' })
+  const no = el('button', { type: 'button', className: 'cf-no', textContent: '그만두기' })
+  const yes = el('button', { type: 'button', className: 'cf-yes', textContent: '블랙홀로 보내기' })
+  no.addEventListener('click', cancelClean)
+  yes.addEventListener('click', confirmClean)
+  actions.append(no, yes)
+  confirmEl.replaceChildren(...parts, actions)
+  confirmEl.dataset.status = status
+  const spot = galaxy.holeSpot()
+  confirmEl.style.left = `${spot.x}px`
+  confirmEl.style.top = `${Math.max(240, spot.y - spot.radius - 14)}px`
+  confirmEl.hidden = false
+  // The safe choice has the focus.
+  no.focus()
+}
+
+function closeCleanAsk() {
+  cleanAsk = null
+  confirmEl.hidden = true
+  confirmEl.replaceChildren()
+}
+
+function cancelClean() {
+  closeCleanAsk()
+  galaxy?.cancelClean()
+}
+
+async function confirmClean() {
+  const { handle } = cleanAsk
+  closeCleanAsk()
+  const result = await api('/api/close', { handle, confirmed: true })
+  if (!result.ok) {
+    galaxy?.cancelClean()
+    return toast(result.error?.message || '터미널을 닫지 못했어요')
+  }
+  galaxy?.swallow(handle)
+}
+
 // ---------- galaxy ----------
 
 function ensureGalaxy() {
@@ -1148,6 +1431,8 @@ function ensureGalaxy() {
         onPickSystem: (app) => openReport(app, null),
         onWarp: (seconds) => sound.warp(seconds),
         onSound: (kind) => sound.chime(kind),
+        onPlay,
+        onClean: askClean,
         onOverview: () => {
           setPaneOpen(false)
           closeReport()
@@ -1155,6 +1440,7 @@ function ensureGalaxy() {
       })
       new ResizeObserver(layoutGalaxy).observe(gxHud)
       layoutGalaxy()
+      galaxy.setLook(lookOf(prefs.look))
       galaxy.setActive(prefs.view === 'galaxy' && !maximized)
       renderAll()
       if (focusedHandle && prefs.view === 'galaxy') galaxy.flyTo(focusedHandle)
@@ -1206,7 +1492,7 @@ function setZen(on) {
 
 // Nothing to answer, nobody touching anything, the pane shut: let the galaxy have the screen.
 function checkZen() {
-  if (zen || prefs.view !== 'galaxy' || paneOpen || report || document.hidden) return
+  if (zen || prefs.view !== 'galaxy' || paneOpen || report || document.hidden || searchQuery()) return
   if (Date.now() - lastInteraction < ZEN_IDLE_MS || attentionHandles().length) return
   setZen(true)
 }
@@ -1219,6 +1505,7 @@ function renderGalaxy(all) {
     path: session.path,
     pr: session.pr,
     servers: servers[session.path] || [],
+    disk: disk[session.path],
     moons: moons.get(handle) || 0,
     planet: session.title || session.name,
     branch: session.name,
@@ -1231,9 +1518,12 @@ function renderGalaxy(all) {
     active: Date.now() - (session.lastOutputAt || 0) < 15_000,
     show
   }))
-  displayOrder = galaxy ? galaxy.update(items, { focused: focusedHandle, gone: vanished, born, stats: appStats(all) }) : items.filter((i) => i.show).map((i) => i.handle)
+  displayOrder = galaxy ? galaxy.update(items, { focused: focusedHandle, gone: vanished, born, stats: appStats(all), searching: Boolean(searchQuery()) }) : items.filter((i) => i.show).map((i) => i.handle)
+  galaxy?.setSearchTarget(nextMatch())
   vanished.clear()
   born.clear()
+  // Closed some other way while we were asking: the galaxy lets it fall in by itself.
+  if (cleanAsk && !sessions.has(cleanAsk.handle)) closeCleanAsk()
   if (report) renderReport()
   renderSignals()
 }
@@ -1262,7 +1552,7 @@ function renderReport() {
   const rows = order.filter((h) => STATUS[statusOf(h)].group !== 'shell')
   const shells = order.length - rows.length
   const minute = Math.floor(Date.now() / 60000)
-  const key = JSON.stringify([report, minute, shells, rows.map((h) => [h, statusOf(h), rowSummary(h, sessions.get(h), statusOf(h)), menus.get(h)?.signature, !!menus.get(h) && isChoicePending(h, menus.get(h)), sessions.get(h).title, servers[sessions.get(h).path]])])
+  const key = JSON.stringify([report, minute, shells, rows.map((h) => [h, statusOf(h), rowSummary(h, sessions.get(h), statusOf(h)), menus.get(h)?.signature, !!menus.get(h) && isChoicePending(h, menus.get(h)), sessions.get(h).title, servers[sessions.get(h).path], disk[sessions.get(h).path]])])
   if (key === reportEl.dataset.key) return
   reportEl.dataset.key = key
   const typing = document.activeElement?.closest?.('.rp-quick')?.dataset.handle
@@ -1317,6 +1607,11 @@ function reportRow(handle, running = []) {
   const summary = menu ? attentionSummary(session, menu, status) : rowSummary(handle, session, status)
   if (summary && summary !== STATUS[status].label) row.append(el('p', { className: 'rp-sum', textContent: summary }))
   if (running.length) row.append(serverChips(running))
+  const idleFor = Date.now() - (session.agent?.updatedAt || session.lastOutputAt || Date.now())
+  const bytes = disk[session.path]
+  if (bytes > 1e9 && idleFor > 3 * 86_400_000 && !['attention', 'working'].includes(STATUS[status].section)) {
+    row.append(el('p', { className: 'rp-clean', textContent: `🧹 정리 후보 · 디스크 ${(bytes / 1e9).toFixed(1)}GB · ${ago(session.agent?.updatedAt || session.lastOutputAt)} 마지막 작업` }))
+  }
   if (menu) row.append(menuButtons(handle, menu, { compact: true }))
   else if (session.writable) row.append(quickReply(handle, STATUS[status].section === 'attention'))
   // A click points the camera at that planet; going all the way in is the button's job.
@@ -1621,6 +1916,57 @@ function highlight(text, words) {
   return html
 }
 
+// ---------- search ----------
+
+// Enter in the search box goes to what it found, best match first; Enter again moves
+// on to the next (Shift+Enter goes back), so a handful of matches can be walked through.
+
+function searchQuery() {
+  return search.value.trim().toLowerCase()
+}
+
+// Found in the planet's own name first, then in its app's, then anywhere on screen.
+function searchHits() {
+  const query = searchQuery()
+  if (!query) return []
+  const has = (text) => text && text.toLowerCase().includes(query)
+  const rank = (session) => (has(session.title) || has(session.name) ? 0 : has(session.project) ? 1 : 2)
+  return displayOrder
+    .filter((handle) => sessions.has(handle))
+    .map((handle, i) => ({ handle, i, rank: rank(sessions.get(handle)) }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
+    .map((hit) => hit.handle)
+}
+
+function nextMatch(step = 1, hits = searchHits()) {
+  if (!hits.length) return null
+  const at = hits.indexOf(searchAt)
+  if (at < 0) return hits[step > 0 ? 0 : hits.length - 1]
+  return hits[(at + step + hits.length) % hits.length]
+}
+
+function jumpToMatch(step) {
+  // An Enter that finished a syllable can arrive twice; one jump is enough.
+  if (Date.now() - jumpedAt < 150) return
+  const hits = searchHits()
+  if (!searchQuery()) return
+  if (!hits.length) return toast('찾은 게 없어요')
+  jumpedAt = Date.now()
+  searchAt = nextMatch(step, hits)
+  sound.chime('seek')
+  setFocus(searchAt)
+}
+
+function renderSearchHint() {
+  const query = searchQuery()
+  searchHint.hidden = !query
+  if (!query) return
+  const hits = searchHits()
+  const at = hits.indexOf(searchAt)
+  searchHint.textContent = !hits.length ? '없음' : at < 0 ? `${hits.length}개 ↵` : `${at + 1}/${hits.length} ↵`
+  searchHint.classList.toggle('none', !hits.length)
+}
+
 // ---------- shortcuts ----------
 
 // Letters match by physical key (e.code), so they also work with the Korean
@@ -1677,11 +2023,20 @@ function onShortcut(e) {
       setPaneOpen(false)
       closeReport()
     },
+    KeyL: () => {
+      if (prefs.view !== 'galaxy') return toast('우주 도감은 은하 보기에서 봐요')
+      toggleLog()
+    },
+    KeyI: () => {
+      if (prefs.view !== 'galaxy') return toast('보는 법은 은하 보기에서 봐요')
+      toggleGuide()
+    },
     KeyZ: () => {
       if (prefs.view !== 'galaxy') return toast('고요 모드는 은하 보기에서 써요')
       setZen(!zen)
     },
     KeyP: () => handle && togglePin(handle),
+    KeyS: () => toggleSettings(),
     KeyM: () => {
       setSound(!prefs.sound)
       toast(prefs.sound ? '우주 소리를 켰어요' : '소리를 껐어요')
@@ -1696,10 +2051,14 @@ function onShortcut(e) {
 }
 
 function onEscape() {
-  if (zen) setZen(false)
+  if (cleanAsk) cancelClean()
+  else if (!settingsEl.hidden) toggleSettings(false)
+  else if (zen) setZen(false)
   else if (maximized) setMaximized(false)
   else if (expandedHandle) collapse()
   else if (!paneNotice.hidden) hideNotice()
+  else if (!logEl.hidden) toggleLog(false)
+  else if (!guideEl.hidden) toggleGuide(false)
   else if (document.activeElement?.matches('textarea, input, select')) document.activeElement.blur()
   else if (report && !paneOpen) closeReport()
   else if (prefs.view === 'galaxy' && paneOpen) {
@@ -1806,6 +2165,7 @@ function pick(handle) {
 
 function setView(view) {
   if (view === prefs.view) return
+  if (cleanAsk) cancelClean()
   if (expandedHandle) collapse()
   if (maximized) setMaximized(false)
   prefs.view = view
@@ -1841,12 +2201,12 @@ function applyPrefs() {
 }
 
 function loadPrefs() {
-  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true }
+  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true, look: LOOK_DEFAULTS, mix: {} }
   try {
     const saved = JSON.parse(localStorage.getItem('orca-portal-prefs') || '{}')
     if (saved.version !== 2) Object.assign(saved, { version: 2, view: 'galaxy' })
     if (!VIEWS[saved.view]) delete saved.view
-    return { ...defaults, ...saved, collapsed: { ...defaults.collapsed, ...saved.collapsed } }
+    return { ...defaults, ...saved, collapsed: { ...defaults.collapsed, ...saved.collapsed }, look: { ...LOOK_DEFAULTS, ...saved.look }, mix: { ...saved.mix } }
   } catch {
     return defaults
   }
@@ -1859,7 +2219,7 @@ function savePrefs() {
 }
 
 function setConn(state, status) {
-  const labels = { live: '연결됨', reconnecting: '다시 연결 중', offline: '포탈 서버 꺼짐', 'orca-down': 'Orca 연결 안 됨', connecting: '연결 중' }
+  const labels = { live: '연결됨', reconnecting: '다시 연결 중', offline: '오러리 서버 꺼짐', 'orca-down': 'Orca 연결 안 됨', connecting: '연결 중' }
   conn.dataset.state = state
   conn.querySelector('.conn-text').textContent = labels[state]
   conn.title = status?.error || (status?.transport === 'cli' ? 'orca CLI로 읽는 중' : labels[state])

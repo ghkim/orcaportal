@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Orca Portal: one page that shows every live Orca session at once.
+// Orrery: one page that shows every live Orca session at once, as a galaxy.
 //   node server.mjs            start and print the URL
 //   node server.mjs --open     also open it as a tab in Orca's built-in browser
 //   PORT=4870 node server.mjs  pick the port (the next free one is used if taken)
@@ -12,12 +12,13 @@ import { OrcaClient } from './src/orca.mjs'
 import { Portal } from './src/portal.mjs'
 import { Usage } from './src/usage.mjs'
 import { Servers } from './src/servers.mjs'
+import { Disk } from './src/disk.mjs'
 import { keyBytes } from './public/keys.js'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const PUBLIC = path.join(ROOT, 'public')
 const HOST = '127.0.0.1'
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' }
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' }
 
 // Anything that can type into a terminal can run commands, so every write needs this
 // per-run token. Other sites can't read it: the page carries no CORS headers.
@@ -30,6 +31,9 @@ const usage = new Usage({ paths: () => portal.sessions.map((s) => s.path) })
 portal.on('state', () => usage.pathsChanged())
 // Dev servers and the like running inside worktrees, shown as small probes in orbit.
 const servers = new Servers({ paths: () => portal.sessions.map((s) => s.path) })
+// Disk used by each worktree (without .git), for planet sizes. Measured rarely.
+const disk = new Disk({ paths: () => portal.sessions.map((s) => s.path) })
+portal.on('state', () => disk.pathsChanged())
 let port = Number(process.env.PORT || 4870)
 
 const server = http.createServer(async (req, res) => {
@@ -69,6 +73,7 @@ function openEventStream(req, res) {
   write('state', portal.snapshot())
   write('usage', usage.snapshot())
   write('servers', servers.snapshot())
+  write('disk', disk.snapshot())
   for (const [handle, screen] of portal.screens) write('screen', { handle, lines: screen.lines })
 
   const onState = (data) => write('state', data)
@@ -76,14 +81,17 @@ function openEventStream(req, res) {
   const onStatus = (data) => write('status', data)
   const onUsage = (data) => write('usage', data)
   const onServers = (data) => write('servers', data)
+  const onDisk = (data) => write('disk', data)
   portal.on('state', onState)
   portal.on('screen', onScreen)
   portal.on('status', onStatus)
   usage.on('usage', onUsage)
   servers.on('servers', onServers)
+  disk.on('disk', onDisk)
   portal.subscribe()
   usage.subscribe()
   servers.subscribe()
+  disk.subscribe()
   const heartbeat = setInterval(() => res.write(': ping\n\n'), 15_000)
   req.on('close', () => {
     clearInterval(heartbeat)
@@ -92,9 +100,11 @@ function openEventStream(req, res) {
     portal.off('status', onStatus)
     usage.off('usage', onUsage)
     servers.off('servers', onServers)
+    disk.off('disk', onDisk)
     portal.unsubscribe()
     usage.unsubscribe()
     servers.unsubscribe()
+    disk.unsubscribe()
   })
 }
 
@@ -120,6 +130,10 @@ async function handleApi(pathname, body, res) {
       result = await client.send(handle, bytes)
     } else if (pathname === '/api/focus') {
       result = await client.focus(handle)
+    } else if (pathname === '/api/close') {
+      // Closing kills the terminal's process, so the request has to say it was confirmed.
+      if (body.confirmed !== true) return sendJson(res, 400, { ok: false, error: { code: 'invalid_argument', message: '닫기는 확인이 필요해요.' } })
+      result = await client.close(handle)
     } else {
       return sendJson(res, 404, { ok: false, error: { code: 'not_found', message: 'Unknown API' } })
     }
@@ -184,7 +198,7 @@ function listen(attemptsLeft = 20) {
   })
   server.listen(port, HOST, async () => {
     const url = `http://${HOST}:${port}/`
-    console.log(`Orca Portal: ${url}`)
+    console.log(`Orrery: ${url}`)
     if (process.argv.includes('--open')) {
       try {
         await client.openBrowserTab(url)

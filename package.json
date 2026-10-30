@@ -1,5 +1,5 @@
 {
-  "name": "orcaportal",
+  "name": "orrery",
   "version": "0.1.0",
   "description": "One page that shows every live Orca session at once: watch, reply, and pick options without switching tabs.",
   "license": "MIT",
@@ -18,7 +18,7 @@
   "type": "module",
   "private": true,
   "bin": {
-    "orcaportal": "bin/orcaportal.mjs"
+    "orrery": "bin/orrery.mjs"
   },
   "scripts": {
     "start": "node server.mjs",

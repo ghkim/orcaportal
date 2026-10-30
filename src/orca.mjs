@@ -175,6 +175,11 @@ export class OrcaClient {
     return this.cli(['terminal', 'switch', `--terminal=${handle}`])
   }
 
+  // Ends the terminal and whatever runs in it. The page only asks after the user confirms.
+  close(handle) {
+    return this.cli(['terminal', 'close', `--terminal=${handle}`])
+  }
+
   // Prefer the Orca worktree we were started from; outside one, let Orca pick.
   async openBrowserTab(url) {
     try {

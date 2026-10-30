@@ -4,8 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="portal-token" content="__PORTAL_TOKEN__">
-  <title>Orca Portal</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111827'/%3E%3Crect x='7' y='7' width='8' height='8' rx='2' fill='%2360a5fa'/%3E%3Crect x='17' y='7' width='8' height='8' rx='2' fill='%23f59e0b'/%3E%3Crect x='7' y='17' width='8' height='8' rx='2' fill='%2334d399'/%3E%3Crect x='17' y='17' width='8' height='8' rx='2' fill='%2394a3b8'/%3E%3C/svg%3E">
+  <title>Orrery</title>
+  <link rel="icon" href="orrery.svg" type="image/svg+xml">
+  <link rel="preload" href="/vendor/fonts/orbitron/Orbitron.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/vendor/fonts/orbit/Orbit-Regular.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
   <script type="importmap">{ "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/addons/" } }</script>
   <script type="module" src="/app.js"></script>
@@ -14,8 +16,8 @@
   <div class="cosmos" aria-hidden="true"></div>
   <header class="top">
     <div class="brand">
-      <span class="logo" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-      <h1>Orca Portal</h1>
+      <img class="logo" src="orrery.svg" alt="" width="22" height="22">
+      <h1>Orrery</h1>
       <span class="conn" data-state="connecting" title="연결 중"><span class="conn-dot"></span><span class="conn-text">연결 중</span></span>
     </div>
     <nav class="filters" aria-label="상태 필터">
@@ -25,20 +27,19 @@
       <button type="button" data-filter="done" class="f-done">완료 <b data-count="done">0</b></button>
     </nav>
     <div class="tools">
-      <input type="search" class="search" placeholder="목록 거르기" aria-label="목록 거르기">
+      <span class="search-wrap">
+        <input type="search" class="search" placeholder="찾기 · Enter로 이동" aria-label="세션 찾기, Enter로 찾은 곳으로 이동">
+        <span class="search-hint" aria-live="polite" hidden></span>
+      </span>
       <label class="toggle" title="질문이 뜨거나 작업이 끝난 세션으로 자동으로 이동해요"><input type="checkbox" class="auto-follow"> 자동 이동</label>
-      <label class="toggle"><input type="checkbox" class="show-shells"> 셸</label>
-      <div class="seg" role="group" aria-label="보기">
-        <button type="button" data-view="focus">목록</button>
-        <button type="button" data-view="galaxy">은하</button>
-        <button type="button" data-view="grid">격자</button>
-      </div>
+      <label class="toggle" title="에이전트 없이 셸만 열린 터미널도 보여줘요 (은하에선 작은 행성)"><input type="checkbox" class="show-shells"> 셸</label>
       <div class="seg size-seg" role="group" aria-label="카드 크기">
         <button type="button" data-size="s">작게</button>
         <button type="button" data-size="m">보통</button>
         <button type="button" data-size="l">크게</button>
       </div>
       <button type="button" class="icon sound-btn" title="소리 (M)"></button>
+      <button type="button" class="icon settings-btn" title="빛과 소리 설정 (S)" aria-expanded="false"></button>
       <button type="button" class="help-btn" title="단축키 보기 (?)">단축키 <kbd class="key">?</kbd></button>
     </div>
   </header>
@@ -53,23 +54,44 @@
     <div class="gx-hud">
       <div class="gx-signals" aria-label="확인이 필요한 세션"></div>
       <div class="gx-foot">
-        <div class="gx-legend" aria-label="색 설명">
-          <span data-status="choice"><i class="dot"></i>확인 필요</span>
-          <span data-status="working"><i class="dot"></i>작업 중 · 빠르게 공전</span>
-          <span data-status="new"><i class="dot"></i>새 결과</span>
-          <span data-status="done"><i class="dot"></i>완료</span>
+        <section class="gx-guide" aria-label="보는 법" hidden>
+          <div class="gd-group">
+            <h3>항성 = 앱</h3>
+            <p><i class="spectrum"></i>색은 나이 · 새 프로젝트일수록 푸름</p>
+            <p>크기는 일한 양 (토큰 · 시간)</p>
+            <p>동반성은 다른 워크트리</p>
+          </div>
+          <div class="gd-group">
+            <h3>행성 = 터미널</h3>
+            <p>크기는 디스크 (.git 제외)</p>
+            <p>작업 중이면 빠르게 공전</p>
+            <p>🌙 서브에이전트 · 🛰 PR · 📡 서버</p>
+          </div>
+          <div class="gd-group">
+            <h3>조작</h3>
+            <p>끌어서 돌리기 · 휠로 확대</p>
+            <p><kbd class="key">V</kbd> 전체 보기 · <kbd class="key">Z</kbd> 고요 모드</p>
+            <p>별똥별은 눌러서 잡기</p>
+            <p><kbd class="key">Alt</kbd>+끌기로 혜성 던지기</p>
+            <p>행성을 끌어 블랙홀로 보내 닫기</p>
+          </div>
+        </section>
+        <div class="gx-bar">
+          <div class="gx-legend" aria-label="색 설명">
+            <span data-status="choice"><i class="dot"></i>확인 필요</span>
+            <span data-status="working"><i class="dot"></i>작업 중</span>
+            <span data-status="new"><i class="dot"></i>새 결과</span>
+            <span data-status="done"><i class="dot"></i>완료</span>
+          </div>
+          <button type="button" class="gx-chip gx-guide-btn" aria-expanded="false" title="보는 법 (I)">보는 법 <kbd class="key">I</kbd></button>
+          <button type="button" class="gx-chip gx-log-btn" aria-expanded="false" title="우주 도감 (L)">📖 도감 <kbd class="key">L</kbd></button>
         </div>
-        <div class="gx-legend gx-stars" aria-label="항성 설명">
-          <span><i class="spectrum"></i>별 색 = 나이 (새 프로젝트일수록 푸름)</span>
-          <span>크기 = 일한 양 (토큰·시간)</span>
-          <span>동반성 = 다른 워크트리</span>
-          <span>🌙 서브에이전트 · 🛰 PR · 📡 서버</span>
-        </div>
-        <p class="gx-tips">앱 = 항성 · 터미널 = 행성 · 끌어서 돌리기 · 휠로 확대 · 빈 곳 더블클릭이나 <kbd class="key">V</kbd>로 전체 보기 · <kbd class="key">Z</kbd> 고요 모드</p>
       </div>
     </div>
     <button type="button" class="pane-toggle" aria-expanded="false" title="세션 패널 열기"><span aria-hidden="true"></span></button>
     <aside class="gx-report" aria-label="항성 보고" aria-live="polite" hidden></aside>
+    <aside class="gx-log" aria-label="우주 도감" hidden></aside>
+    <div class="gx-confirm" role="alertdialog" aria-labelledby="cf-title" hidden></div>
     <div class="pane">
       <div class="pane-notice" hidden></div>
       <div class="pane-empty" hidden>왼쪽 목록에서 세션을 고르세요. 단축키는 <kbd class="key">?</kbd></div>
@@ -78,6 +100,7 @@
   </div>
   <div class="empty" hidden></div>
   <div class="backdrop" hidden></div>
+  <aside class="settings" aria-label="빛과 소리 설정" hidden></aside>
   <dialog class="help" aria-label="단축키"></dialog>
   <div class="toast" role="status" hidden></div>
   <p class="zen-hint" aria-hidden="true">고요 모드 · 아무 키나 누르면 돌아와요</p>

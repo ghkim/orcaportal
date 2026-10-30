@@ -25,6 +25,20 @@ const BLOOM = 0.78
 const BAND_NORMAL = new THREE.Vector3(0.3, 1, 0.2).normalize()
 const BAND_CENTER = new THREE.Vector3(1, 0, -1.5).projectOnPlane(BAND_NORMAL).normalize()
 const METEOR_TINTS = [new THREE.Color(1, 0.97, 0.9), new THREE.Color(0.7, 1, 0.8), new THREE.Color(0.7, 0.85, 1), new THREE.Color(1, 0.85, 0.6)]
+const PASTELS = ['#ffc8e8', '#c8d8ff', '#dccbff', '#c8fff0', '#ffe2c4']
+const TILT_PERIOD = 110 // seconds for the idle camera's slow rise and dip
+// Play: comets thrown by hand and bent by the stars, things to catch, the black hole.
+const HOLD_MS = 420 // press and hold this long without moving to throw a comet or grab a planet
+const STAR_GM = 22000 // a star's pull, times its size squared
+const CORE_GM = 400000
+const SOFTEN = 4
+const MAX_THROW = 320
+const AIM_STEPS = 90 // the predicted path: 3 seconds, 30 points a second
+const TRAIL = 48
+const CATCH_PX = 44
+const HOLE_PX = 80 // the black hole's radius on screen
+const HOLE_DEPTH = 20
+const SWALLOW_MS = 2400
 
 // Status → light colour, close to the 2D palette so the meaning carries over.
 const TONE = {
@@ -45,6 +59,7 @@ const RED_GLOW = new THREE.Color('#ff5a2e')
 const WHITE_DWARF = new THREE.Color(0.85, 1, 1.3)
 const AMBER = new THREE.Color(TONE.choice)
 const WHITE = new THREE.Color('#ffffff')
+const SPOT = new THREE.Color('#fff0b8') // the warm light a search lights planets with
 // A star's colour is the project's age, as with real stars: new projects burn blue, old ones
 // cool through white and yellow to orange and red. Days since the first agent record.
 // Pushed brighter than real star colours so they read at a glance.
@@ -58,7 +73,10 @@ const SPECTRAL = [
 ].map(([days, color]) => [Math.log1p(days), new THREE.Color(color)])
 const UNKNOWN_STAR = new THREE.Color('#f4f2ff') // until a star's colour is known
 
-export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOverview }) {
+// onPlay hears about play (a meteor caught, a comet swallowed) for the page's log.
+// onClean is asked when a planet is dropped into the black hole; the page confirms
+// with the user, closes the terminal and then calls swallow(), or cancelClean().
+export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOverview, onPlay, onClean }) {
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
@@ -71,7 +89,10 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   // Destination readout shown while the warp drive is engaged.
   const warpHud = Object.assign(document.createElement('div'), { className: 'gx-warp', hidden: true })
   warpHud.innerHTML = '<span class="gx-warp-k">WARP</span><b></b><small></small><i></i>'
-  host.append(renderer.domElement, labelRenderer.domElement, tip, warpHud)
+  // A grabbed planet follows the pointer as a glowing orb with its name.
+  const ghost = Object.assign(document.createElement('div'), { className: 'gx-ghost', hidden: true })
+  ghost.innerHTML = '<i></i><span></span>'
+  host.append(renderer.domElement, labelRenderer.domElement, tip, warpHud, ghost)
 
   const scene = new THREE.Scene()
   scene.background = new THREE.Color('#010207')
@@ -91,6 +112,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     spikes: spikeTexture(),
     ring: ringTexture(),
     thinRing: ringTexture(256, 0.9, 0.955),
+    beam: beamTexture(),
     nebula: [nebulaTexture(11), nebulaTexture(29), nebulaTexture(47)]
   }
   // The camera carries the warp streaks, so it has to be in the scene.
@@ -120,19 +142,32 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   const sky = skyDome()
   const beacons = brightStars(tex)
   const drifter = driftingComet(tex.glow)
-  scene.add(sky, backgroundStars(pointUniforms), milkyWay(tex), nebulae(tex.nebula), ringNebulae(tex), beacons, distantGalaxies(plane), drifter.group)
+  const band = milkyWay(tex)
+  const veils = nebulae(tex.nebula)
+  scene.add(sky, backgroundStars(pointUniforms), band, veils, ringNebulae(tex), beacons, distantGalaxies(plane), drifter.group)
   const disc = new THREE.Group()
   scene.add(disc)
   const clouds = armNebulae(tex.nebula)
-  disc.add(...galaxyDisc(pointUniforms), ...galaxyCore(tex.glow), clouds, globularClusters(pointUniforms))
+  const auroraRing = aurora()
+  disc.add(...galaxyDisc(pointUniforms), ...galaxyCore(tex.glow), clouds, globularClusters(pointUniforms), auroraRing)
+  const hole = blackHole(tex.thinRing)
+  camera.add(hole.group)
   let nextMeteor = 8 + Math.random() * 12
   let nextShower = 60 + Math.random() * 60
+  let nextEvent = 45 + Math.random() * 60
+  const events = [] // far supernovae and stars being born in the arms
+  const thrown = [] // comets the viewer threw
+  const bursts = [] // flashes from catches and collisions
 
   const systems = new Map() // app name -> system
   const planets = new Map() // terminal handle -> planet
   let order = []
   let layoutKey = ''
   let selected = null
+  let searching = false // a search is typed: the planets it finds light up
+  let searchTarget = null // the planet Enter goes to next
+  let foundSoundAt = 0
+  const spotPos = new THREE.Vector3()
   let hovered = null
   let follow = null // system the camera rides along with
   let flight = null
@@ -148,8 +183,27 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   let pointer = null
   let pointerDirty = false
   let down = null
+  let fullView = { width: 1, height: 1 }
+  let idle = 0
+  let glow = BLOOM // the viewer can turn the bloom and the exposure down (or up)
+  let busyAgents = 0 // agents working right now, for the aurora
+  let auroraLevel = 0
+  let auroraSeen = false
+  let hold = null // a press that may turn into a throw or a grab
+  let aim = null // pulling back a comet
+  let grab = null // dragging a planet towards the black hole
+  let cleaning = null // the planet waiting in the black hole while the page asks
+  let holeShow = 0
+  let holeGoal = 0
+  let holeHeat = 0
+  let holeHeatGoal = 0
   const tmp = new THREE.Vector3()
   const tmp2 = new THREE.Vector3()
+  const tmp3 = new THREE.Vector3()
+  const ndc = new THREE.Vector2()
+  const turn = new THREE.Quaternion()
+  const partTurn = new THREE.Quaternion()
+  const orbitSph = new THREE.Spherical()
   const raycaster = new THREE.Raycaster()
 
   // ---------- systems & planets ----------
@@ -157,7 +211,11 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   // gone: handles whose terminals were closed, so they leave with a show rather than just disappearing.
   // born: handles of terminals that just opened, so they arrive with one.
   // stats: per app { tokens, activeMs, firstAt } for the stars' size and colour.
-  function update(items, { focused = null, gone = new Set(), born = new Set(), stats = new Map() } = {}) {
+  // searching: a search is typed, so the planets left showing are what it found.
+  function update(items, { focused = null, gone = new Set(), born = new Set(), stats = new Map(), searching: nowSearching = false } = {}) {
+    searching = nowSearching
+    host.classList.toggle('gx-searching', searching)
+    let lit = 0
     const byApp = new Map()
     for (const item of items) {
       if (!byApp.has(item.app)) byApp.set(item.app, [])
@@ -173,6 +231,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       layoutKey = key
       relayout(apps, byApp, items.length && !reduceMotion ? gone : new Set(), reduceMotion ? new Set() : born)
     }
+    busyAgents = items.filter((i) => i.status === 'working').length
     for (const app of apps) {
       const system = systems.get(app)
       let best = 'shell'
@@ -182,7 +241,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       for (const item of byApp.get(app)) {
         const planet = planets.get(item.handle)
         Object.assign(planet, { item })
-        paintPlanet(planet)
+        if (!planet.swallowing) paintPlanet(planet)
+        // Found ones flare on one after another rather than all at once.
+        if (setSpot(planet, searching && item.show && !planet.swallowing, lit * 70)) lit++
         if (RANK[item.status] < RANK[best]) best = item.status
         anyShown ||= item.show
         if (item.status === 'working') working++
@@ -196,6 +257,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       for (const item of byApp.get(app)) {
         const planet = planets.get(item.handle)
         const first = !paths.has(item.path)
+        if (planet.swallowing) continue
         setMoons(planet, item.moons || 0)
         // One satellite per pull request and one probe per running server, on the
         // first terminal of their worktree.
@@ -204,10 +266,19 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
         paths.add(item.path)
       }
       setCompanions(system, paths.size - 1)
+      const sizes = system.planets.map((p) => p.sizeGoal.toFixed(2)).join()
+      if (sizes !== system.sizesKey) {
+        system.sizesKey = sizes
+        arrange(system)
+      }
       system.label.element.classList.toggle('pinned', pinned(app))
     }
     order = apps.flatMap((app) => byApp.get(app).filter((i) => i.show).map((i) => i.handle))
     select(focused)
+    if (lit && performance.now() - foundSoundAt > 600) {
+      foundSoundAt = performance.now()
+      onSound?.('found')
+    }
     return order
   }
 
@@ -219,6 +290,14 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       if (keep.has(handle)) continue
       planets.delete(handle)
       if (hovered === planet) hovered = null
+      // Closed from the black hole: the hole eats it (if the close beat the page's
+      // own confirmation back, start that now), and a last planet takes its star along.
+      if (planet === cleaning) startSwallow(planet)
+      if (planet.swallowing) {
+        if (planet.eaten) removePlanet(planet)
+        if (!byApp.has(planet.system.app) && !reduceMotion) fading.add(planet.system)
+        continue
+      }
       if (!gone.has(handle)) {
         removePlanet(planet)
         continue
@@ -268,6 +347,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     planet.mesh.material.dispose()
     planet.orbit.material.dispose()
     for (const beacon of planet.beacons) beacon.material.dispose()
+    if (planet.spot) dropSpot(planet)
     for (const m of planet.moons) m.glint.material.dispose()
     planet.satellite?.light.material.dispose()
     for (const p of planet.probes.values()) p.glow.material.dispose()
@@ -310,6 +390,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       const goal = i < planet.moonGoal ? 1 : 0
       m.k += (goal - m.k) * Math.min(1, dt * 3)
       m.pivot.rotation.y += m.speed * dt
+      m.moon.position.x = m.glint.position.x = (1.6 + i * 0.34) * planet.size
       m.moon.scale.setScalar(Math.max(0.001, 0.13 * m.k))
       m.glint.scale.setScalar(Math.max(0.001, 0.9 * m.k))
       m.glint.material.opacity = 0.55 * m.k
@@ -359,7 +440,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       p.t = Math.max(0, Math.min(1, p.t + (p.leaving ? -dt / 1.1 : dt / 1.4)))
       // Up with a little overshoot; down in a falling curve, back into the planet.
       const e = p.leaving ? p.t * p.t : easeOutBack(p.t)
-      p.craft.position.x = 0.9 + (p.radius - 0.9) * e
+      p.craft.position.x = (0.9 + (p.radius - 0.9) * e) * planet.size
       p.pivot.rotation.y += p.speed * dt
       p.body.rotation.x += dt * 2.1
       p.body.rotation.y += dt * 1.4
@@ -395,7 +476,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     light.material.color.set(color)
     light.position.y = 0.14
     craft.add(new THREE.Mesh(satBody, satMetal), new THREE.Mesh(satPanel, satCells), light)
-    craft.position.x = 2.2
+    craft.position.x = 2.2 * planet.size
     craft.scale.setScalar(1.4)
     pivot.add(craft)
     planet.holder.add(pivot)
@@ -634,6 +715,526 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     }
   }
 
+  // ---------- far events ----------
+
+  // Now and then something happens out there: a supernova flares in the sky, or gas in an
+  // arm gathers and a new star lights up. Both happen where the viewer is looking.
+  function cosmicEvent(kind = Math.random() < 0.5 ? 'nova' : 'birth') {
+    if (reduceMotion || !active) return
+    if (kind === 'birth' && starBirth()) return
+    farNova()
+  }
+
+  function farNova() {
+    const { forward, right, up } = cameraBasis()
+    const group = new THREE.Group()
+    group.position
+      .copy(camera.position)
+      .addScaledVector(forward, 2600)
+      .addScaledVector(right, (Math.random() - 0.5) * 1700)
+      .addScaledVector(up, (Math.random() - 0.3) * 900)
+    const tint = Math.floor(Math.random() * PASTELS.length)
+    const color = new THREE.Color(PASTELS[tint])
+    const core = sprite(tex.glow, 0.001, 0)
+    core.material.color.copy(color).lerp(WHITE, 0.5)
+    const spikes = sprite(tex.spikes, 0.001, 0)
+    spikes.material.color.copy(color).lerp(WHITE, 0.3)
+    spikes.material.rotation = Math.random() * Math.PI
+    const shell = sprite(tex.ring, 0.001, 0)
+    shell.material.color.copy(color)
+    // The remnant: two veils of gas, its own colour and the next pastel along.
+    const remnant = [0, 1].map((i) => {
+      const cloud = sprite(tex.nebula[(tint + i) % tex.nebula.length], 0.001, 0)
+      cloud.material.color.set(PASTELS[(tint + i * 2) % PASTELS.length])
+      cloud.material.rotation = Math.random() * Math.PI * 2
+      return cloud
+    })
+    group.add(...remnant, core, spikes, shell)
+    scene.add(group)
+    events.push({ kind: 'nova', parent: scene, group, core, spikes, shell, remnant, begin: time, duration: 45 })
+    onSound?.('far-nova')
+    onPlay?.({ type: 'supernova' })
+  }
+
+  function starBirth() {
+    // A well-formed gas cloud in an arm, on screen.
+    const candidates = clouds.children.filter((cloud) => {
+      if (cloud.material.opacity < 0.12) return false
+      const p = cloud.getWorldPosition(tmp).project(camera)
+      return p.z < 1 && Math.abs(p.x) < 0.8 && Math.abs(p.y) < 0.8
+    })
+    const cloud = candidates[Math.floor(Math.random() * candidates.length)]
+    if (!cloud) return false
+    const size = cloud.userData.size
+    const group = new THREE.Group()
+    group.position.copy(cloud.position).add(new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).multiplyScalar(size * 0.3))
+    const gas = sprite(tex.nebula[Math.floor(Math.random() * tex.nebula.length)], 0.001, 0)
+    gas.material.color.set(PASTELS[Math.random() < 0.5 ? 0 : 2])
+    gas.material.rotation = Math.random() * Math.PI * 2
+    const core = sprite(tex.glow, 0.001, 0)
+    core.material.color.set('#e4ecff')
+    const spikes = sprite(tex.spikes, 0.001, 0)
+    spikes.material.color.set('#dfe8ff')
+    spikes.material.rotation = Math.random() * Math.PI
+    const shell = sprite(tex.ring, 0.001, 0)
+    shell.material.color.set(PASTELS[1])
+    group.add(gas, core, spikes, shell)
+    disc.add(group)
+    events.push({ kind: 'birth', parent: disc, group, gas, core, spikes, shell, size, begin: time, duration: 40 })
+    return true
+  }
+
+  function stepEvents(dt) {
+    for (const e of [...events]) {
+      const s = time - e.begin
+      if (s >= e.duration) {
+        e.parent.remove(e.group)
+        for (const part of e.group.children) part.material.dispose()
+        events.splice(events.indexOf(e), 1)
+        continue
+      }
+      if (e.kind === 'nova') {
+        // A star brightens a thousandfold in a second, fades over the next few, and its
+        // shell of gas spreads and glows for most of a minute.
+        const flare = smooth(0, 0.8, s) * (1 - smooth(1.2, 9, s))
+        const end = 1 - smooth(30, 45, s)
+        e.core.scale.setScalar(30 + 300 * flare)
+        e.core.material.opacity = (0.25 + 0.75 * flare) * end
+        e.spikes.scale.setScalar(0.001 + 520 * flare)
+        e.spikes.material.opacity = flare * 0.8
+        const shell = smooth(0.6, 14, s)
+        e.shell.scale.setScalar(40 + 900 * Math.sqrt(shell))
+        e.shell.material.opacity = (1 - shell) * 0.55 * smooth(0.6, 1.2, s)
+        const spread = smooth(1, 45, s)
+        e.remnant.forEach((cloud, i) => {
+          cloud.scale.setScalar((250 + 650 * Math.sqrt(spread)) * (1 + i * 0.4))
+          cloud.material.opacity = Math.pow(Math.sin(Math.PI * spread), 0.8) * (0.32 - i * 0.1)
+          cloud.material.rotation += (i ? -0.01 : 0.01) * dt
+        })
+        continue
+      }
+      // Gas draws together into a bright knot, the star lights with a flash and a ring,
+      // blows the leftover gas away and shines on for a while.
+      const { size } = e
+      if (s > 5 && !e.lit) {
+        e.lit = true
+        onSound?.('far-birth')
+        onPlay?.({ type: 'starbirth' })
+      }
+      const gather = smooth(0, 5, s)
+      const blow = smooth(5, 20, s)
+      e.gas.scale.setScalar(size * (1.3 - 0.8 * gather + 1.2 * blow))
+      e.gas.material.opacity = 0.5 * smooth(0, 2, s) * (1 - blow)
+      const flash = smooth(5, 5.4, s) * (1 - smooth(5.4, 8, s))
+      const life = 1 - smooth(32, 40, s)
+      const twinkle = s > 5 ? 0.9 + 0.1 * Math.sin(s * 3.1) : 1
+      e.core.scale.setScalar(Math.max(0.001, size * (0.15 * gather + 1.1 * flash) * twinkle * (0.4 + 0.6 * life)))
+      e.core.material.opacity = (0.5 + 0.5 * smooth(4, 5, s)) * gather * life
+      e.spikes.scale.setScalar(0.001 + size * 0.9 * smooth(5, 6, s) * (1 + flash))
+      e.spikes.material.opacity = 0.6 * smooth(5, 6, s) * life
+      const ring = smooth(5, 9, s)
+      e.shell.scale.setScalar(0.001 + size * (0.2 + 1.8 * Math.sqrt(ring)))
+      e.shell.material.opacity = s > 5 ? (1 - ring) * 0.7 : 0
+    }
+  }
+
+  // ---------- play ----------
+
+  // Comets the viewer throws: pull back and let go. Every star and the galactic core pull
+  // on them; too close and they're swallowed, into a planet and they splash.
+  const aimLine = new THREE.Line(lineGeometry(AIM_STEPS), glowLine())
+  const pullLine = new THREE.Line(lineGeometry(2), new THREE.LineBasicMaterial({ color: '#8fa4d8', transparent: true, opacity: 0.45, depthWrite: false }))
+  const aimHead = sprite(tex.glow, 3, 0.95)
+  aimHead.material.color.set('#e6f0ff')
+  for (const part of [aimLine, pullLine, aimHead]) {
+    part.frustumCulled = false
+    part.visible = false
+  }
+  scene.add(aimLine, pullLine, aimHead)
+  const spot = new THREE.Vector3()
+  const proj1 = new THREE.Vector3()
+  const proj2 = new THREE.Vector3()
+
+  function attractors() {
+    const list = [{ at: new THREE.Vector3(), gm: CORE_GM, reach: 9, system: null }]
+    for (const system of systems.values()) {
+      const s = system.size * system.grow
+      list.push({ at: system.group.getWorldPosition(new THREE.Vector3()), gm: STAR_GM * s * s, reach: 1.6 * s, system })
+    }
+    return list
+  }
+
+  // Moves p and v on by dt; returns the attractor it fell into, if any.
+  function fall(p, v, dt, sources) {
+    const h = dt / 4
+    for (let n = 0; n < 4; n++) {
+      for (const s of sources) {
+        tmp.copy(s.at).sub(p)
+        v.addScaledVector(tmp, (s.gm * h) / Math.pow(tmp.lengthSq() + SOFTEN, 1.5))
+      }
+      tmp3.copy(p)
+      p.addScaledVector(v, h)
+      for (const s of sources) if (segmentGap(tmp3, p, s.at) < s.reach) return s
+    }
+    return null
+  }
+
+  function planetAlong(a, b) {
+    for (const planet of planets.values()) {
+      if (planet.swallowing) continue
+      if (segmentGap(a, b, planet.holder.getWorldPosition(spot)) < 1.1 * planet.size + 0.3) return planet
+    }
+    return null
+  }
+
+  function pointOn(plane, event, out) {
+    const rect = canvas.getBoundingClientRect()
+    ndc.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1)
+    raycaster.setFromCamera(ndc, camera)
+    return raycaster.ray.intersectPlane(plane, out)
+  }
+
+  // Aim in the disc's plane when looking down on it, else in a plane facing the camera.
+  function startAim(event) {
+    const forward = camera.getWorldDirection(new THREE.Vector3())
+    const plane =
+      Math.abs(forward.y) > 0.3 ? new THREE.Plane(new THREE.Vector3(0, 1, 0), -controls.target.y) : new THREE.Plane().setFromNormalAndCoplanarPoint(forward.negate(), controls.target)
+    const from = pointOn(plane, event, new THREE.Vector3())
+    if (!from || from.distanceTo(camera.position) > 3000) return false
+    aim = { plane, from, to: from.clone(), x: event.clientX, y: event.clientY, pulled: 0, v: new THREE.Vector3() }
+    controls.enabled = false
+    canvas.style.cursor = 'crosshair'
+    tip.hidden = true
+    aimHead.position.copy(from)
+    aimHead.visible = aimLine.visible = pullLine.visible = true
+    moveAim(event)
+    return true
+  }
+
+  function moveAim(event) {
+    pointOn(aim.plane, event, aim.to)
+    aim.pulled = Math.hypot(event.clientX - aim.x, event.clientY - aim.y)
+    // A slingshot: it flies away from where it was pulled to, faster the further. Up
+    // close, where everything is small, a pull counts for more.
+    const reach = Math.max(1, Math.pow(400 / Math.max(1, camera.position.distanceTo(aim.from)), 0.6))
+    aim.v.subVectors(aim.from, aim.to).multiplyScalar(1.6 * reach)
+    if (aim.v.length() > MAX_THROW) aim.v.setLength(MAX_THROW)
+  }
+
+  // The path it will take, bent by the stars, drawn while aiming.
+  function stepAim() {
+    const { from, to, v } = aim
+    pullLine.geometry.attributes.position.array.set([from.x, from.y, from.z, to.x, to.y, to.z])
+    pullLine.geometry.attributes.position.needsUpdate = true
+    aimHead.position.copy(from)
+    aimHead.scale.setScalar(Math.max(1.4, camera.position.distanceTo(from) * 0.014) * (1 + 0.15 * Math.sin(time * 9)))
+    const sources = attractors()
+    const p = from.clone()
+    const velocity = v.clone()
+    const pos = aimLine.geometry.attributes.position
+    const col = aimLine.geometry.attributes.color
+    let stopped = aim.pulled < 14
+    for (let i = 0; i < AIM_STEPS; i++) {
+      if (i && !stopped) stopped = Boolean(fall(p, velocity, 1 / 30, sources))
+      pos.setXYZ(i, p.x, p.y, p.z)
+      const f = stopped ? 0 : Math.pow(1 - i / AIM_STEPS, 1.3) * 0.8
+      col.setXYZ(i, 0.75 * f, 0.85 * f, f)
+    }
+    pos.needsUpdate = true
+    col.needsUpdate = true
+  }
+
+  function endAim() {
+    aim = null
+    controls.enabled = true
+    canvas.style.cursor = ''
+    aimHead.visible = aimLine.visible = pullLine.visible = false
+  }
+
+  function releaseAim() {
+    const { from, v, pulled } = aim
+    endAim()
+    if (pulled < 14 || v.lengthSq() < 1) return
+    const head = sprite(tex.glow, 2, 0)
+    head.material.color.set('#e6f0ff')
+    const tail = new THREE.Line(lineGeometry(TRAIL), glowLine())
+    tail.frustumCulled = false
+    scene.add(head, tail)
+    thrown.push({ p: from.clone(), v: v.clone(), head, tail, trail: [], age: 0, end: 0 })
+    onSound?.('throw')
+    onPlay?.({ type: 'throw' })
+  }
+
+  function stepThrown(dt) {
+    if (!thrown.length) return
+    const sources = attractors()
+    for (const c of [...thrown]) {
+      c.age += dt
+      if (!c.end) {
+        const start = c.p.clone()
+        const hit = fall(c.p, c.v, dt, sources)
+        const planet = hit ? null : planetAlong(start, c.p)
+        if (hit || planet) collide(hit, planet)
+        if (hit || planet || c.age > 30 || c.p.length() > 2400) c.end = c.age
+        c.trail.unshift(c.p.clone())
+        c.trail.length = Math.min(c.trail.length, TRAIL)
+      } else c.trail.pop()
+      if (!c.trail.length) {
+        scene.remove(c.head, c.tail)
+        c.head.material.dispose()
+        c.tail.geometry.dispose()
+        c.tail.material.dispose()
+        thrown.splice(thrown.indexOf(c), 1)
+        continue
+      }
+      // Once it's gone, the tail draws in after it.
+      const pos = c.tail.geometry.attributes.position
+      const col = c.tail.geometry.attributes.color
+      for (let i = 0; i < TRAIL; i++) {
+        const q = c.trail[Math.min(i, c.trail.length - 1)]
+        pos.setXYZ(i, q.x, q.y, q.z)
+        const f = i < c.trail.length ? Math.pow(1 - i / TRAIL, 1.6) : 0
+        col.setXYZ(i, 0.65 * f, 0.8 * f, f)
+      }
+      pos.needsUpdate = true
+      col.needsUpdate = true
+      c.head.position.copy(c.p)
+      c.head.scale.setScalar(Math.max(1.4, camera.position.distanceTo(c.p) * 0.012))
+      c.head.material.opacity = c.end ? 0 : Math.min(1, c.age * 4)
+    }
+  }
+
+  function collide(hit, planet) {
+    if (planet) {
+      burst(new THREE.Vector3(), { color: '#e6f0ff', size: 5 * planet.size, parent: planet.holder, sparks: 6 })
+      onSound?.('comet')
+      onPlay?.({ type: 'splash', app: planet.system.app })
+    } else if (hit.system) {
+      const s = hit.system.size * hit.system.grow
+      burst(new THREE.Vector3(), { color: hit.system.color, size: 16 * s, parent: hit.system.group, sparks: 8 })
+      hit.system.gulp = 1
+      onSound?.('gulp')
+      onPlay?.({ type: 'swallow', app: hit.system.app })
+    } else {
+      burst(new THREE.Vector3(), { color: '#ffe9cf', size: 70, parent: disc, sparks: 12, ms: 1600 })
+      onSound?.('core')
+      onPlay?.({ type: 'core' })
+    }
+  }
+
+  // A flash and a spreading ring; with sparks, a few glints flung outwards.
+  function burst(at, { color = '#ffffff', size = 10, parent = scene, sparks = 0, ms = 1000, front = false } = {}) {
+    const glow = sprite(tex.glow, 0.001, 0)
+    const ring = sprite(tex.ring, 0.001, 0)
+    glow.material.color.set(color)
+    ring.material.color.set(color)
+    const glints = []
+    for (let i = 0; i < sparks; i++) {
+      const s = sprite(tex.glow, size * 0.14, 0)
+      s.material.color.set(color).lerp(WHITE, 0.4)
+      glints.push({ s, v: new THREE.Vector3().randomDirection().multiplyScalar(size * (1 + Math.random() * 1.4)) })
+    }
+    const parts = [glow, ring, ...glints.map((g) => g.s)]
+    for (const part of parts) {
+      part.position.copy(at)
+      if (front) {
+        part.material.depthTest = false
+        part.renderOrder = 40
+      }
+      parent.add(part)
+    }
+    bursts.push({ glow, ring, glints, parts, parent, size, start: performance.now(), ms })
+  }
+
+  function stepBursts(now, dt) {
+    for (const b of [...bursts]) {
+      const k = (now - b.start) / b.ms
+      if (k >= 1) {
+        for (const part of b.parts) {
+          b.parent.remove(part)
+          part.material.dispose()
+        }
+        bursts.splice(bursts.indexOf(b), 1)
+        continue
+      }
+      b.glow.scale.setScalar(b.size * (0.5 + 1.3 * Math.sqrt(k)))
+      b.glow.material.opacity = Math.pow(1 - k, 2)
+      b.ring.scale.setScalar(b.size * (0.3 + 2.8 * Math.sqrt(k)))
+      b.ring.material.opacity = (1 - k) * 0.75
+      for (const g of b.glints) {
+        g.s.position.addScaledVector(g.v, dt * (1 - k))
+        g.s.material.opacity = Math.pow(1 - k, 1.5)
+      }
+    }
+  }
+
+  // Click a shooting star (or the far comet) as it passes to catch it.
+  function catchAt(event) {
+    if (reduceMotion) return false
+    const rect = canvas.getBoundingClientRect()
+    const x = event.clientX - rect.left
+    const y = event.clientY - rect.top
+    const meteor = meteors.find((m) => m.head.visible && screenGap(m.head.position, tmp.fromArray(m.line.geometry.attributes.position.array, 3), x, y, rect) < CATCH_PX)
+    if (meteor) {
+      burst(meteor.head.position, { color: meteor.tint, size: camera.position.distanceTo(meteor.head.position) * 0.06, sparks: 10 })
+      meteor.begin = -Infinity
+      onSound?.('catch')
+      onPlay?.({ type: 'meteor', tint: METEOR_TINTS.indexOf(meteor.tint) })
+      return true
+    }
+    const head = drifter.head
+    if (drifter.group.visible && head.material.opacity > 0.3 && screenGap(head.position, head.position, x, y, rect) < CATCH_PX * 1.3) {
+      burst(head.position, { color: '#c8f6ff', size: camera.position.distanceTo(head.position) * 0.06, sparks: 14 })
+      drifter.stop(time)
+      onSound?.('catch')
+      onPlay?.({ type: 'comet' })
+      return true
+    }
+    return false
+  }
+
+  // Distance on screen from (x, y) to the segment a-b; Infinity when it's behind the camera.
+  function screenGap(a, b, x, y, rect) {
+    const pa = proj1.copy(a).project(camera)
+    const pb = proj2.copy(b).project(camera)
+    if (pa.z > 1 || pb.z > 1) return Infinity
+    const ax = ((pa.x + 1) / 2) * rect.width
+    const ay = ((1 - pa.y) / 2) * rect.height
+    const dx = ((pb.x + 1) / 2) * rect.width - ax
+    const dy = ((1 - pb.y) / 2) * rect.height - ay
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / Math.max(1e-6, dx * dx + dy * dy)))
+    return Math.hypot(ax + dx * t - x, ay + dy * t - y)
+  }
+
+  // The black hole: pick up a planet and it opens near the bottom of the view; drop the
+  // planet in and the page asks whether to close that terminal.
+  function holeSpot() {
+    return { x: area.x + area.width / 2, y: area.y + area.height * 0.76 }
+  }
+
+  function grabPlanet(planet, at) {
+    grab = { planet, near: false }
+    controls.enabled = false
+    holeGoal = 1
+    tip.hidden = true
+    ghost.querySelector('span').textContent = planet.item.planet
+    ghost.dataset.status = planet.item.status
+    ghost.classList.remove('held', 'near')
+    ghost.hidden = false
+    planet.label.element.classList.add('grabbed')
+    moveGhost(at)
+    onSound?.('grab')
+  }
+
+  function moveGhost(event) {
+    const rect = host.getBoundingClientRect()
+    let x = event.clientX - rect.left
+    let y = event.clientY - rect.top
+    const hole = holeSpot()
+    const d = Math.hypot(x - hole.x, y - hole.y)
+    grab.near = d < HOLE_PX * 1.15
+    // Close by, the hole tugs the planet towards it.
+    const pull = grab.near ? 0.5 : (1 - smooth(HOLE_PX * 1.15, HOLE_PX * 2.6, d)) * 0.3
+    x += (hole.x - x) * pull
+    y += (hole.y - y) * pull
+    ghost.style.transform = `translate(${x}px, ${y}px) scale(${1 - pull * 0.6})`
+    ghost.classList.toggle('near', grab.near)
+    holeHeatGoal = grab.near ? 1 : (1 - smooth(HOLE_PX * 1.15, HOLE_PX * 3, d)) * 0.4
+  }
+
+  function dropPlanet(cancelled = false) {
+    const { planet, near } = grab
+    grab = null
+    controls.enabled = true
+    planet.label.element.classList.remove('grabbed')
+    if (!cancelled && near && planets.get(planet.handle) === planet) {
+      // It waits in the hole while the page asks.
+      cleaning = planet
+      holeHeatGoal = 0.6
+      const hole = holeSpot()
+      ghost.style.transform = `translate(${hole.x}px, ${hole.y}px) scale(0.5)`
+      ghost.classList.add('held')
+      onClean(planet.handle)
+      return
+    }
+    ghost.hidden = true
+    holeGoal = 0
+    holeHeatGoal = 0
+  }
+
+  function cancelClean() {
+    cleaning = null
+    ghost.hidden = true
+    ghost.classList.remove('held', 'near')
+    holeGoal = 0
+    holeHeatGoal = 0
+  }
+
+  function startSwallow(planet) {
+    if (planet.swallowing) return
+    planet.swallowing = true
+    if (cleaning === planet) cleaning = null
+    if (hovered === planet) hovered = null
+    ghost.hidden = true
+    ghost.classList.remove('held', 'near')
+    holeGoal = 1
+    holeHeatGoal = 1
+    onSound?.('blackhole')
+    dying.push({ kind: 'swallow', planet, start: performance.now(), duration: reduceMotion ? 1 : SWALLOW_MS })
+  }
+
+  // The planet leaves its orbit and spirals, ever faster and smaller, into the hole.
+  function swallowPlanet(entry, k) {
+    const { planet } = entry
+    if (!entry.ready) {
+      entry.ready = true
+      planet.holder.remove(planet.hit)
+      for (const beacon of planet.beacons) beacon.visible = false
+      if (planet.spot) dropSpot(planet)
+      planet.label.element.classList.add('gone')
+      scene.attach(planet.holder)
+      entry.from = planet.holder.position.clone()
+      entry.depth = Math.max(HOLE_DEPTH, entry.from.distanceTo(camera.position))
+      entry.scale = planet.holder.scale.x
+      entry.orbitOpacity = planet.orbit.material.opacity
+      planet.mesh.material.uniforms.rim.value.set('#ffc6a0')
+    }
+    // It falls along the line of sight to the hole, staying at its own depth, so on
+    // screen it slides into the hole without looming up at the camera.
+    const goal = hole.group.getWorldPosition(tmp2).sub(camera.position).setLength(entry.depth).add(camera.position)
+    const axis = tmp3.copy(goal).sub(camera.position).normalize()
+    const e = Math.pow(k, 1.6)
+    const offset = tmp.copy(entry.from).sub(goal).multiplyScalar(1 - e).applyAxisAngle(axis, e * Math.PI * 4)
+    planet.holder.position.copy(goal).add(offset)
+    planet.holder.scale.setScalar(Math.max(0.001, entry.scale * (1 - smooth(0.4, 1, k))))
+    planet.mesh.material.uniforms.rimStrength.value = 0.5 + 3 * smooth(0, 0.5, k)
+    planet.orbit.material.opacity = entry.orbitOpacity * (1 - smooth(0, 0.3, k))
+  }
+
+  function stepHole(dt) {
+    holeShow += (holeGoal - holeShow) * Math.min(1, dt * (holeGoal ? 6 : 3))
+    holeHeat += (holeHeatGoal - holeHeat) * Math.min(1, dt * 4)
+    hole.group.visible = holeShow > 0.01
+    if (!hole.group.visible) return
+    // HOLE_DEPTH in front of the camera, under its spot on the screen.
+    const at = holeSpot()
+    ndc.set((at.x / size.width) * 2 - 1, -(at.y / size.height) * 2 + 1)
+    camera.updateMatrixWorld()
+    const world = tmp.set(ndc.x, ndc.y, 0.5).unproject(camera).sub(camera.position).setLength(HOLE_DEPTH).add(camera.position)
+    hole.group.position.copy(camera.worldToLocal(world))
+    const perPixel = (2 * HOLE_DEPTH * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / fullView.height
+    const grow = holeGoal ? easeOutBack(Math.min(1, holeShow)) : holeShow
+    hole.group.scale.setScalar(Math.max(0.001, 2 * HOLE_PX * perPixel * grow * (1 + 0.1 * holeHeat)))
+    hole.step(time, holeHeat, Math.min(1, holeShow))
+  }
+
+  function cancelPlay() {
+    if (hold) cancelHold()
+    if (aim) endAim()
+    if (grab) dropPlanet(true)
+    stopListening()
+  }
+
   // ---------- leaving ----------
 
   function stepDying(now) {
@@ -641,6 +1242,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       if (now < entry.start) continue
       const k = Math.min(1, (now - entry.start) / entry.duration)
       if (entry.kind === 'planet') fadePlanet(entry, k)
+      else if (entry.kind === 'swallow') swallowPlanet(entry, k)
       else nova(entry, k)
       if (k < 1) continue
       dying.splice(dying.indexOf(entry), 1)
@@ -655,6 +1257,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       entry.ready = true
       planet.holder.remove(planet.hit)
       for (const beacon of planet.beacons) beacon.visible = false
+      if (planet.spot) dropSpot(planet)
       planet.label.element.classList.add('gone')
       // Swallowed by its swelling star, a planet glows red-hot; otherwise it flares blue-white.
       planet.mesh.material.uniforms.rim.value.set(entry.quiet ? '#ff8a4a' : '#cfe4ff')
@@ -752,6 +1355,18 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   }
 
   function finish(entry) {
+    if (entry.kind === 'swallow') {
+      const { planet } = entry
+      scene.remove(planet.holder)
+      burst(new THREE.Vector3(), { color: '#ffe6f2', size: 0.5, parent: hole.group, sparks: 8, ms: 900, front: true })
+      holeGoal = 0
+      holeHeatGoal = 0
+      onPlay?.({ type: 'clean', app: planet.system.app })
+      // Still listed until the next update: that one tidies it away.
+      if (planets.get(planet.handle) === planet) planet.eaten = true
+      else removePlanet(planet)
+      return
+    }
     if (entry.kind === 'planet') {
       const { planet } = entry
       if (entry.spark) {
@@ -905,9 +1520,13 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   function arrange(system) {
     const core = 1.25 * system.sizeGoal
     const n = system.companions.length
-    const base = Math.max(core + 3.25, n ? core + 1.3 + (n - 1) * 0.75 + 1.6 : 0)
+    const first = system.planets[0]?.sizeGoal || 1
+    const base = Math.max(core + 3.25, n ? core + 1.3 + (n - 1) * 0.75 + 1.6 : 0) + Math.max(0, first - 1) * 1.4
+    // Bigger planets (and the moons and probes they carry) get roomier orbits.
+    let radius = base
     system.planets.forEach((planet, k) => {
-      planet.orbitRadius = base + k * 2.1
+      if (k) radius += 0.6 + 0.75 * (system.planets[k - 1].sizeGoal + planet.sizeGoal)
+      planet.orbitRadius = radius
       planet.speed = 0.55 / Math.sqrt(planet.orbitRadius)
       if (!planet.placed) {
         planet.placed = true
@@ -915,7 +1534,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
         planet.orbit.scale.setScalar(planet.orbitRadius)
       }
     })
-    system.reach = base + (system.planets.length - 1) * 2.1
+    system.reach = radius
   }
 
   function createPlanet(system, item) {
@@ -934,34 +1553,103 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     const beacons = [sprite(tex.ring, 1, 0), sprite(tex.ring, 1, 0)]
     holder.add(mesh, hit, label, ...beacons)
     // Some gas giants get rings.
-    if ((seed >>> 12) % 4 === 0) holder.add(planetRing(seed))
+    const ring = (seed >>> 12) % 4 === 0 ? planetRing(seed) : null
+    if (ring) holder.add(ring)
     pivot.add(holder)
     const orbit = new THREE.LineLoop(circle, new THREE.LineBasicMaterial({ transparent: true, opacity: 0.12, depthWrite: false }))
     system.tilt.add(pivot, orbit)
-    const planet = { handle: item.handle, system, pivot, holder, mesh, hit, label, beacons, orbit, item, orbitRadius: 5, speed: 0.2, painted: '', moons: [], moonGoal: 0, satellite: null, prKey: '', probes: new Map() }
+    const planet = { handle: item.handle, system, pivot, holder, mesh, hit, label, beacons, orbit, item, orbitRadius: 5, speed: 0.2, painted: '', moons: [], moonGoal: 0, satellite: null, prKey: '', probes: new Map(), ring: null, size: 0.9, sizeGoal: 0.9 }
     hit.userData.planet = planet
     label.element.addEventListener('click', () => onPick(planet.handle))
+    planet.ring = ring
     planets.set(item.handle, planet)
     return planet
   }
 
+  // A planet's size is how much disk its worktree takes (without .git): about 1 at
+  // 1 GB, 1.65 at 8 GB. Until that's measured, a little variety from its name.
+  function sizeOf(item) {
+    const base = item.disk > 0 ? Math.min(1.85, Math.max(0.72, 0.72 + 0.3 * Math.log2(1 + item.disk / 1e9))) : 0.8 + ((hash(item.handle) >>> 6) % 100) / 220
+    return item.status === 'shell' ? base * 0.6 : base
+  }
+
   function paintPlanet(planet) {
     const { item } = planet
-    const key = `${item.status}|${item.show}|${item.planet}|${item.background}`
+    planet.sizeGoal = sizeOf(item)
+    if (!planet.painted) planet.size = planet.sizeGoal
+    const key = `${item.status}|${item.show}|${item.planet}|${item.background}|${searching}`
     if (key === planet.painted) return
     planet.painted = key
     const tone = new THREE.Color(TONE[item.status])
     const u = planet.mesh.material.uniforms
     u.rim.value.copy(tone)
     u.rimStrength.value = RIM[item.status]
-    u.dim.value = item.show ? 1 : 0.22
-    planet.mesh.scale.setScalar(item.status === 'shell' ? 0.5 : 0.8 + ((hash(item.handle) >>> 6) % 100) / 220)
+    // While searching, what wasn't found sinks further back.
+    u.dim.value = item.show ? 1 : searching ? 0.1 : 0.22
     planet.orbit.material.color.copy(tone)
-    planet.orbit.material.opacity = !item.show ? 0.04 : ALERT.has(item.status) ? 0.42 : item.status === 'working' ? 0.3 : 0.11
+    planet.orbit.material.opacity = !item.show ? (searching ? 0.015 : 0.04) : ALERT.has(item.status) ? 0.42 : item.status === 'working' ? 0.3 : 0.11
     for (const beacon of planet.beacons) beacon.material.color.copy(tone)
     planet.label.element.querySelector('span').textContent = item.planet
     planet.label.element.dataset.status = item.status
     planet.label.element.classList.toggle('dim', !item.show)
+    planet.label.element.classList.toggle('found', searching && item.show)
+  }
+
+  // A found planet lights up: a soft glow and a pillar of light over it, both sized
+  // to the camera's distance so they read from the far overview too.
+  function setSpot(planet, on, delay) {
+    const spot = planet.spot
+    if (!on) {
+      if (spot && !spot.leaving) spot.leaving = performance.now()
+      return false
+    }
+    if (spot) {
+      spot.leaving = 0
+      return false
+    }
+    const parts = [sprite(tex.glow, 0.001, 0), sprite(tex.beam, 0.001, 0), sprite(tex.thinRing, 0.001, 0)]
+    for (const part of parts) part.material.color.set(SPOT)
+    parts[1].center.set(0.5, 0)
+    planet.holder.add(...parts)
+    planet.spot = { glow: parts[0], beam: parts[1], ring: parts[2], parts, at: performance.now() + delay, flared: false, leaving: 0 }
+    return true
+  }
+
+  function dropSpot(planet) {
+    for (const part of planet.spot.parts) {
+      planet.holder.remove(part)
+      part.material.dispose()
+    }
+    planet.spot = null
+  }
+
+  function stepSpot(planet, now, time) {
+    const spot = planet.spot
+    const since = (now - spot.at) / 1000
+    const out = spot.leaving ? 1 - (now - spot.leaving) / 450 : 1
+    if (out <= 0) return dropSpot(planet)
+    if (since < 0) return
+    if (!spot.flared) {
+      spot.flared = true
+      if (!reduceMotion) burst(tmp.set(0, 0, 0), { color: SPOT, size: planet.size * 3.4, parent: planet.holder, sparks: 5, ms: 900 })
+    }
+    const fade = smooth(0, 0.45, since) * out
+    const target = planet.handle === searchTarget
+    const breathe = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 2.4 + planet.orbitRadius)
+    const far = camera.position.distanceTo(planet.holder.getWorldPosition(spotPos))
+    const s = planet.size
+    spot.glow.scale.setScalar(Math.max(s * 5.5, far * 0.034) * (target ? 1.3 : 1) * (0.92 + 0.12 * breathe))
+    spot.glow.material.opacity = fade * (0.55 + 0.25 * breathe)
+    const tall = Math.min(140, Math.max(14, far * 0.13)) * (target ? 1.3 : 1)
+    spot.beam.scale.set(Math.max(s * 1.6, far * 0.014), tall * (0.96 + 0.08 * breathe), 1)
+    spot.beam.material.opacity = fade * (target ? 0.8 : 0.5)
+    // Where Enter goes next: a ring keeps reaching out from it.
+    spot.ring.visible = target
+    if (target) {
+      const phase = reduceMotion ? 0.4 : (time * 0.7) % 1
+      spot.ring.scale.setScalar(Math.max(s * 2.4, far * 0.012) * (1 + phase * 2.6))
+      spot.ring.material.opacity = fade * (1 - phase) * 0.85
+    }
   }
 
   function paintSystem(system, status, anyShown) {
@@ -1027,7 +1715,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       from: camera.position.clone(),
       fromTarget: controls.target.clone(),
       start: performance.now(),
-      duration: reduceMotion ? 0 : FLY_MS * 1.3,
+      duration: reduceMotion ? 0 : FLY_MS * 1.75,
       end: () => ({ target: new THREE.Vector3(), position: OVERVIEW_DIR.clone().multiplyScalar(distance) }),
       system: null
     }
@@ -1050,6 +1738,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
         controls.target.add(delta)
         flight?.from.add(delta)
         flight?.fromTarget.add(delta)
+        aim?.from.add(delta)
+        aim?.to.add(delta)
       }
       follow.lastAt = (follow.lastAt || new THREE.Vector3()).copy(at)
     }
@@ -1060,7 +1750,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       const fx = warp.update(t, dt, time)
       camera.fov = 50 + fx.fov
       applyViewOffset()
-      bloom.strength = BLOOM + fx.intensity * 0.45
+      bloom.strength = glow + fx.intensity * 0.45
       labelRenderer.domElement.style.opacity = String(1 - fx.intensity)
       warpHud.style.opacity = String(smooth(0.04, 0.16, t) * (1 - smooth(0.82, 0.95, t)))
       warpHud.style.setProperty('--p', String(t))
@@ -1077,11 +1767,22 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       camera.position.lerpVectors(flight.from, approach, easeInOut(Math.max(0, Math.min(1, (t - 0.12) / 0.74))))
       camera.position.lerp(end.position, smooth(0.8, 1, t))
     } else {
-      const e = easeInOut(t)
+      // A glide: the look-at point slides across, the distance changes on a log scale
+      // (a 50x pull-back feels as even as a 2x one) and the viewing angle turns along an
+      // arc, all on a gentle ease so nothing whips round at the start or snaps at the end.
+      const e = smootherstep(t)
+      const fromOffset = tmp.copy(flight.from).sub(flight.fromTarget)
+      const toOffset = tmp2.copy(end.position).sub(end.target)
+      const d0 = Math.max(0.01, fromOffset.length())
+      const d1 = Math.max(0.01, toOffset.length())
+      turn.setFromUnitVectors(fromOffset.normalize(), toOffset.normalize())
+      partTurn.identity().slerp(turn, smootherstep(Math.min(1, t * 1.1)))
       controls.target.lerpVectors(flight.fromTarget, end.target, e)
-      camera.position.lerpVectors(flight.from, end.position, e)
-      // Arc up and over instead of cutting through the disc.
-      camera.position.y += Math.sin(Math.PI * e) * flight.from.distanceTo(end.position) * 0.18
+      camera.position
+        .copy(fromOffset)
+        .applyQuaternion(partTurn)
+        .multiplyScalar(Math.exp(Math.log(d0) + (Math.log(d1) - Math.log(d0)) * e))
+        .add(controls.target)
     }
     if (t >= 1) {
       if (flight.warp) endWarp()
@@ -1094,7 +1795,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     warp.reset()
     camera.fov = 50
     applyViewOffset()
-    bloom.strength = BLOOM
+    bloom.strength = glow
     labelRenderer.domElement.style.opacity = ''
     warpHud.hidden = true
   }
@@ -1150,6 +1851,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     const fullWidth = 2 * Math.max(cx, width - cx)
     const fullHeight = 2 * Math.max(cy, height - cy)
     camera.aspect = fullWidth / fullHeight
+    fullView = { width: fullWidth, height: fullHeight }
     camera.setViewOffset(fullWidth, fullHeight, fullWidth / 2 - cx, fullHeight / 2 - cy, width, height)
     camera.updateProjectionMatrix()
     pointUniforms.uScale.value = (fullHeight * renderer.getPixelRatio()) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2))
@@ -1173,7 +1875,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     if (!active) return
     requestAnimationFrame(frame)
     stepArea()
-    const busy = flight || dying.length || births.length || comets.length || meteors.length || areaGoal || now - lastInput < 2500
+    const busy =
+      flight || dying.length || births.length || comets.length || meteors.length || thrown.length || bursts.length || aim || grab || hole.group.visible || areaGoal || now - lastInput < 2500
     // 60 fps while something moves on purpose, 30 fps for the ambient drift.
     if (now - lastFrame < (busy ? 0 : 32)) return
     const dt = Math.min(0.1, (now - (lastFrame || now)) / 1000)
@@ -1188,10 +1891,41 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       const { phase, rate, base } = star.userData
       star.material.opacity = base * (0.7 + 0.3 * Math.sin(time * rate + phase))
     }
-    // Gas clouds in the arms thin out as the camera flies into them.
+    // Gas clouds in the arms swirl and breathe, every few minutes thin away and gather
+    // again somewhere else on an arm, and thin out as the camera flies into them.
     for (const cloud of clouds.children) {
+      const u = cloud.userData
+      if (time > u.born + u.span) placeCloud(cloud, Math.random, time)
+      const age = time - u.born
+      const life = smooth(0, 14, age) * (1 - smooth(u.span - 14, u.span, age))
+      const breathe = 0.7 + 0.3 * Math.sin(time * u.rate + u.phase)
+      cloud.material.rotation += u.spin * dt
+      cloud.scale.setScalar(u.size * (0.92 + 0.08 * breathe) * (0.75 + 0.25 * life))
       const d = cloud.getWorldPosition(tmp).distanceTo(camera.position)
-      cloud.material.opacity = cloud.userData.base * smooth(cloud.scale.x * 0.35, cloud.scale.x * 1.4, d)
+      cloud.material.opacity = u.base * life * breathe * smooth(u.size * 0.35, u.size * 1.4, d)
+    }
+    // The far nebulae and the Milky Way's clouds turn and brighten more slowly still.
+    for (const group of [veils, band]) {
+      for (const veil of group.children) {
+        const u = veil.userData
+        if (!u.rate) continue
+        veil.material.rotation += u.spin * dt
+        veil.material.opacity = u.base * (0.72 + 0.28 * Math.sin(time * u.rate + u.phase))
+      }
+    }
+    // Space weather: the more agents at work, the brighter the aurora round the disc.
+    auroraLevel += (Math.min(1, Math.max(0, (busyAgents - 1) / 4)) - auroraLevel) * Math.min(1, dt * 0.3)
+    auroraRing.visible = auroraLevel > 0.005
+    auroraRing.material.uniforms.uTime.value = time
+    auroraRing.material.uniforms.uLevel.value = auroraLevel
+    if (auroraLevel > 0.6 && !auroraSeen) {
+      auroraSeen = true
+      onSound?.('aurora')
+      onPlay?.({ type: 'aurora' })
+    } else if (auroraLevel < 0.2) auroraSeen = false
+    if (time > nextEvent) {
+      nextEvent = time + 75 + Math.random() * 120
+      cosmicEvent()
     }
     if (time > nextMeteor) {
       nextMeteor = time + 10 + Math.random() * 20
@@ -1204,20 +1938,27 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     }
     if (!reduceMotion) drifter.step(time)
     for (const planet of planets.values()) {
+      if (planet.swallowing) continue
       const working = planet.item.status === 'working'
       planet.pivot.rotation.y += planet.speed * dt * (working ? 1.6 : 0.45)
       planet.holder.position.x += (planet.orbitRadius - planet.holder.position.x) * Math.min(1, dt * 2)
       planet.orbit.scale.setScalar(planet.holder.position.x)
       planet.mesh.rotation.y += dt * 0.25
+      planet.size += (planet.sizeGoal - planet.size) * Math.min(1, dt * 1.6)
+      planet.mesh.scale.setScalar(planet.size)
+      planet.ring?.scale.setScalar(planet.size)
+      planet.hit.scale.setScalar(2.6 * Math.max(0.8, planet.size))
+      if (planet.satellite) planet.satellite.craft.position.x = 2.2 * planet.size
       const alert = ALERT.has(planet.item.status) && planet.item.show
       planet.beacons.forEach((beacon, i) => {
         beacon.visible = alert
         if (!alert) return
         const phase = (time * 0.55 + i * 0.5) % 1
-        beacon.scale.setScalar(2 + phase * 9)
+        beacon.scale.setScalar((2 + phase * 9) * planet.size)
         beacon.material.opacity = (1 - phase) * 0.9
       })
       planet.mesh.material.uniforms.starPos.value.copy(planet.system.group.getWorldPosition(tmp))
+      if (planet.spot) stepSpot(planet, now, time)
       if (planet.moons.length) stepMoons(planet, dt)
       if (planet.probes.size) stepProbes(planet, dt)
       if (planet.satellite) {
@@ -1237,11 +1978,26 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     stepBirths(now)
     stepComets(now)
     stepMeteors(now)
-    controls.autoRotate = !flying && !dragging && now - releasedAt > 1200
+    stepEvents(dt)
+    if (aim) stepAim()
+    stepThrown(dt)
+    stepBursts(now, dt)
+    stepHole(dt)
+    controls.autoRotate = !flying && !dragging && !aim && !grab && now - releasedAt > 1200
     controls.autoRotateSpeed = follow ? 0.7 : 0.45
+    // Left alone, the view also rises and dips, slowly enough not to make anyone dizzy:
+    // from looking down on the disc to nearly side-on and back over a couple of minutes.
+    if (controls.autoRotate && !reduceMotion) {
+      idle += dt
+      const offset = tmp.copy(camera.position).sub(controls.target)
+      orbitSph.setFromVector3(offset)
+      const goal = (follow ? 1.02 : 0.98) + (follow ? 0.22 : 0.36) * Math.sin((idle / TILT_PERIOD) * Math.PI * 2)
+      orbitSph.phi += (goal - orbitSph.phi) * Math.min(1, dt * 0.15)
+      camera.position.copy(controls.target).add(offset.setFromSpherical(orbitSph))
+    } else idle = 0
     controls.update(dt)
     updateLabels()
-    if (pointerDirty) hoverAt(pointer)
+    if (pointerDirty && !aim && !grab) hoverAt(pointer)
     composer.render()
     labelRenderer.render(scene, camera)
   }
@@ -1252,7 +2008,11 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     const t = time + (system.seed % 100)
     system.color.lerp(system.colorGoal, Math.min(1, dt * 2))
     system.size += (system.sizeGoal - system.size) * Math.min(1, dt * 2)
-    const size = system.size * system.grow
+    // A star that just swallowed a comet swells for a moment.
+    const gulp = system.gulp || 0
+    if (gulp) system.gulp = Math.max(0, gulp - dt * 1.4)
+    pulse *= 1 + 0.8 * gulp
+    const size = system.size * system.grow * (1 + 0.2 * gulp)
     const flicker = busy ? 1 + busy * 0.35 * (0.5 + 0.5 * Math.sin(t * 7.1)) * (0.5 + 0.5 * Math.sin(t * 2.3 + 1)) : 1
     const alert = ALERT.has(system.tone) && system.anyShown
     system.core.material.uniforms.color.value.copy(system.color)
@@ -1321,10 +2081,13 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     const ndc = new THREE.Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1)
     raycaster.setFromCamera(ndc, camera)
     const targets = []
-    for (const system of systems.values()) targets.push(system.hit, ...system.planets.map((p) => p.hit))
-    // Planets win over their star when both are under the pointer.
+    for (const system of systems.values()) targets.push(system.hit, ...system.planets.filter((p) => !p.swallowing).map((p) => p.hit))
+    // Planets win over their star when both are under the pointer, and when planets'
+    // generous hit areas overlap, the one whose centre is nearest the pointer wins.
     const found = raycaster.intersectObjects(targets, false)
-    return found.find((h) => h.object.userData.planet) || found[0]
+    const near = (h) => raycaster.ray.distanceToPoint(h.object.userData.planet.holder.getWorldPosition(tmp)) / h.object.userData.planet.size
+    const planetHits = found.filter((h) => h.object.userData.planet)
+    return planetHits.sort((a, b) => near(a) - near(b))[0] || found[0]
   }
 
   function hoverAt(event) {
@@ -1355,6 +2118,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
       el('em', `${item.statusLabel}${item.summary ? ` — ${item.summary}` : ''}`)
     ]
     if (item.moons) lines.push(el('span', `🌙 서브에이전트 ${item.moons}개 작업 중`))
+    if (item.disk > 0) lines.push(el('span', `💽 디스크 ${bytesText(item.disk)} (.git 제외)`))
     for (const server of (item.servers || []).slice(0, 4)) lines.push(el('span', `📡 ${server.name} ${server.ports.map((p) => `:${p}`).join(' ')}`))
     if (item.servers?.length > 4) lines.push(el('span', `📡 서버 ${item.servers.length - 4}개 더`))
     if (item.pr && prTone(item.pr)) lines.push(el('span', `🛰 PR #${item.pr.number} · ${PR_STATE[item.pr.state] || item.pr.state}${item.pr.state === 'open' && CHECKS[item.pr.checks] ? ` · ${CHECKS[item.pr.checks]}` : ''}`))
@@ -1383,7 +2147,83 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
   }
 
   const canvas = renderer.domElement
+
+  // Play gestures: Alt+drag, or press and hold and then drag. From empty space that pulls
+  // back a comet to throw; from a planet it picks the planet up for the black hole. Both
+  // take the pointer away from the orbit controls.
+  function cancelHold() {
+    clearTimeout(hold.timer)
+    hold = null
+  }
+
+  function beginPlay(target, planet, at) {
+    if (target === 'planet') {
+      if (!onClean || cleaning || grab || planets.get(planet.handle) !== planet) return false
+      grabPlanet(planet, at)
+    } else if (reduceMotion || !startAim(at)) return false
+    down = null
+    window.addEventListener('pointermove', onPlayMove)
+    window.addEventListener('pointerup', onPlayUp)
+    window.addEventListener('pointercancel', cancelPlay)
+    return true
+  }
+
+  function stopListening() {
+    window.removeEventListener('pointermove', onPlayMove)
+    window.removeEventListener('pointerup', onPlayUp)
+    window.removeEventListener('pointercancel', cancelPlay)
+  }
+
+  function onPlayMove(event) {
+    lastInput = performance.now()
+    if (aim) moveAim(event)
+    if (grab) moveGhost(event)
+  }
+
+  function onPlayUp() {
+    if (aim) releaseAim()
+    if (grab) dropPlanet()
+    stopListening()
+  }
+
+  canvas.addEventListener(
+    'pointerdown',
+    (event) => {
+      // A second finger means a pinch, not a hold.
+      if (hold) return cancelHold()
+      if (event.button !== 0 || aim || grab) return
+      const hit = hits(event)
+      const planet = hit?.object.userData.planet || null
+      const target = planet ? 'planet' : hit ? null : 'space'
+      if (!target) return
+      if (event.altKey) {
+        if (!beginPlay(target, planet, event)) return
+        event.stopImmediatePropagation()
+        event.preventDefault()
+        return
+      }
+      const at = { clientX: event.clientX, clientY: event.clientY }
+      hold = {
+        ...at,
+        timer: setTimeout(() => {
+          hold = null
+          beginPlay(target, planet, at)
+        }, HOLD_MS)
+      }
+    },
+    { capture: true }
+  )
+  window.addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key !== 'Escape' || !(aim || grab)) return
+      event.stopImmediatePropagation()
+      cancelPlay()
+    },
+    { capture: true }
+  )
   canvas.addEventListener('pointermove', (event) => {
+    if (hold && Math.hypot(event.clientX - hold.clientX, event.clientY - hold.clientY) > 6) cancelHold()
     pointer = { clientX: event.clientX, clientY: event.clientY }
     pointerDirty = true
     lastInput = performance.now()
@@ -1397,7 +2237,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     down = { x: event.clientX, y: event.clientY, at: performance.now() }
   })
   canvas.addEventListener('pointerup', (event) => {
+    if (hold) cancelHold()
     if (!down || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 5 || performance.now() - down.at > 500) return
+    if (catchAt(event)) return
     const hit = hits(event)
     if (hit?.object.userData.planet) onPick(hit.object.userData.planet.handle)
     else if (hit?.object.userData.system) pickSystem(hit.object.userData.system)
@@ -1407,7 +2249,14 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     overview()
     onOverview?.()
   })
-  canvas.addEventListener('wheel', () => (lastInput = performance.now()), { passive: true })
+  canvas.addEventListener(
+    'wheel',
+    () => {
+      if (hold) cancelHold()
+      lastInput = performance.now()
+    },
+    { passive: true }
+  )
   controls.addEventListener('start', () => {
     flight = null
     if (warp.active) endWarp()
@@ -1441,10 +2290,36 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onSound, onOv
     },
     comet,
     shootingStar,
+    cosmicEvent,
+    // The page confirmed and closed the terminal: the hole eats its planet.
+    swallow(handle) {
+      const planet = planets.get(handle)
+      if (planet && !planet.swallowing) startSwallow(planet)
+    },
+    cancelClean,
+    // Light from the settings panel: glow scales the bloom, brightness the exposure (1 = as designed).
+    // The planet Enter in the search box goes to next: its light stands out.
+    setSearchTarget(handle) {
+      if (searchTarget === handle) return
+      planets.get(searchTarget)?.label.element.classList.remove('target')
+      searchTarget = handle
+      planets.get(searchTarget)?.label.element.classList.add('target')
+    },
+    setLook({ glow: g = 1, brightness = 1 } = {}) {
+      glow = BLOOM * g
+      if (!warp.active) bloom.strength = glow
+      renderer.toneMappingExposure = 0.88 * brightness
+    },
+    // Where the black hole sits on the page, for the question asked above it.
+    holeSpot() {
+      const box = host.getBoundingClientRect()
+      const at = holeSpot()
+      return { x: box.left + at.x, y: box.top + at.y, radius: HOLE_PX }
+    },
     setActive(on) {
       if (on === active) return
       active = on
-      if (!on) return
+      if (!on) return cancelPlay()
       resize()
       lastFrame = 0
       if (!follow && !flight) overview()
@@ -1553,6 +2428,11 @@ function prTone(pr) {
   return { success: '#5dff9d', failure: '#ff5a6e', pending: '#ffb340' }[pr.checks] || '#7cc4ff'
 }
 
+function bytesText(bytes) {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(bytes >= 1e10 ? 0 : 1)}GB`
+  return `${Math.max(1, Math.round(bytes / 1e6))}MB`
+}
+
 function compact(n) {
   return new Intl.NumberFormat('ko', { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 }
@@ -1629,6 +2509,11 @@ function easeOutBack(x) {
   return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2)
 }
 
+function smootherstep(t) {
+  const x = Math.max(0, Math.min(1, t))
+  return x * x * x * (x * (x * 6 - 15) + 10)
+}
+
 function easeInOut(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
 }
@@ -1691,7 +2576,8 @@ function backgroundStars(uniforms) {
 
 function nebulae(textures) {
   const group = new THREE.Group()
-  const rand = mulberry32(3)
+  // A different sky each visit.
+  const rand = mulberry32((Math.random() * 2 ** 32) >>> 0)
   const pairs = [
     ['#7b3bff', '#ff4fd8'],
     ['#2a7bff', '#22d3ee'],
@@ -1735,6 +2621,7 @@ function nebulae(textures) {
       const s = new THREE.Sprite(material)
       s.position.copy(at)
       s.scale.setScalar(scale * k)
+      s.userData = breath(rand, opacity, 0.004)
       group.add(s)
     }
   })
@@ -1742,23 +2629,39 @@ function nebulae(textures) {
 }
 
 // Glowing gas along the spiral arms, pink where stars are being born, blue round
-// young clusters. They turn with the disc.
+// young clusters. They turn with the disc; the frame loop makes them swirl, breathe,
+// and now and then thin away and gather again elsewhere.
 function armNebulae(textures) {
   const group = new THREE.Group()
-  const rand = mulberry32(77)
-  const colors = ['#ff3d8b', '#ff5fb0', '#c04bff', '#3fa9ff', '#22d3ee', '#ff7a5c', '#8b5cf6']
   for (let i = 0; i < 64; i++) {
-    const r = 55 + Math.pow(rand(), 0.85) * (GALAXY_RADIUS - 55)
-    const arm = Math.floor(rand() * ARMS)
-    const angle = (arm / ARMS) * Math.PI * 2 + r * SPIN + gauss(rand) * 0.06
-    const s = sprite(textures[i % textures.length], 22 + rand() * 54, 0)
-    s.material.color.set(colors[Math.floor(rand() * colors.length)])
-    s.material.rotation = rand() * Math.PI * 2
-    s.userData.base = 0.32 + rand() * 0.3
-    s.position.set(Math.cos(angle) * r + gauss(rand) * 5, gauss(rand) * 2, Math.sin(angle) * r + gauss(rand) * 5)
+    const s = sprite(textures[i % textures.length], 1, 0)
+    placeCloud(s, Math.random)
+    // Part-way through their lives already, so they don't all come and go together.
+    s.userData.born = -Math.random() * s.userData.span
     group.add(s)
   }
   return group
+}
+
+const CLOUD_COLORS = ['#ff3d8b', '#ff5fb0', '#c04bff', '#3fa9ff', '#22d3ee', '#ff7a5c', '#8b5cf6']
+
+function placeCloud(s, rand, born = 0) {
+  const r = 55 + Math.pow(rand(), 0.85) * (GALAXY_RADIUS - 55)
+  const arm = Math.floor(rand() * ARMS)
+  const angle = (arm / ARMS) * Math.PI * 2 + r * SPIN + gauss(rand) * 0.06
+  s.material.color.set(CLOUD_COLORS[Math.floor(rand() * CLOUD_COLORS.length)])
+  s.material.rotation = rand() * Math.PI * 2
+  s.position.set(Math.cos(angle) * r + gauss(rand) * 5, gauss(rand) * 2, Math.sin(angle) * r + gauss(rand) * 5)
+  Object.assign(s.userData, {
+    size: 22 + rand() * 54,
+    base: 0.32 + rand() * 0.3,
+    born,
+    span: 150 + rand() * 210,
+    phase: rand() * Math.PI * 2,
+    rate: (Math.PI * 2) / (25 + rand() * 50),
+    spin: (rand() - 0.5) * 0.03
+  })
+  s.scale.setScalar(s.userData.size)
 }
 
 // A few close, bright stars with diffraction spikes, twinkling in the dark.
@@ -1867,6 +2770,7 @@ function milkyWay(tex) {
     cloud.material.color.set(heart > 0.6 && rand() < 0.75 ? (rand() < 0.5 ? '#ffd2a0' : '#ffb27a') : cool[Math.floor(rand() * cool.length)])
     cloud.material.rotation = rand() * Math.PI * 2
     cloud.position.copy(at.normalize().multiplyScalar(5200))
+    cloud.userData = breath(rand, cloud.material.opacity, 0.002)
     group.add(cloud)
   }
   for (let i = 0; i < 40; i++) {
@@ -1963,6 +2867,13 @@ function driftingComet(glow) {
   let next = 30 + Math.random() * 40
   return {
     group,
+    head,
+    // Caught: it's gone until the next one comes.
+    stop(time) {
+      run = null
+      group.visible = false
+      next = time + 150 + Math.random() * 150
+    },
     step(time) {
       if (!run && time > next) {
         const a = new THREE.Vector3(Math.random() - 0.5, (Math.random() - 0.5) * 0.5, Math.random() - 0.5).normalize()
@@ -2269,6 +3180,23 @@ function canvasTexture(size, paint) {
   return texture
 }
 
+// A pillar of light: brightest at its foot, thinning out upwards, soft at the sides.
+function beamTexture() {
+  return canvasTexture(128, (ctx, s) => {
+    const image = ctx.createImageData(s, s)
+    for (let y = 0; y < s; y++) {
+      const up = 1 - y / (s - 1)
+      const fall = (1 - up) ** 1.8 * Math.min(1, up * 30)
+      for (let x = 0; x < s; x++) {
+        const u = (x / (s - 1)) * 2 - 1
+        const a = fall * (Math.exp(-u * u * 18) * 0.7 + Math.exp(-u * u * 120) * 0.3)
+        image.data.set([255, 255, 255, Math.round(255 * Math.min(1, a))], (y * s + x) * 4)
+      }
+    }
+    ctx.putImageData(image, 0, 0)
+  })
+}
+
 function glowTexture() {
   return canvasTexture(128, (ctx, s) => {
     const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2)
@@ -2344,6 +3272,129 @@ function nebulaTexture(seed) {
     }
     ctx.putImageData(image, 0, 0)
   })
+}
+
+// Slow breathing for a far cloud: its opacity swells and fades over a minute or more
+// and it turns a little.
+function breath(rand, base, spin) {
+  return { base, rate: (Math.PI * 2) / (60 + rand() * 120), phase: rand() * Math.PI * 2, spin: (rand() - 0.5) * spin }
+}
+
+// Space weather: when many agents work at once, pastel curtains of light ripple round
+// the disc. The frame loop sets uLevel from how many are working.
+function aurora() {
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uLevel: { value: 0 } },
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `
+      uniform float uTime;
+      uniform float uLevel;
+      varying vec2 vUv;
+      void main() {
+        float x = vUv.x * 6.2831853;
+        float t = uTime;
+        // Only a few arcs of the ring light at a time, drifting slowly round.
+        float arcs = smoothstep(0.5, 0.95, 0.5 + 0.5 * sin(x * 3.0 + t * 0.04) * sin(x * 2.0 - t * 0.03 + 1.3));
+        // A soft, rippling lower hem, fading out upwards.
+        float hem = 0.2 + 0.05 * sin(x * 9.0 + t * 0.4) + 0.03 * sin(x * 23.0 - t * 0.7);
+        float v = vUv.y - hem;
+        float body = smoothstep(-0.14, 0.06, v) * exp(-max(v, 0.0) * 2.6) * (1.0 - smoothstep(0.7, 1.0, vUv.y));
+        float ray = 0.5 + 0.5 * sin(x * 90.0 + sin(x * 13.0 + t * 0.25) * 5.0);
+        float fine = 0.5 + 0.5 * sin(x * 260.0 + t * 0.6);
+        float rays = 0.6 + 0.25 * ray + 0.15 * fine;
+        vec3 low = vec3(0.62, 1.0, 0.82);
+        vec3 high = vec3(0.86, 0.72, 1.0);
+        vec3 col = mix(low, high, smoothstep(0.15, 0.8, vUv.y)) * body * rays * arcs;
+        gl_FragColor = vec4(col * uLevel * 0.32, 1.0);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide
+  })
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(GALAXY_RADIUS * 1.15, GALAXY_RADIUS * 1.15, 80, 192, 1, true), material)
+  mesh.position.y = 28
+  mesh.visible = false
+  return mesh
+}
+
+// A black hole for closing terminals: a dark heart, a swirling pastel disc of gas and a
+// bright photon ring. It rides in front of the camera, so it stays put on screen.
+function blackHole(ringTex) {
+  const group = new THREE.Group()
+  group.visible = false
+  const swirl = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uHeat: { value: 0 }, uFade: { value: 0 } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uHeat;
+        uniform float uFade;
+        varying vec2 vUv;
+        void main() {
+          vec2 p = (vUv - 0.5) * 2.0;
+          float r = length(p);
+          float a = atan(p.y, p.x);
+          // Gas spirals inwards, faster near the heart and faster still while it feeds.
+          float s = a + 2.2 / (r + 0.15) - uTime * (0.8 + uHeat * 1.6);
+          float bands = 0.55 + 0.45 * sin(s * 3.0) * (0.6 + 0.4 * sin(s * 5.0 + r * 12.0));
+          float disc = smoothstep(0.28, 0.4, r) * (1.0 - smoothstep(0.55, 1.0, r));
+          // Kept dim: the bloom pass makes anything bright wash the dark heart out.
+          vec3 col = mix(vec3(1.0, 0.8, 0.72), vec3(0.62, 0.5, 1.0), smoothstep(0.35, 0.85, r)) * disc * bands * (0.14 + uHeat * 0.18);
+          float edge = (r - 0.31) / 0.04;
+          col += vec3(1.0, 0.86, 0.8) * exp(-edge * edge) * (0.22 + uHeat * 0.25);
+          gl_FragColor = vec4(col * uFade, 1.0);
+        }`,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  )
+  const heart = new THREE.Mesh(new THREE.CircleGeometry(0.15, 48), new THREE.MeshBasicMaterial({ color: '#000000', transparent: true, depthTest: false, depthWrite: false }))
+  const ring = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.42, 0.42),
+    new THREE.MeshBasicMaterial({ map: ringTex, color: '#ffe6d0', transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending })
+  )
+  heart.renderOrder = 30
+  swirl.renderOrder = 31
+  ring.renderOrder = 32
+  group.add(heart, swirl, ring)
+  return {
+    group,
+    step(time, heat, fade) {
+      const u = swirl.material.uniforms
+      u.uTime.value = time
+      u.uHeat.value = heat
+      u.uFade.value = fade
+      heart.material.opacity = fade
+      ring.material.opacity = fade * (0.18 + 0.2 * heat)
+      ring.rotation.z = time * 0.3
+    }
+  }
+}
+
+function lineGeometry(points) {
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points * 3), 3))
+  geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(points * 3), 3))
+  return geometry
+}
+
+function glowLine() {
+  return new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false })
+}
+
+const gapA = new THREE.Vector3()
+const gapB = new THREE.Vector3()
+
+// Distance from point c to the segment a-b.
+function segmentGap(a, b, c) {
+  const ab = gapA.subVectors(b, a)
+  const t = Math.max(0, Math.min(1, gapB.subVectors(c, a).dot(ab) / Math.max(1e-9, ab.lengthSq())))
+  return gapB.copy(a).addScaledVector(ab, t).distanceTo(c)
 }
 
 // ---------- helpers ----------
