@@ -1652,8 +1652,11 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     }
   }
 
-  // Three jellyfish drifting up, each beating to its own time, a beat lifting it a little.
-  const DRIFT = [[-0.06, 0, -30], [0.03, 14, 8], [0.1, -10, -12]] // further along, further out, higher
+  // Three jellyfish drifting up side by side, each beating to its own time, a beat lifting
+  // it a little. They keep about two bells' width apart along the way (their pass is
+  // short, so that is a good share of it) and a little apart in height; nearer or further
+  // out doesn't part them on screen.
+  const DRIFT = [[-0.4, 10, -22], [0, -12, 18], [0.42, 0, -4]] // further along, further out, higher
   function moveJellyfish(pass, k, dt, alpha) {
     jellies.children.forEach((jelly, i) => {
       const [along, out, up] = DRIFT[i]
