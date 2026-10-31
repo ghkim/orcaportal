@@ -232,7 +232,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   let decorOn = {} // which decorations the viewer left on (anything not named is on)
   // How far each one is shown, 0..1: switching one off fades it out instead of popping it.
   let decorFade = null
-  const DECOR_KEYS = ['magellan', 'disks', 'remnants', 'jets', 'crowns', 'accretion', 'lanterns', 'whale', 'fireflies', 'unicorn', 'dolphins', 'jellyfish', 'dragon', 'phoenix']
+  const DECOR_KEYS = ['magellan', 'disks', 'remnants', 'jets', 'crowns', 'accretion', 'lanterns', 'whale', 'fireflies', 'unicorn', 'dolphins', 'jellyfish', 'phoenix']
   const DECOR_SECONDS = 1.6
   const auroraRing = aurora()
   const core = galaxyCore(tex.glow, shape)
@@ -246,8 +246,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   let nextWhale = 100 + Math.random() * 140 // in `time`, seconds
   // More creatures that pass now and then outside the galaxy like the whale, each a
   // decoration of its own: a unicorn galloping with a rainbow behind it, a pod of dolphins
-  // leaping out of the dark, jellyfish rising, a dragon after its pearl, a phoenix shedding
-  // embers. One is in the sky at a time, the whale too; each comes round where the camera
+  // swimming in waves, jellyfish rising, a phoenix shedding embers. One is in the sky at a time, the whale too; each comes round where the camera
   // is looking, and is seen once on its way.
   const sparks = skyTrail(2400, pointUniforms)
   scene.add(sparks.points)
@@ -258,21 +257,19 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   for (let i = 0; i < 4; i++) pod.add(dolphin(pointUniforms, mulberry32(900 + i)))
   const jellies = new THREE.Group()
   for (const [rim, glow, radius] of [['#ff9ad5', '#8ff3ff', 16], ['#c7a6ff', '#9effd8', 11], ['#ffc39a', '#ff8fb3', 13]]) jellies.add(jellyfish(pointUniforms, mulberry32(radius * 31), new THREE.Color(rim), new THREE.Color(glow), radius))
-  const dragon = skyDragon(pointUniforms, tex.glow)
   const creatures = {
-    unicorn: { object: unicorn(pointUniforms), first: [150, 330], every: [420, 600], move: moveUnicorn, begin: () => ({ duration: 40 + Math.random() * 8, span: 1.5, radius: 1.45, height: 20 + Math.random() * 50, lift: (q) => Math.sin(Math.PI * q) * 70 }) },
+    unicorn: { object: unicorn(pointUniforms), first: [150, 330], every: [420, 600], move: moveUnicorn, begin: () => ({ duration: 40 + Math.random() * 8, span: 1.5, radius: 1.45, height: -10 + Math.random() * 30, lift: (q) => Math.sin(Math.PI * q) * 45 }) },
     dolphins: {
       object: pod,
       first: [120, 300],
       every: [360, 540],
       move: moveDolphins,
       begin: () => {
-        for (const fish of pod.children) delete fish.userData.leap
-        return { duration: 34 + Math.random() * 6, span: 1.2, radius: 1.5, height: Math.random() * 60, lift: () => 0, leaps: 5 + Math.floor(Math.random() * 2) }
+        for (const fish of pod.children) delete fish.userData.crest
+        return { duration: 40 + Math.random() * 8, span: 1.2, radius: 1.5, height: Math.random() * 60, lift: () => 0, waves: 2.5 + Math.random() }
       }
     },
     jellyfish: { object: jellies, first: [200, 380], every: [420, 600], move: moveJellyfish, begin: () => ({ duration: 110 + Math.random() * 15, span: 0.3, radius: 1.5, height: -20 + Math.random() * 40, lift: () => 0, rise: [0, 0, 0] }) },
-    dragon: { object: dragon.group, first: [260, 440], every: [480, 660], move: moveDragon, begin: () => ({ duration: 80 + Math.random() * 10, span: 1.5, radius: 1.6, height: 40 + Math.random() * 60, lift: (q) => Math.sin(q * Math.PI * 2) * 22 }) },
     phoenix: { object: phoenix(pointUniforms), first: [220, 400], every: [420, 600], move: movePhoenix, begin: () => ({ duration: 34 + Math.random() * 6, span: 1.6, radius: 1.35, height: 130 + Math.random() * 30, lift: (q) => -Math.sin(Math.PI * q) * 100 }) }
   }
   for (const creature of Object.values(creatures)) {
@@ -1621,30 +1618,37 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     })
   }
 
-  // Four dolphins a little apart, each leaping out of the dark and back in, again and
-  // again; where one goes back in, a splash of light.
-  const POD = [[0, 0, 0], [12, 7, 0.03], [-11, -5, 0.055], [22, 12, 0.08]] // further out, higher, how far behind
+  // Four dolphins swimming together in a loose diamond, a body length or more apart,
+  // rising and falling on long, easy waves, each nose following its wave as the whale's
+  // does. The ones behind are half a beat behind on the wave and each a little off it, so
+  // they move as one pod without ever crossing. Over the top of each wave a little
+  // glitter comes off a back.
+  const POD = [[0, 0, 0, 0], [18, 40, 0.06, 0.25], [-16, -38, 0.09, 0.4], [-30, 8, 0.15, 0.7]] // further out, higher, how far behind, how far off the wave
   function moveDolphins(pass, k, dt, alpha) {
     pod.children.forEach((fish, i) => {
-      const [out, up, behind] = POD[i]
+      const [out, up, behind, own] = POD[i]
       const q = k - behind
-      const arc = (at) => Math.abs(Math.sin(at * pass.leaps * Math.PI + i * 0.35)) * 0.85 * DOLPHIN_LENGTH
-      passPoint(pass, q, fish.position, out, up + arc(q))
-      fish.lookAt(passPoint(pass, q + 0.004, skyNext, out, up + arc(q + 0.004)))
+      const wave = (at) => own + (at + behind * 0.5) * pass.waves * Math.PI * 2
+      const rise = (at) => Math.sin(wave(at)) * 0.45 * DOLPHIN_LENGTH
+      const weave = (at) => Math.sin(wave(at) * 0.5 + i * 1.7) * 6
+      passPoint(pass, q, fish.position, out + weave(q), up + rise(q))
+      fish.lookAt(passPoint(pass, q + 0.004, skyNext, out + weave(q + 0.004), up + rise(q + 0.004)))
       const u = fish.material.uniforms
-      u.uSwim.value += dt * 7
-      u.uAlpha.value = q < 0 ? 0 : alpha * smooth(0.02, 0.25, arc(q) / (0.85 * DOLPHIN_LENGTH))
-      const leap = Math.floor((q * pass.leaps * Math.PI + i * 0.35) / Math.PI)
-      if (fish.userData.leap !== undefined && leap !== fish.userData.leap && q > 0 && alpha > 0.05) splash(fish.position, alpha)
-      fish.userData.leap = leap
+      // Its flukes beat harder as it climbs and rest as it glides down.
+      u.uSwim.value += dt * (1.8 + 1.2 * Math.max(0, Math.cos(wave(q))))
+      u.uAlpha.value = q < 0 ? 0 : alpha * smooth(0, 0.05, q)
+      const crest = Math.floor((wave(q) - Math.PI / 2) / (Math.PI * 2))
+      if (fish.userData.crest !== undefined && crest !== fish.userData.crest && q > 0 && alpha > 0.05) glitter(fish, alpha)
+      fish.userData.crest = crest
     })
   }
 
-  function splash(at, alpha) {
-    for (let i = 0; i < 22; i++) {
+  function glitter(fish, alpha) {
+    fish.updateMatrixWorld()
+    for (let i = 0; i < 14; i++) {
+      skyAt.set((Math.random() - 0.5) * 3, 0.1 * DOLPHIN_LENGTH, (Math.random() - 0.3) * 0.5 * DOLPHIN_LENGTH)
       const a = Math.random() * Math.PI * 2
-      const out = 2 + Math.random() * 4
-      sparks.emit(at, SPLASH[i % 3 ? 0 : 1], alpha * 0.6, { now: time, seconds: 1.6 + Math.random() * 0.8, grain: 2.2, move: [Math.cos(a) * out, 5 + Math.random() * 5, Math.sin(a) * out], drop: 4 })
+      sparks.emit(fish.localToWorld(skyAt), SPLASH[i % 3 ? 0 : 1], alpha * 0.4, { now: time, seconds: 2 + Math.random(), grain: 2, move: [Math.cos(a) * 1.5, 1 + Math.random() * 1.5, Math.sin(a) * 1.5], drop: 0.5 })
     }
   }
 
@@ -1660,17 +1664,6 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       jelly.rotation.set(Math.sin(time * 0.31 + i) * 0.12, 0, Math.cos(time * 0.27 + i * 2) * 0.12)
       u.uAlpha.value = alpha
     })
-  }
-
-  // The dragon rises and falls twice on its way, its pearl bobbing ahead of its nose.
-  function moveDragon(pass, k, dt, alpha) {
-    passPoint(pass, k, dragon.group.position)
-    dragon.group.lookAt(passPoint(pass, k + 0.01, skyNext))
-    dragon.body.material.uniforms.uSwim.value += dt * 2.4
-    dragon.body.material.uniforms.uAlpha.value = alpha
-    for (const s of [dragon.pearl, dragon.heart]) s.position.set(Math.sin(time * 0.9) * 3, 2 + Math.sin(time * 1.3) * 2.5, dragon.ahead)
-    dragon.pearl.material.opacity = alpha * 0.8
-    dragon.heart.material.opacity = alpha * 0.9
   }
 
   // The phoenix swoops down from high up and climbs again, embers falling from its wing
@@ -6685,7 +6678,7 @@ const X_AXIS = new THREE.Vector3(1, 0, 0)
 const PASTEL_RAINBOW = ['#ff9ac1', '#ffc29a', '#fff0a0', '#a8f5c4', '#9fd8ff', '#c3a8ff'].map((c) => new THREE.Color(c))
 // The bands of the rainbow a unicorn leaves behind, top to bottom.
 const RIBBON = ['#ff6f9f', '#ffaa6b', '#ffe86b', '#6bffa6', '#6bbcff', '#a87bff'].map((c) => new THREE.Color(c))
-// A dolphin's splash.
+// The glitter off a dolphin's back.
 const SPLASH = ['#bfe8ff', '#ffd6f0'].map((c) => new THREE.Color(c))
 // A phoenix's embers.
 const EMBERS = ['#ffd36b', '#ffa04d', '#ff6a4d', '#ff5f8f'].map((c) => new THREE.Color(c))
@@ -6696,7 +6689,7 @@ function rainbowAt(u) {
   return PASTEL_RAINBOW[i].clone().lerp(PASTEL_RAINBOW[i + 1], x - i)
 }
 
-// Dust the creatures leave: a unicorn's rainbow, dolphins' splashes, a phoenix's embers.
+// Dust the creatures leave: a unicorn's rainbow, dolphins' glitter, a phoenix's embers.
 // Each grain is written once where it starts, and the shader carries it on (drift), lets
 // it fall (fall), and fades it over its life; the oldest grain is reused for the next.
 function skyTrail(capacity, uniforms) {
@@ -6764,109 +6757,192 @@ function skyTrail(capacity, uniforms) {
   }
 }
 
-// A unicorn of light, about 80 units nose to tail, head towards +z: a pearly coat, a
-// golden horn twisting to its point, a mane and tail in pastel rainbow. It gallops in the
-// shader (uRun): each leg swings from its hip and folds at the knee on the way forward, a
-// beat after the last, the body rises and falls twice a stride, and the mane and tail
-// stream and ripple.
+// A unicorn of light, about 80 units nose to tail, head towards +z: a pearly coat over a
+// horse's build (a deep chest, the back dipping between withers and croup, an arched
+// neck, a long head), a slim golden horn twisting to its point, and a mane and tail in
+// pastel rainbow streaming in the wind. It gallops in the shader (uRun): each leg swings
+// from its shoulder or hip and, on its way forward, folds at the knee (forward at the
+// hock, behind) and the fetlock, a beat after the last; the body rocks once a stride, the
+// head nods against it, and the mane and tail ripple.
 const UNICORN_LENGTH = 80
 function unicorn(uniforms) {
   const rand = mulberry32(5150)
   const L = UNICORN_LENGTH
   const points = []
-  const coat = new THREE.Color('#fbf6ff')
-  const shade = new THREE.Color('#ab9cff')
+  const coat = new THREE.Color('#f4efff')
+  const shade = new THREE.Color('#b7a8ff')
   const gold = new THREE.Color('#ffe2a0')
-  // The coat is lit from above: pearl on the back, lavender underneath.
-  const hide = (p, more = {}) => points.push({ p, c: shade.clone().lerp(coat, smooth(-0.12 * L, 0.2 * L, p[1])).multiplyScalar(0.24 + rand() * 0.2), s: 1.4 + rand() * 1.5, leg: -1, ...more })
-  for (let i = 0; i < 900; i++) hide(onEllipsoid(rand, [0, 0.02 * L, -0.01 * L], [0.1 * L, 0.112 * L, 0.27 * L]))
-  for (let i = 0; i < 170; i++) hide(onEllipsoid(rand, [0, 0.035 * L, 0.19 * L], [0.094 * L, 0.108 * L, 0.1 * L]))
-  for (let i = 0; i < 170; i++) hide(onEllipsoid(rand, [0, 0.05 * L, -0.2 * L], [0.104 * L, 0.108 * L, 0.11 * L]))
-  for (let i = 0; i < 320; i++) hide(onTube(rand, [0, 0.08 * L, 0.2 * L], [0, 0.36 * L, 0.37 * L], 0.074 * L, 0.047 * L))
-  for (let i = 0; i < 230; i++) hide(onTube(rand, [0, 0.38 * L, 0.37 * L], [0, 0.29 * L, 0.54 * L], 0.05 * L, 0.031 * L))
-  for (let i = 0; i < 70; i++) hide(onEllipsoid(rand, [0, 0.283 * L, 0.548 * L], [0.033 * L, 0.03 * L, 0.036 * L]))
-  for (const side of [1, -1]) for (let i = 0; i < 16; i++) hide(onTube(rand, [side * 0.022 * L, 0.405 * L, 0.385 * L], [side * 0.03 * L, 0.468 * L, 0.36 * L], 0.012 * L, 0.002 * L))
-  for (const side of [1, -1]) points.push({ p: [side * 0.037 * L, 0.38 * L, 0.46 * L], c: new THREE.Color('#d8c8ff').multiplyScalar(1.2), s: 2.6, leg: -1 })
-  // The horn: two threads twisting up to a bright point.
-  const base = new THREE.Vector3(0, 0.43 * L, 0.43 * L)
-  const tip = new THREE.Vector3(0, 0.62 * L, 0.535 * L)
+  const at = (x, y, z) => new THREE.Vector3(x * L, y * L, z * L)
+  // The coat glows as the whale's does, soft points spread evenly over every part, lit
+  // from above: pearl on the back, lavender underneath, a freckle of light here and there
+  // along the top. `fine` is for the legs, whose points are smaller and closer. `nod` is
+  // how much a point follows the head as it nods.
+  const hide = (p, more = {}, fine = false) => {
+    const freckle = !fine && p.y > 0.09 * L && rand() < 0.05
+    const c = shade.clone().lerp(coat, smooth(-0.1 * L, 0.2 * L, p.y)).multiplyScalar(freckle ? 1.2 : fine ? 0.3 + rand() * 0.16 : 0.26 + rand() * 0.2)
+    points.push({ p: p.toArray(), c, s: freckle ? 2.6 + rand() * 1.4 : fine ? 1.3 + rand() * 1.1 : 1.6 + rand() * 1.8, leg: -1, ...more })
+  }
+  const put = (p, c, s, more = {}) => points.push({ p: p.toArray(), c, s, leg: -1, ...more })
+  // A point on a tube round a curve: `curve(t)` its middle, `radii(t)` how far out to the
+  // side and up and down, `cap(t)` rounding an end off.
+  const side = new THREE.Vector3()
+  const ahead = new THREE.Vector3()
+  const onCurve = (curve, radii, t, cap = 1) => {
+    const middle = curve(t)
+    ahead.copy(curve(Math.min(1, t + 0.01))).sub(curve(Math.max(0, t - 0.01))).normalize()
+    side.crossVectors(ahead, X_AXIS).normalize()
+    const [rx, ry] = radii(t)
+    const a = rand() * Math.PI * 2
+    const k = (rand() < 0.85 ? 1 : Math.sqrt(rand())) * cap
+    return middle.addScaledVector(X_AXIS, Math.cos(a) * rx * k).addScaledVector(side, Math.sin(a) * ry * k)
+  }
+  // Smoothly through [z, value] pairs, rear to front.
+  const through = (keys, z) => {
+    let i = 0
+    while (i < keys.length - 2 && z > keys[i + 1][0]) i++
+    const [z0, v0] = keys[i]
+    const [z1, v1] = keys[i + 1]
+    const t = Math.max(0, Math.min(1, (z - z0) / (z1 - z0)))
+    return v0 + (v1 - v0) * (0.5 - 0.5 * Math.cos(Math.PI * t))
+  }
+  // The body, rear to front: the line of the back, of the belly, and how wide it is.
+  const BACK = [[-0.37, 0.1], [-0.3, 0.13], [-0.2, 0.142], [-0.07, 0.118], [0.06, 0.115], [0.17, 0.15], [0.28, 0.13], [0.33, 0.1]]
+  const BELLY = [[-0.37, 0.02], [-0.3, -0.045], [-0.2, -0.072], [-0.04, -0.104], [0.11, -0.118], [0.24, -0.088], [0.33, -0.01]]
+  const WIDE = [[-0.37, 0.07], [-0.27, 0.088], [-0.12, 0.092], [0.02, 0.1], [0.16, 0.09], [0.28, 0.074], [0.33, 0.06]]
+  const torso = (t) => {
+    const z = -0.37 + t * 0.7
+    return at(0, (through(BACK, z) + through(BELLY, z)) / 2, z)
+  }
+  const torsoRadii = (t) => {
+    const z = -0.37 + t * 0.7
+    return [through(WIDE, z) * L, ((through(BACK, z) - through(BELLY, z)) / 2) * L]
+  }
+  for (let i = 0; i < 1700; i++) {
+    const t = rand()
+    hide(onCurve(torso, torsoRadii, t, Math.pow(Math.sin(Math.PI * t), 0.3)))
+  }
+  // The neck arches up from the withers to the poll, deep and flat, thinning as it goes.
+  const N0 = at(0, 0.06, 0.25)
+  const N1 = at(0, 0.24, 0.27)
+  const N2 = at(0, 0.3, 0.42)
+  const neck = (t) => N0.clone().multiplyScalar((1 - t) * (1 - t)).addScaledVector(N1, 2 * t * (1 - t)).addScaledVector(N2, t * t)
+  const neckRadii = (t) => [(0.062 - 0.03 * t) * L, (0.088 - 0.044 * t) * L]
+  for (let i = 0; i < 420; i++) {
+    const t = rand()
+    hide(onCurve(neck, neckRadii, t), { nod: t })
+  }
+  // The head, long and narrowing from the jowl down to a soft muzzle.
+  const H0 = at(0, 0.305, 0.42)
+  const H1 = at(0, 0.165, 0.6)
+  const head = (t) => H0.clone().lerp(H1, t)
+  const headRadii = (t) => [(0.037 - 0.012 * t) * L, (0.05 - 0.018 * t - 0.012 * smooth(0, 0.3, t)) * L]
+  for (let i = 0; i < 210; i++) {
+    const t = rand()
+    hide(onCurve(head, headRadii, t, Math.pow(Math.sin((Math.PI / 2) * Math.min(1, (1 - t) / 0.14)), 0.4)), { nod: 1 })
+  }
+  for (let i = 0; i < 40; i++) hide(new THREE.Vector3(...onEllipsoid(rand, [0, 0.258 * L, 0.448 * L], [0.034 * L, 0.044 * L, 0.044 * L])), { nod: 1 })
+  // Ears pricked up behind the horn, eyes and nostrils.
+  for (const x of [1, -1]) {
+    for (let i = 0; i < 16; i++) hide(new THREE.Vector3(...onTube(rand, [x * 0.018 * L, 0.33 * L, 0.428 * L], [x * 0.024 * L, 0.38 * L, 0.408 * L], 0.011 * L, 0.002 * L)), { nod: 1 }, true)
+    put(at(x * 0.034, 0.283, 0.472), new THREE.Color('#d8c8ff').multiplyScalar(1.2), 2.2, { nod: 1 })
+    put(at(x * 0.02, 0.18, 0.588), shade.clone().multiplyScalar(0.5), 1.4, { nod: 1 })
+  }
+  // The horn: two threads twisting up from the brow to a bright point.
+  const base = at(0, 0.322, 0.46)
+  const tip = at(0, 0.43, 0.545)
   const axis = tip.clone().sub(base)
   const across = new THREE.Vector3().crossVectors(axis.clone().normalize(), X_AXIS)
   for (let i = 0; i < 120; i++) {
     const t = Math.floor(i / 2) / 59
-    const angle = t * Math.PI * 5 + (i % 2) * Math.PI
-    const r = 0.014 * L * (1 - t) + 0.001 * L
-    const p = base.clone().addScaledVector(axis, t).addScaledVector(X_AXIS, Math.cos(angle) * r).addScaledVector(across, Math.sin(angle) * r)
-    points.push({ p: p.toArray(), c: gold.clone().lerp(WHITE, t * 0.6).multiplyScalar(0.7 + 0.3 * t), s: 2 + 0.6 * t, leg: -1 })
+    const angle = t * Math.PI * 6 + (i % 2) * Math.PI
+    const r = 0.011 * L * (1 - t) + 0.0008 * L
+    put(base.clone().addScaledVector(axis, t).addScaledVector(X_AXIS, Math.cos(angle) * r).addScaledVector(across, Math.sin(angle) * r), gold.clone().lerp(WHITE, t * 0.6).multiplyScalar(0.55 + 0.3 * t), 1.6 + 0.5 * t, { nod: 1 })
   }
-  points.push({ p: tip.toArray(), c: gold.clone().lerp(WHITE, 0.6).multiplyScalar(1.4), s: 6, leg: -1 })
-  // Four legs from their hips, a golden hoof at the end of each.
-  const UPPER = 0.17 * L
-  const LOWER = 0.19 * L
-  ;[[0.05, 0.17], [-0.05, 0.17], [0.055, -0.2], [-0.055, -0.2]].forEach(([x, z], leg) => {
-    const pivot = [x * L, -0.05 * L, z * L]
-    const knee = [pivot[0], pivot[1] - UPPER, pivot[2]]
-    const hoof = [pivot[0], knee[1] - LOWER, pivot[2]]
-    for (let i = 0; i < 120; i++) {
-      const lt = rand()
-      hide(lt <= 0.5 ? onTube(rand, pivot, knee, 0.034 * L, 0.02 * L, lt * 2) : onTube(rand, knee, hoof, 0.019 * L, 0.015 * L, lt * 2 - 1), { leg, lt, pivot })
+  put(tip, gold.clone().lerp(WHITE, 0.6).multiplyScalar(0.9), 2.6, { nod: 1 })
+  // Legs: forearm and gaskin, cannon, then pastern and a golden hoof, each part turning
+  // about the joint above it (pivot, knee, ankle). The forelegs stand under the withers;
+  // the hind legs angle back from the hip to the hock.
+  const LEGS = [
+    [0.048, [-0.06, 0.165], [-0.265, 0.17], [-0.425, 0.165], [-0.472, 0.182], [0.036, 0.021]],
+    [-0.048, [-0.06, 0.165], [-0.265, 0.17], [-0.425, 0.165], [-0.472, 0.182], [0.036, 0.021]],
+    [0.052, [-0.03, -0.215], [-0.27, -0.285], [-0.43, -0.272], [-0.476, -0.255], [0.05, 0.02]],
+    [-0.052, [-0.03, -0.215], [-0.27, -0.285], [-0.43, -0.272], [-0.476, -0.255], [0.05, 0.02]]
+  ]
+  LEGS.forEach(([x, [py, pz], [ky, kz], [ay, az], [hy, hz], [top, low]], leg) => {
+    const pivot = at(x, py, pz)
+    const knee = at(x, ky, kz)
+    const ankle = at(x, ay, az)
+    const hoof = at(x, hy, hz)
+    const joints = { leg, pivot: pivot.toArray(), knee: knee.toArray(), ankle: ankle.toArray() }
+    const tube = (a, b, r0, r1, n, seg) => {
+      for (let i = 0; i < n; i++) hide(new THREE.Vector3(...onTube(rand, a.toArray(), b.toArray(), r0 * L, r1 * L)), { ...joints, seg }, true)
     }
-    for (let i = 0; i < 14; i++) points.push({ p: onEllipsoid(rand, [hoof[0], hoof[1] + 0.012 * L, hoof[2]], [0.02 * L, 0.014 * L, 0.022 * L]), c: gold.clone().multiplyScalar(0.9), s: 2.2, leg, lt: 1, pivot })
+    tube(pivot, knee, top, low, top > 0.04 ? 200 : 130, 0)
+    tube(knee, ankle, 0.017, 0.014, 70, 1)
+    tube(ankle, hoof, 0.013, 0.016, 30, 2)
+    for (let i = 0; i < 16; i++) put(new THREE.Vector3(...onEllipsoid(rand, [hoof.x, hoof.y - 0.004 * L, hoof.z + 0.004 * L], [0.019 * L, 0.014 * L, 0.023 * L])), gold.clone().multiplyScalar(0.75), 1.8, { ...joints, seg: 2 })
   })
-  // The mane falls from the crest of the neck to both sides and streams back; a forelock
-  // falls over the brow.
-  const neckTop = new THREE.Vector3(0, 0.36 * L, 0.37 * L)
-  const neckFoot = new THREE.Vector3(0, 0.08 * L, 0.2 * L)
-  const crestward = new THREE.Vector3(0, 0.52, -0.85)
-  for (let i = 0; i < 460; i++) {
-    const u = rand()
-    const crest = neckTop.clone().lerp(neckFoot, u).addScaledVector(crestward, (0.047 + 0.027 * u) * L)
-    const side = rand() < 0.5 ? 1 : -1
-    const fall = new THREE.Vector3(side * 0.55, -0.35, -1).normalize()
+  // The mane: strands from the crest of the neck, combed back by the wind and falling a
+  // little to either side; a forelock over the brow.
+  for (let i = 0; i < 700; i++) {
+    const t = 0.04 + rand() * 0.94
+    const crest = neck(t).addScaledVector(side.crossVectors(ahead.copy(neck(Math.min(1, t + 0.01))).sub(neck(Math.max(0, t - 0.01))).normalize(), X_AXIS).normalize(), neckRadii(t)[1] * 0.92)
+    const fall = new THREE.Vector3((rand() < 0.5 ? 1 : -1) * (0.15 + 0.3 * rand()), -0.2 + 0.25 * rand(), -1).normalize()
     const s = Math.pow(rand(), 0.8)
-    const length = (0.06 + 0.07 * Math.sin(Math.PI * Math.min(1, u * 1.2))) * L * (0.7 + 0.6 * rand())
-    const p = crest.addScaledVector(fall, length * s).add(new THREE.Vector3(gauss(rand), gauss(rand), gauss(rand)).multiplyScalar(0.006 * L))
-    points.push({ p: p.toArray(), c: rainbowAt(u).multiplyScalar(0.42 + 0.3 * (1 - s) + (rand() < 0.06 ? 0.5 : 0)), s: 1.6 + rand() * 1.1, leg: -1, flow: 0.2 + s, along: u * 1.5 + s })
+    const length = (0.05 + 0.06 * Math.sin(Math.PI * Math.min(1, t * 1.15)) + 0.02 * rand()) * L
+    const p = crest.addScaledVector(fall, length * s).add(new THREE.Vector3(gauss(rand), gauss(rand), gauss(rand)).multiplyScalar(0.004 * L))
+    put(p, rainbowAt(1 - t).multiplyScalar(0.28 + 0.24 * (1 - s) + (rand() < 0.05 ? 0.4 : 0)), 1.2 + rand() * 0.9, { flow: 0.15 + s, along: (1 - t) * 1.5 + s, nod: t })
   }
   for (let i = 0; i < 40; i++) {
     const s = rand()
-    const p = [gauss(rand) * 0.012 * L, 0.43 * L - 0.035 * L * s, 0.4 * L + 0.07 * L * s]
-    points.push({ p, c: rainbowAt(0).multiplyScalar(0.5), s: 1.5, leg: -1, flow: 0.2 * s, along: s })
+    put(at(gauss(rand) * 0.01, 0.335 - 0.04 * s, 0.43 + 0.05 * s), rainbowAt(0).multiplyScalar(0.4), 1.3, { flow: 0.15 * s, along: s, nod: 1 })
   }
-  // The tail: a long plume, widening as it streams back and down.
-  const root = [0, 0.11 * L, -0.31 * L]
-  for (let i = 0; i < 480; i++) {
-    const s = Math.pow(rand(), 0.85)
-    const spread = (0.015 + 0.075 * s) * L * Math.sqrt(rand())
+  // The tail: strands from the top of the croup, carried up and streaming back, then
+  // falling away, spreading as they go.
+  const root = at(0, 0.125, -0.36)
+  for (let strand = 0; strand < 46; strand++) {
     const a = rand() * Math.PI * 2
-    const p = [Math.cos(a) * spread * 0.8, root[1] - (0.04 * s + 0.16 * s * s) * L + Math.sin(a) * spread * 0.5, root[2] - 0.44 * L * s]
-    points.push({ p, c: rainbowAt(s).multiplyScalar(0.4 + 0.35 * (1 - s) + (rand() < 0.08 ? 0.5 : 0)), s: 1.6 + rand() * 1.2, leg: -1, flow: 0.3 + s, along: s * 1.6 })
+    const f = Math.sqrt(rand())
+    const n = 14 + Math.floor(rand() * 10)
+    for (let i = 0; i < n; i++) {
+      const s = Math.pow(rand(), 0.85)
+      const spread = (0.012 + 0.07 * Math.pow(s, 0.9)) * L * f
+      const p = root.clone().add(new THREE.Vector3(Math.cos(a) * spread * 0.9, (0.07 * s - 0.27 * s * s) * L + Math.sin(a) * spread * 0.5, -0.48 * L * s))
+      put(p, rainbowAt(s).multiplyScalar(0.3 + 0.25 * (1 - s) + (rand() < 0.06 ? 0.4 : 0)), 1.2 + rand() * 1, { flow: 0.25 + s, along: s * 1.6 + strand * 0.02 })
+    }
   }
   return creaturePoints(points, {
     uniforms,
-    attributes: { leg: 1, lt: 1, pivot: 3, flow: 1, along: 1 },
+    attributes: { leg: 1, seg: 1, pivot: 3, knee: 3, ankle: 3, flow: 1, along: 1, nod: 1 },
     own: { uRun: 0 },
     functions: `vec3 rotX(vec3 v, float a) { float c = cos(a); float s = sin(a); return vec3(v.x, v.y * c - v.z * s, v.y * s + v.z * c); }`,
     move: `
       if (leg > -0.5) {
         // A rotary gallop: left fore, right fore, then the hind pair half a stride on.
-        float off = leg < 0.5 ? 0.0 : leg < 1.5 ? 0.55 : leg < 2.5 ? 3.0 : 3.6;
+        float off = leg < 0.5 ? 0.0 : leg < 1.5 ? 0.6 : leg < 2.5 ? 3.3 : 3.9;
         float front = step(leg, 1.5);
-        float a = -sin(uRun + off) * mix(0.5, 0.62, front);
-        float b = max(0.0, cos(uRun + off)) * mix(0.8, 1.25, front);
-        vec3 v = position - pivot;
-        vec3 knee = vec3(0.0, ${(-UPPER).toFixed(2)}, 0.0);
-        v = lt <= 0.5 ? rotX(v, a) : rotX(knee, a) + rotX(v - knee, a + b);
-        p = pivot + v;
+        float ph = uRun + off;
+        float lift = max(0.0, cos(ph));
+        float a = -sin(ph) * mix(0.5, 0.58, front);
+        float b = lift * mix(-0.95, 1.35, front);
+        float c = lift * mix(0.7, 0.9, front) - (1.0 - lift) * 0.12;
+        vec3 kneeAt = pivot + rotX(knee - pivot, a);
+        vec3 ankleAt = kneeAt + rotX(ankle - knee, a + b);
+        p = seg < 0.5 ? pivot + rotX(position - pivot, a) : seg < 1.5 ? kneeAt + rotX(position - knee, a + b) : ankleAt + rotX(position - ankle, a + b + c);
       }
-      p.y += sin(uRun * 2.0) * ${(0.018 * L).toFixed(2)};
-      p.x += sin(uTime * 3.1 - along * 4.0) * flow * ${(0.02 * L).toFixed(2)};
-      p.y += sin(uTime * 2.3 - along * 3.0 + 1.3) * flow * ${(0.015 * L).toFixed(2)};`
+      vec3 withers = vec3(0.0, ${(0.06 * L).toFixed(2)}, ${(0.25 * L).toFixed(2)});
+      p = mix(p, withers + rotX(p - withers, sin(uRun + 2.2) * 0.08), nod);
+      p.x += sin(uTime * 3.1 - along * 4.0) * flow * ${(0.018 * L).toFixed(2)};
+      p.y += sin(uTime * 2.3 - along * 3.0 + 1.3) * flow * ${(0.014 * L).toFixed(2)};
+      p = rotX(p, sin(uRun + 0.8) * 0.045);
+      p.y += sin(uRun + 0.3) * ${(0.016 * L).toFixed(2)};`
   })
 }
 
-// A dolphin of light, about 40 units long, head towards +z: a beak and a rounded brow, a
-// curved fin on its back, flippers and flukes. Its flukes beat up and down (uSwim).
+// A dolphin of light, about 40 units long, head towards +z, glowing as the whale does: a
+// beak and a rounded brow, a curved fin on its back, flippers and flukes, freckles of
+// brighter light along its back. A wave runs back along it and beats its flukes up and
+// down (uSwim).
 const DOLPHIN_LENGTH = 40
 function dolphin(uniforms, rand) {
   const L = DOLPHIN_LENGTH
@@ -6875,8 +6951,11 @@ function dolphin(uniforms, rand) {
   const points = []
   // u: 0 at the beak, 1 at the flukes.
   const girth = (u) => 0.085 * L * Math.pow(Math.sin(Math.PI * Math.min(1, u * 1.05 + 0.04)), 0.8) * (1 - 0.5 * smooth(0.6, 1, u))
-  const add = (p, u, bright = false) => points.push({ p, c: belly.clone().lerp(back, smooth(-0.04 * L, 0.05 * L, p[1])).multiplyScalar(bright ? 1.3 : 0.2 + rand() * 0.18), s: bright ? 2.6 : 1.3 + rand() * 1.3, along: u })
-  for (let i = 0; i < 700; i++) {
+  const add = (p, u, bright = false) => {
+    const freckle = !bright && p[1] > 0.05 * L && rand() < 0.07
+    points.push({ p, c: belly.clone().lerp(back, smooth(-0.04 * L, 0.05 * L, p[1])).multiplyScalar(bright ? 1.3 : freckle ? 1.1 : 0.3 + rand() * 0.22), s: bright ? 2.6 : freckle ? 2.4 + rand() : 1.5 + rand() * 1.6, along: u })
+  }
+  for (let i = 0; i < 520; i++) {
     const u = 0.08 + rand() * 0.88
     const r = girth(u) * (rand() < 0.75 ? 1 : Math.sqrt(rand()))
     const a = rand() * Math.PI * 2
@@ -6909,7 +6988,8 @@ function dolphin(uniforms, rand) {
     uniforms,
     attributes: { along: 1 },
     own: { uSwim: 0 },
-    move: `p.y += sin(uSwim - along * 3.0) * along * along * ${(0.08 * L).toFixed(2)};`
+    // The whole body flexes, a little at the head and most at the flukes.
+    move: `p.y += sin(uSwim - along * 3.2) * (0.08 + along * along) * ${(0.075 * L).toFixed(2)};`
   })
 }
 
@@ -6978,105 +7058,6 @@ function jellyfish(uniforms, rand, rim, glow, radius) {
         p.y += lag * hang * ${(R * 0.25).toFixed(2)};
       }`
   })
-}
-
-// A dragon of light, about 180 units long, head towards +z, chasing a glowing pearl (여의주)
-// a little ahead of it: a jade body with a golden belly and coral spines along its back,
-// antlers, long whiskers, a mane, four clawed legs and a flame of a tail. Its body ripples
-// in the shader (uSwim), the wave running back from the neck; the whiskers and mane stream.
-const DRAGON_LENGTH = 180
-function skyDragon(uniforms, glowMap) {
-  const rand = mulberry32(8888)
-  const L = DRAGON_LENGTH
-  const points = []
-  const jade = new THREE.Color('#5ff0c8')
-  const deep = new THREE.Color('#2a9cc8')
-  const belly = new THREE.Color('#ffe2a8')
-  const coral = new THREE.Color('#ff9f7a')
-  const gold = new THREE.Color('#ffe6a6')
-  const head = 0.5 * L + 8
-  const girth = (s) => 7 * (1 - 0.8 * Math.pow(s, 1.4)) + 0.5
-  const add = (p, c, s, along, flow = 0) => points.push({ p, c, s, along, flow })
-  for (let i = 0; i < 2700; i++) {
-    const s = 0.04 + 0.96 * Math.pow(rand(), 0.85)
-    const ph = rand() * Math.PI * 2
-    const r = girth(s) * (rand() < 0.75 ? 1 : Math.sqrt(rand()))
-    const under = Math.sin(ph) < -0.35
-    const scale = (((s * 70 + ph * 1.6) % 1) + 1) % 1 < 0.1
-    const c = (under ? belly.clone() : jade.clone().lerp(deep, s)).multiplyScalar((0.3 + rand() * 0.2) * (scale ? 1.8 : 1))
-    add([Math.cos(ph) * r, Math.sin(ph) * r * 0.9, (0.5 - s) * L], c, 1.4 + rand() * 1.4, s)
-  }
-  // Low fins along its back, each a little triangle leaning back.
-  for (let s = 0.06; s < 0.96; s += 0.03) {
-    const h = (2.4 + 1.6 * Math.sin(s * Math.PI)) * (1 - 0.5 * s)
-    const base = 3 * (1 - 0.5 * s)
-    for (let i = 0; i < 18; i++) {
-      const t = Math.sqrt(rand())
-      const across = (rand() - 0.5) * base * (1 - t)
-      add([0, girth(s) * 0.88 + h * t, (0.5 - s) * L - h * 0.6 * t + across], coral.clone().lerp(gold, t).multiplyScalar(0.3 + 0.25 * t), 1.5 + 0.6 * t, s)
-    }
-  }
-  // The head: skull, snout and jaw, gold eyes.
-  for (let i = 0; i < 420; i++) add(onEllipsoid(rand, [0, 1.6, head], [6.2, 4.8, 11]), jade.clone().multiplyScalar(0.4 + rand() * 0.15), 1.5 + rand() * 1.2, 0)
-  for (let i = 0; i < 200; i++) add(onEllipsoid(rand, [0, 0.6, head + 10], [4.5, 3.4, 7]), jade.clone().lerp(belly, 0.3).multiplyScalar(0.42), 1.4 + rand(), 0)
-  for (let i = 0; i < 130; i++) add(onEllipsoid(rand, [0, -2.2, head + 7], [3.9, 1.7, 8.4]), belly.clone().multiplyScalar(0.38), 1.3 + rand(), 0)
-  for (const side of [1, -1]) {
-    add([side * 4.6, 3.4, head + 4], gold.clone().multiplyScalar(1.5), 4.5, 0)
-    // Antlers, each with a tine.
-    for (let i = 0; i < 50; i++) add(onTube(rand, [side * 3.4, 5.3, head - 1.5], [side * 7, 14.7, head - 14], 0.9, 0.25, rand(), 0.6), gold.clone().multiplyScalar(0.75), 1.8, 0)
-    for (let i = 0; i < 20; i++) add(onTube(rand, [side * 5, 9.8, head - 7], [side * 5.9, 15.4, head - 4], 0.6, 0.18, rand(), 0.6), gold.clone().multiplyScalar(0.75), 1.6, 0)
-    // Whiskers trailing from the snout.
-    for (let i = 0; i < 60; i++) {
-      const s = i / 59
-      add([side * (4.2 + 12 * s), -1.4 - 5.6 * s + 4 * Math.sin(3 * s), head + 14 - 46 * s], gold.clone().lerp(WHITE, 0.3).multiplyScalar(0.55 - 0.25 * s), 1.4, 0.02, s)
-    }
-    // Legs: a thigh, a shin, three claws reaching forward.
-    for (const at of [0.17, 0.6]) {
-      const r = girth(at)
-      const z = (0.5 - at) * L
-      const hip = [side * r * 0.9, -r * 0.4, z]
-      const knee = [side * (r + 3), -r - 3, z + 2]
-      const foot = [side * (r + 4), -r - 6, z + 5]
-      for (let i = 0; i < 24; i++) add(onTube(rand, hip, knee, 1.3, 0.9), jade.clone().multiplyScalar(0.38), 1.4, at)
-      for (let i = 0; i < 20; i++) add(onTube(rand, knee, foot, 0.9, 0.6), jade.clone().multiplyScalar(0.38), 1.4, at)
-      for (let claw = -1; claw <= 1; claw++) for (let i = 0; i < 6; i++) add([foot[0] + claw * 0.9 * side + (i / 5) * claw * 0.6 * side, foot[1] - (i / 5) * 0.8, foot[2] + (i / 5) * 2.2], gold.clone().multiplyScalar(0.8), 1.3, at)
-    }
-  }
-  // A mane round the neck, streaming back like flame.
-  for (let i = 0; i < 300; i++) {
-    const s = 0.02 + rand() * 0.14
-    const ph = Math.PI * (0.15 + rand() * 0.7)
-    const r = girth(s)
-    const t = Math.pow(rand(), 0.8)
-    const length = 8 + rand() * 8
-    const out = new THREE.Vector3(Math.cos(ph) * 0.5, 0.6, -1).normalize()
-    add([Math.cos(ph) * r + out.x * length * t, Math.sin(ph) * r * 0.9 + out.y * length * t, (0.5 - s) * L + out.z * length * t], new THREE.Color('#ff8fa0').lerp(new THREE.Color('#ffc59a'), t).multiplyScalar(0.5 - 0.2 * t), 1.6, s, t * 0.8)
-  }
-  // The tail ends in a fan of flame.
-  for (let i = 0; i < 160; i++) {
-    const t = rand()
-    const spread = (rand() - 0.5) * 2 * t * 12
-    add([gauss(rand) * 0.6, spread, -0.5 * L - t * 16], coral.clone().lerp(gold, Math.abs(spread) / 12).multiplyScalar(0.55 - 0.25 * t), 1.6 + rand(), 1, t)
-  }
-  const body = creaturePoints(points, {
-    uniforms,
-    attributes: { along: 1, flow: 1 },
-    own: { uSwim: 0 },
-    move: `
-      float w = smoothstep(0.0, 0.18, along);
-      p.x += sin(uSwim - along * 7.5) * w * ${(0.07 * L).toFixed(2)};
-      p.y += sin(uSwim * 0.7 - along * 5.0 + 0.8) * w * ${(0.035 * L).toFixed(2)};
-      p.x += sin(uTime * 2.4 - flow * 5.0) * flow * 3.0;
-      p.y += cos(uTime * 1.9 - flow * 4.0) * flow * 2.0;`
-  })
-  const pearl = sprite(glowMap, 12, 0)
-  pearl.material.color.set('#fff3d0')
-  const heart = sprite(glowMap, 4.5, 0)
-  heart.material.color.set('#ffffff')
-  const group = new THREE.Group()
-  group.add(body, pearl, heart)
-  group.visible = false
-  return { group, body, pearl, heart, ahead: head + 42 }
 }
 
 // A phoenix of light, wings about 95 units across, head towards +z: a white-gold body, a

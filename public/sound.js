@@ -1237,35 +1237,6 @@ function jellySong(ctx, out, { at, pan }) {
   ;[3, 5, 4, 7].forEach((step, i) => glassNote(ctx, out, SCALE[step], { at: at + i * 0.7, level: 0.02, pan: pan + (i - 1.5) * 0.15, glass: 0.2 }))
 }
 
-// A dragon: a deep bowl, then a horn far off rising a fourth, and a bell.
-function dragonSong(ctx, out, { at, pan }) {
-  bowl(ctx, out, 98, { at, level: 0.05 })
-  const panner = panTo(ctx, out, pan)
-  const filter = ctx.createBiquadFilter()
-  filter.type = 'lowpass'
-  filter.Q.value = 2
-  filter.frequency.setValueAtTime(300, at + 0.4)
-  filter.frequency.linearRampToValueAtTime(900, at + 1.6)
-  filter.frequency.linearRampToValueAtTime(400, at + 3.2)
-  const level = ctx.createGain()
-  level.gain.setValueAtTime(0, at + 0.4)
-  level.gain.linearRampToValueAtTime(0.03, at + 1.2)
-  level.gain.linearRampToValueAtTime(0.022, at + 2.4)
-  level.gain.linearRampToValueAtTime(0, at + 3.4)
-  filter.connect(level).connect(panner)
-  for (const detune of [0, 7]) {
-    const osc = ctx.createOscillator()
-    osc.type = 'sawtooth'
-    osc.detune.value = detune
-    osc.frequency.setValueAtTime(146.83, at + 0.4)
-    osc.frequency.exponentialRampToValueAtTime(196, at + 1.4)
-    osc.connect(filter)
-    osc.start(at + 0.4)
-    osc.stop(at + 3.5)
-  }
-  windBell(ctx, out, WIND_BELLS[0], { at: at + 2.2, level: 0.014, pan: -pan })
-}
-
 // A phoenix: two bright calls of three quick rising chirps, then a high glass note.
 function phoenixSong(ctx, out, { at, pan }) {
   const panner = panTo(ctx, out, pan)
@@ -1289,7 +1260,7 @@ function phoenixSong(ctx, out, { at, pan }) {
   glassNote(ctx, out, SCALE[SCALE.length - 2], { at: at + 1.9, level: 0.016, pan, glass: 0.9 })
 }
 
-const CREATURE_SONGS = { unicorn: unicornSong, dolphins: dolphinSong, jellyfish: jellySong, dragon: dragonSong, phoenix: phoenixSong }
+const CREATURE_SONGS = { unicorn: unicornSong, dolphins: dolphinSong, jellyfish: jellySong, phoenix: phoenixSong }
 
 // A whale far off: two or three long calls, each sliding up and falling away through a
 // soft vocal filter with a slow wobble, the notes on G so they sit in any star's mode.

@@ -115,9 +115,8 @@ const DECOR = [
   ['whale', '우주 고래', '몇 분마다 은하 바깥을 헤엄치며 노래하는 빛 고래'],
   ['fireflies', '반딧불', '2단계 넘게 자란 별 둘레에서 깜빡이는 빛'],
   ['unicorn', '유니콘', '무지개를 남기며 은하 바깥을 달리는 빛 유니콘'],
-  ['dolphins', '돌고래 떼', '어둠 속에서 뛰어올랐다 반짝이며 들어가는 돌고래 넷'],
+  ['dolphins', '돌고래 떼', '긴 물결을 타고 함께 헤엄치는 빛 돌고래 넷'],
   ['jellyfish', '해파리', '갓을 오므렸다 펴며 천천히 떠오르는 해파리 셋'],
-  ['dragon', '용', '몸을 물결치며 여의주를 쫓아가는 용'],
   ['phoenix', '불사조', '날갯짓하며 불티를 흩뿌리는 불사조']
 ]
 // A new universe starts plain, and decorations open up as it is used: by tokens the agents
@@ -135,7 +134,6 @@ const UNLOCKS = {
   unicorn: { hint: '도감: 무지개 별똥별 잡기', met: (log) => log.tints[TINTS.length - 1] >= 1 },
   dolphins: { hint: '도감: 혜성으로 행성 세 번 맞히기', met: (log) => log.splashes >= 3 },
   jellyfish: { tokens: 3e8 },
-  dragon: { tokens: 6e8 },
   phoenix: { hint: '도감: 초신성 다섯 번 보기', met: (log) => log.novas >= 5 }
 }
 // What a browser that had Orrery before unlocks kept showing: everything there was then.
@@ -1708,7 +1706,6 @@ function adminSection(box) {
     ['🦄 유니콘', () => galaxy?.test('unicorn')],
     ['🐬 돌고래', () => galaxy?.test('dolphins')],
     ['🪼 해파리', () => galaxy?.test('jellyfish')],
-    ['🐉 용', () => galaxy?.test('dragon')],
     ['🐦‍🔥 불사조', () => galaxy?.test('phoenix')],
     ['⏩ 잔해 하루 지나게', () => {
       remnants = remnants.map((r) => ({ ...r, diedAt: r.diedAt - 86_400_000 })).filter((r) => Date.now() - r.diedAt < REMNANT_MS)
@@ -1782,12 +1779,11 @@ const TINTS = [
 // What the sky's creatures say as they pass.
 const CREATURE_NOTES = {
   unicorn: '🦄 무지개를 남기며 유니콘이 달려가요',
-  dolphins: '🐬 돌고래 떼가 뛰어올라요',
+  dolphins: '🐬 돌고래 떼가 헤엄쳐 가요',
   jellyfish: '🪼 해파리들이 떠올라요',
-  dragon: '🐉 여의주를 쫓아 용이 지나가요',
   phoenix: '🐦‍🔥 불사조가 불티를 뿌리며 날아가요'
 }
-const LOG_FIELDS = { meteor: 'meteors', comet: 'comets', throw: 'thrown', swallow: 'swallowed', core: 'core', splash: 'splashes', clean: 'cleaned', aurora: 'auroras', supernova: 'novas', starbirth: 'births', grow: 'grown', whale: 'whales', unicorn: 'unicorns', dolphins: 'dolphins', jellyfish: 'jellies', dragon: 'dragons', phoenix: 'phoenixes' }
+const LOG_FIELDS = { meteor: 'meteors', comet: 'comets', throw: 'thrown', swallow: 'swallowed', core: 'core', splash: 'splashes', clean: 'cleaned', aurora: 'auroras', supernova: 'novas', starbirth: 'births', grow: 'grown', whale: 'whales', unicorn: 'unicorns', dolphins: 'dolphins', jellyfish: 'jellies', phoenix: 'phoenixes' }
 const BADGES = [
   { id: 'meteor', icon: '🌠', name: '첫 별똥별', hint: '지나가는 별똥별을 눌러 잡기', earned: (l) => l.meteors >= 1 },
   { id: 'hunter', icon: '🏹', name: '유성 사냥꾼', hint: '별똥별 10개 잡기', earned: (l) => l.meteors >= 10 },
@@ -1804,9 +1800,8 @@ const BADGES = [
   { id: 'grow', icon: '🌱', name: '자라는 별', hint: '보는 동안 별이 한 단계 자랄 때', earned: (l) => l.grown >= 1 },
   { id: 'whale', icon: '🐋', name: '고래의 노래', hint: '은하 바깥을 지나는 고래 보기', earned: (l) => l.whales >= 1 },
   { id: 'unicorn', icon: '🦄', name: '무지개 유니콘', hint: '하늘을 달리는 유니콘 보기', earned: (l) => l.unicorns >= 1 },
-  { id: 'dolphins', icon: '🐬', name: '돌고래 친구', hint: '뛰어오르는 돌고래 떼 보기', earned: (l) => l.dolphins >= 1 },
+  { id: 'dolphins', icon: '🐬', name: '돌고래 친구', hint: '헤엄치는 돌고래 떼 보기', earned: (l) => l.dolphins >= 1 },
   { id: 'jellyfish', icon: '🪼', name: '해파리 등불', hint: '떠오르는 해파리 보기', earned: (l) => l.jellies >= 1 },
-  { id: 'dragon', icon: '🐉', name: '여의주', hint: '여의주를 쫓는 용 보기', earned: (l) => l.dragons >= 1 },
   { id: 'phoenix', icon: '🐦‍🔥', name: '불사조', hint: '불티를 흩뿌리는 불사조 보기', earned: (l) => l.phoenixes >= 1 }
 ]
 
@@ -2027,7 +2022,7 @@ function addRemnant(remnant) {
 }
 
 function loadLog() {
-  const empty = { meteors: 0, tints: [0, 0, 0, 0, 0, 0, 0], comets: 0, thrown: 0, swallowed: 0, core: 0, splashes: 0, cleaned: 0, auroras: 0, novas: 0, births: 0, grown: 0, whales: 0, unicorns: 0, dolphins: 0, jellies: 0, dragons: 0, phoenixes: 0, badges: [], since: Date.now() }
+  const empty = { meteors: 0, tints: [0, 0, 0, 0, 0, 0, 0], comets: 0, thrown: 0, swallowed: 0, core: 0, splashes: 0, cleaned: 0, auroras: 0, novas: 0, births: 0, grown: 0, whales: 0, unicorns: 0, dolphins: 0, jellies: 0, phoenixes: 0, badges: [], since: Date.now() }
   try {
     const saved = JSON.parse(localStorage.getItem(LOG_KEY) || '{}')
     return { ...empty, ...saved, tints: empty.tints.map((n, i) => saved.tints?.[i] || n), badges: Array.isArray(saved.badges) ? saved.badges : [] }
@@ -2105,7 +2100,6 @@ function renderLog() {
   stat('본 유니콘', playLog.unicorns)
   stat('본 돌고래 떼', playLog.dolphins)
   stat('본 해파리', playLog.jellies)
-  stat('본 용', playLog.dragons)
   stat('본 불사조', playLog.phoenixes)
 
   const badges = el('ul', { className: 'lg-badges' })
