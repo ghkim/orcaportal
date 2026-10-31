@@ -280,7 +280,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   let skyQuietUntil = 0 // after one has passed, a while before the next
   const skyAt = new THREE.Vector3()
   const skyNext = new THREE.Vector3()
-  const viewTurn = new THREE.Matrix4() // how the camera moved last frame on its own
+  const viewTurn = new THREE.Matrix4() // how the camera moved last frame, unless by hand
   let lastView = null // where it was then, the other way round
   const lanterns = [] // lit by finished work, rising out of the disc
   const hole = blackHole(tex.thinRing)
@@ -1719,8 +1719,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   // The pod rises and falls on long, easy waves, each nose following its wave as the
   // whale's does. The ones behind are half a beat behind on the wave and each a little
   // off it, so they move as one pod without ever crossing. Over the top of each wave a
-  // little glitter comes off a back. They move along with the camera when it moves on
-  // its own, so it doesn't swing them out of view.
+  // little glitter comes off a back. They move along with the camera unless a hand moves
+  // it, so it doesn't swing them out of view.
   function moveDolphins(pass, k, dt, alpha) {
     pass.carry = (pass.carry ?? fitPod(pass)).premultiply(viewTurn)
     for (const { fish, out, up, behind, lag, own, weave: turn, beat } of pass.members) {
@@ -1775,7 +1775,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   // seen best: halfway along, the swarm off to one side of the middle, clear of the core's
   // jet, and a little over a quarter of the way down, with room above to rise into. They
   // take a couple of minutes, long enough for the idle turn to swing the view most of the
-  // way round, so they move along with the camera when it moves on its own.
+  // way round, so they move along with the camera unless a hand moves it.
   function moveJellyfish(pass, k, dt, alpha) {
     pass.carry ??= placeInView(
       pass.members.map((m) => passPoint(pass, 0.5, new THREE.Vector3(), m.out, m.up).add(m.side)),
@@ -4108,12 +4108,13 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     controls.minDistance = flying ? 0 : inside ? 0.12 * s : 4
     controls.maxDistance = flying ? Infinity : inside ? 0.95 * s : 2200
     controls.update(dt)
-    // How the camera moved this frame with nobody moving it (the idle turn, the tour), for
-    // a slow passer in the sky to move along with and stay in view. When someone turns or
-    // flies it, the passer is left where it is.
+    // How the camera moved this frame, for a slow passer in the sky to move along with and
+    // stay in view: the idle turn, the tour, a flight to a star. Only a hand on the view
+    // (dragging, or the glide just after letting go) leaves the passer where it is.
     camera.updateMatrixWorld()
     viewTurn.identity()
-    if (lastView && !dragging && (controls.autoRotate || (cruising && (!flight || flight.cruise)))) viewTurn.multiplyMatrices(camera.matrixWorld, lastView)
+    const byHand = dragging || (!flight && now - releasedAt < 600)
+    if (lastView && !byHand) viewTurn.multiplyMatrices(camera.matrixWorld, lastView)
     lastView = (lastView ?? new THREE.Matrix4()).copy(camera.matrixWorld).invert()
     updateLabels()
     if (pointerDirty && !aim && !grab) hoverAt(pointer)
