@@ -202,6 +202,7 @@ let usage = {}
 let servers = {}
 // Per worktree path: bytes on disk without .git (from the server, refreshed every half hour).
 let disk = {}
+let growth = {} // worktree path -> what has landed on its repo's default branch, and its releases
 // In the galaxy view the session pane slides in only when a session is picked.
 let paneOpen = false
 // The star the viewer went into to work: its terminal is the main window, the galaxy all round.
@@ -318,6 +319,10 @@ function connect() {
   events.addEventListener('usage', (e) => {
     usage = JSON.parse(e.data).paths || {}
     trackTokens(usage)
+    if (prefs.view === 'galaxy') scheduleRender()
+  })
+  events.addEventListener('growth', (e) => {
+    growth = JSON.parse(e.data).paths || {}
     if (prefs.view === 'galaxy') scheduleRender()
   })
   events.addEventListener('disk', (e) => {
@@ -2582,6 +2587,10 @@ function ensureGalaxy() {
         // Something else took the camera out of the star.
         onInside: () => leaveStar({ fly: false }),
         onMilestone,
+        onGrowth: (app, { stage, release }) => {
+          if (stage) toast(`✨ ${app} 별이 ${stage}단계로 자랐어요 · ${GROWTH_NAMES[stage]}`, 5000)
+          else if (release) toast(`🎉 ${app} ${release} 릴리즈 · 별에 빛 껍질이 하나 늘었어요`, 5000)
+        },
         onOverview: () => {
           setPaneOpen(false)
           closeReport()
@@ -2680,7 +2689,7 @@ function renderGalaxy(all) {
     show
   }))
   items.push(...testItems.values())
-  displayOrder = galaxy ? galaxy.update(items, { focused: focusedHandle, gone: vanished, born, stats: appStats(all), searching: searching() }) : items.filter((i) => i.show).map((i) => i.handle)
+  displayOrder = galaxy ? galaxy.update(items, { focused: focusedHandle, gone: vanished, born, stats: appStats(all), growth: appGrowth(all), searching: searching() }) : items.filter((i) => i.show).map((i) => i.handle)
   galaxy?.setSearchTarget(nextMatch())
   vanished.clear()
   born.clear()
@@ -2726,6 +2735,7 @@ function renderReport() {
   title.append(el('b', { textContent: report.app }), el('span', { textContent: reportCounts(counts) }))
   const look = galaxy?.lookOf(report.app)
   if (look) title.append(el('small', { className: 'rp-look', textContent: lookLine(look) }))
+  if (look?.growth) title.append(el('small', { className: 'rp-look rp-growth', title: '기본 브랜치에 머지될수록 별이 자라요. 릴리즈마다 빛 껍질이 하나씩 생겨요.', textContent: growthLine(look.growth) }))
   const planet = el('button', { type: 'button', className: 'rp-new', title: '이 프로젝트에 에이전트를 하나 더 띄워요', textContent: '🪐 새 행성' })
   planet.addEventListener('click', () => openPlanetForm(report.app))
   const enter = el('button', { type: 'button', className: 'rp-new rp-enter', title: '별 안으로 들어가 둘러봐요', textContent: '🌟 별 안으로' })
@@ -2811,6 +2821,16 @@ function mergeNote(session) {
 }
 
 // The rule a star was made by, in a line: "🌙 밤에 태어난 장미 성운 별 · 10월 31일 00:52".
+// What each stage of a star's growth adds (see the galaxy's buildGrowth).
+const GROWTH_NAMES = ['씨앗', '빛고리', '두 번째 옷', '엇갈린 고리', '세 번째 옷', '작은 은하']
+
+function growthLine({ stage, landings, commits, releases, base, next }) {
+  const parts = [`🌱 ${stage}단계 ${GROWTH_NAMES[stage]}`, `${base}에 머지 ${landings.toLocaleString()}`, `커밋 ${commits.toLocaleString()}`]
+  if (releases) parts.push(`릴리즈 ${releases}`)
+  parts.push(next ? `다음 단계까지 ${(next - landings).toLocaleString()}` : '마지막 단계')
+  return parts.join(' · ')
+}
+
 function lookLine({ name, time, bornAt }) {
   if (!time || !bornAt) return `✦ ${name}`
   const d = new Date(bornAt)
@@ -2961,6 +2981,17 @@ function appStats(all) {
     stats.set(session.project, s)
   }
   return stats
+}
+
+// How far each app's repo has grown: its worktrees share one default branch, so the
+// furthest reading of any of them.
+function appGrowth(all) {
+  const grown = new Map()
+  for (const { session } of all) {
+    const g = growth[session.path]
+    if (g && g.landings >= (grown.get(session.project)?.landings ?? -1)) grown.set(session.project, g)
+  }
+  return grown
 }
 
 // Running subagents become moons of their worktree's agent terminal: the working one,

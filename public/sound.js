@@ -60,6 +60,25 @@ const MUSIC_VOICES = [
   [3, 41.9, 22],
   [9, 47.6, 28]
 ]
+// What a grown star adds to the music: one more voice for each stage it has reached (see
+// the galaxy's GROWTH_STAGES), heard while the camera is with it. A low pedal, a third
+// over the tune, a high shimmer, a plucked figure, and at the last a pair of bells.
+// [stage, period, first entry, how it plays]
+const GROWTH_VOICES = [
+  [1, 26.3, 4, (ctx, out, notes, at, pan) => softNote(ctx, out, notes[0] / 2, { at, level: 0.02, pan, glass: 0.2 })],
+  [2, 17.9, 9, (ctx, out, notes, at, pan) => glassNote(ctx, out, notes[2], { at, level: 0.014, pan })],
+  [3, 13.3, 2, (ctx, out, notes, at, pan) => glassNote(ctx, out, notes[12 + Math.floor(Math.random() * 3)], { at, level: 0.008, pan, glass: 0.9 })],
+  [4, 33.1, 14, (ctx, out, notes, at, pan) => [7, 9, 11].forEach((step, i) => pluck(ctx, out, notes[step], { at: at + i * 0.18, level: 0.012, pan }))],
+  [
+    5,
+    45.7,
+    20,
+    (ctx, out, notes, at, pan) => {
+      windBell(ctx, out, notes[14], { at, level: 0.012, pan })
+      windBell(ctx, out, notes[11], { at: at + 0.4, level: 0.01, pan: -pan })
+    }
+  ]
+]
 // The music's brightness (lowpass cutoff, Hz): in the overview, and with the youngest and
 // the oldest star.
 const TONE_OPEN = 6000
@@ -97,6 +116,8 @@ export function createSound() {
   let bambooTimer = null
   let grove = null
   let music = null
+  let grown = null // the growth voices, with when each plays next
+  let nextFanfare = 0
   let lastChime = 0
   let lastWarp = 0
   let lastGlide = 0
@@ -257,14 +278,15 @@ export function createSound() {
   function syncHum() {
     if (!ctx) return
     const note = enabled && ambientOn && insideStar ? humNote(insideStar) : null
-    if (hum && hum.note !== note) {
+    const stage = insideStar?.stage || 0
+    if (hum && (hum.note !== note || hum.stage !== stage)) {
       const old = hum
       hum = null
       fade(old.level, 0, 1.5)
       setTimeout(() => old.stop(), 2500)
     }
     if (note && !hum) {
-      hum = startHum(ctx, bus.hum, note)
+      hum = startHum(ctx, bus.hum, note, stage)
       fade(hum.level, 0.045, 5)
     }
   }
@@ -494,9 +516,23 @@ export function createSound() {
           voice.next += voice.period * pace
         }
       }
+      // A grown star's own voices join in; a voice it hasn't grown to waits for its cue.
+      grown ||= GROWTH_VOICES.map(([stage, period, offset, play], i) => ({ stage, period, offset, play, next: 0, pan: ((i * 0.382 + 0.2) % 1) * 1.2 - 0.6 }))
+      const stage = star?.stage || 0
+      for (const voice of grown) {
+        if (voice.stage > stage) {
+          voice.next = ctx.currentTime + voice.offset
+          continue
+        }
+        while (voice.next < horizon) {
+          if (voice.next > ctx.currentTime && mix.music > 0) voice.play(ctx, bus.music, notes, voice.next, voice.pan)
+          voice.next += voice.period * pace
+        }
+      }
       if (moodOn && mix.music > 0) {
         run()
         question()
+        if (star?.releases) fanfare(star)
       }
       scheduleMusic()
     }, 1000)
@@ -521,6 +557,17 @@ export function createSound() {
     if (freq < 600 && roll < (1 - star.warmth) * 0.45) return freq * 2
     if (freq > 330 && roll > 1 - star.warmth * 0.45) return freq / 2
     return freq
+  }
+
+  // A star with releases: now and then a short rising figure, a note for each release, up
+  // to five.
+  function fanfare(star) {
+    const now = ctx.currentTime
+    if (!nextFanfare || nextFanfare - now > 90) nextFanfare = now + 12 + Math.random() * 10
+    if (now < nextFanfare) return
+    nextFanfare = now + 50 + Math.random() * 20
+    const notes = scale()
+    for (let i = 0; i < Math.min(5, star.releases); i++) pluck(ctx, bus.music, notes[Math.min(notes.length - 1, 5 + i * 2)], { at: now + 0.1 + i * 0.16, level: 0.014, pan: -0.3 + i * 0.15 })
   }
 
   // With agents at work, a soft run of rising notes now and then: the more work, the more
@@ -822,6 +869,13 @@ export function createSound() {
         for (let i = 0; i < 4; i++) pluck(ctx, bus.alerts, SCALE[11 + Math.floor(Math.random() * 5)], { at: at + 0.25 + i * (0.05 + Math.random() * 0.08), level: 0.012, pan: pan + (Math.random() - 0.5) * 0.4 })
         return
       }
+      // A release: a bowl, a bright rising fifth and octave, then a bell.
+      if (kind === 'release') {
+        bowl(ctx, bus.alerts, 196, { at, level: 0.06 })
+        ;[392, 587.33, 783.99].forEach((f, i) => glassNote(ctx, bus.alerts, f, { at: at + 0.2 + i * 0.18, level: 0.024, pan: -0.3 + i * 0.3 }))
+        windBell(ctx, bus.alerts, WIND_BELLS[1], { at: at + 0.9, level: 0.02, pan: 0.2 })
+        return
+      }
       if (kind === 'celebrate') {
         ;[392, 587.33, 783.99, 1174.66].forEach((f, i) => pluck(ctx, bus.alerts, f, { at: at + i * 0.09, level: 0.026, pan: -0.3 + i * 0.2 }))
         windBell(ctx, bus.alerts, WIND_BELLS[0], { at: at + 0.5, level: 0.024, pan: -0.2 })
@@ -1104,14 +1158,15 @@ function bowl(ctx, out, freq, { at, level }) {
 
 // The hum inside a star: its own note brought down below 110 Hz, with a voice a hair
 // apart beating slowly against it, a fifth and an octave over it, and its brightness
-// breathing.
+// breathing. A star grown further hums fuller: a third above from its second stage, the
+// fifth an octave up from its fourth.
 function humNote(star) {
   let note = starNote(star)
   while (note > 110) note /= 2
   return note
 }
 
-function startHum(ctx, out, freq) {
+function startHum(ctx, out, freq, stage = 0) {
   const level = ctx.createGain()
   level.gain.value = 0
   const tone = ctx.createBiquadFilter()
@@ -1119,7 +1174,8 @@ function startHum(ctx, out, freq) {
   tone.frequency.value = 380
   tone.Q.value = 0.6
   tone.connect(level).connect(out)
-  const voices = [[1, 0.5, 'sine'], [1.004, 0.35, 'sine'], [1.5, 0.18, 'triangle'], [2, 0.12, 'sine']].map(([ratio, amp, type]) => {
+  const partials = [[1, 0.5, 'sine'], [1.004, 0.35, 'sine'], [1.5, 0.18, 'triangle'], [2, 0.12, 'sine'], ...(stage >= 2 ? [[2.52, 0.07, 'sine']] : []), ...(stage >= 4 ? [[3, 0.06, 'sine']] : [])]
+  const voices = partials.map(([ratio, amp, type]) => {
     const osc = ctx.createOscillator()
     osc.type = type
     osc.frequency.value = freq * ratio
@@ -1132,6 +1188,7 @@ function startHum(ctx, out, freq) {
   const breath = lfo(ctx, 0.06, 140, tone.frequency)
   return {
     note: freq,
+    stage,
     level,
     stop() {
       for (const osc of [...voices, breath]) osc.stop()

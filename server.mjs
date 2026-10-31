@@ -18,6 +18,7 @@ import { Speaker } from './src/speaker.mjs'
 import { Projects, projectName, gitUrl, AGENTS } from './src/projects.mjs'
 import { Worktrees } from './src/worktrees.mjs'
 import { universeOf } from './src/universe.mjs'
+import { Growth } from './src/growth.mjs'
 import { keyBytes } from './public/keys.js'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -39,6 +40,9 @@ const servers = new Servers({ paths: () => portal.sessions.map((s) => s.path) })
 // Disk used by each worktree (without .git), for planet sizes. Measured rarely.
 const disk = new Disk({ paths: () => portal.sessions.map((s) => s.path) })
 portal.on('state', () => disk.pathsChanged())
+// What has landed on each repo's default branch, and its releases: stars grow by them.
+const growth = new Growth({ paths: () => portal.sessions.map((s) => s.path) })
+portal.on('state', () => growth.pathsChanged())
 // With Orrery open in more than one place, only the page touched last plays sound.
 const speaker = new Speaker()
 // New projects made from the page: a folder, a repo, added to Orca, an agent started in it.
@@ -92,6 +96,7 @@ function openEventStream(req, res, page, visible) {
   write('usage', usage.snapshot())
   write('servers', servers.snapshot())
   write('disk', disk.snapshot())
+  write('growth', growth.snapshot())
   for (const [handle, screen] of portal.screens) write('screen', { handle, lines: screen.lines })
   for (const job of projects.jobs.values()) write('birth', job)
   if (page) speaker.join(page, { visible })
@@ -104,6 +109,7 @@ function openEventStream(req, res, page, visible) {
   const onUsage = (data) => write('usage', data)
   const onServers = (data) => write('servers', data)
   const onDisk = (data) => write('disk', data)
+  const onGrowth = (data) => write('growth', data)
   const onSpeaker = (data) => write('speaker', data)
   const onBirth = (data) => write('birth', data)
   portal.on('state', onState)
@@ -112,12 +118,14 @@ function openEventStream(req, res, page, visible) {
   usage.on('usage', onUsage)
   servers.on('servers', onServers)
   disk.on('disk', onDisk)
+  growth.on('growth', onGrowth)
   speaker.on('speaker', onSpeaker)
   projects.on('birth', onBirth)
   portal.subscribe()
   usage.subscribe()
   servers.subscribe()
   disk.subscribe()
+  growth.subscribe()
   const heartbeat = setInterval(() => res.write(': ping\n\n'), 15_000)
   req.on('close', () => {
     clearInterval(heartbeat)
@@ -127,6 +135,7 @@ function openEventStream(req, res, page, visible) {
     usage.off('usage', onUsage)
     servers.off('servers', onServers)
     disk.off('disk', onDisk)
+    growth.off('growth', onGrowth)
     speaker.off('speaker', onSpeaker)
     projects.off('birth', onBirth)
     if (page) speaker.leave(page)
@@ -134,6 +143,7 @@ function openEventStream(req, res, page, visible) {
     usage.unsubscribe()
     servers.unsubscribe()
     disk.unsubscribe()
+    growth.unsubscribe()
   })
 }
 

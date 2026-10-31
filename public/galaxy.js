@@ -17,6 +17,13 @@ let WARP = 30 // how far the rim of the disc bends up on one side and down on th
 const SPOT_CHOICES = 16 // a new star looks at this many spots of its own and takes the emptiest
 const MILESTONES = [1e7, 5e7, 1e8, 5e8, 1e9] // an app's tokens: each one passed is celebrated
 const CROWN_GLINTS = [0, 3, 5, 7, 9, 12] // glints in a star's crown, by milestones passed
+// A star grows with what lands on its repo's default branch: a stage at each of these
+// counts (the server's src/growth.mjs uses the same), a glint for each landing up to
+// GROWTH_GLINTS, and a shell of light for each of its latest GROWTH_SHELLS releases.
+const GROWTH_STAGES = [5, 20, 60, 150, 400]
+const GROWTH_GLINTS = 24
+const GROWTH_SHELLS = 9
+const MEMORIES = 6 // glints in a star's inside: the planets drawn in, then its latest landings
 const WARMUP_MS = 60_000 // tokens still being counted after the page opens: no celebrations yet
 let DISC_SPIN = 0.012 // galaxy rotation, radians per second (about 9 minutes a turn), the way its arms trail
 const UP = new THREE.Vector3(0, 1, 0)
@@ -128,7 +135,7 @@ const UNKNOWN_STAR = new THREE.Color('#f4f2ff') // until a star's colour is know
 // onPlay hears about play (a meteor caught, a comet swallowed) for the page's log.
 // onClean is asked when a planet is dropped into the black hole; the page confirms
 // with the user, closes the terminal and then calls swallow(), or cancelClean().
-export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSound, onOverview, onPlay, onClean, onRemnant, spots: knownSpots = {}, onSpot, onGlide, onMilestone, onInside, universe = null }) {
+export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSound, onOverview, onPlay, onClean, onRemnant, spots: knownSpots = {}, onSpot, onGlide, onMilestone, onInside, onGrowth, universe = null }) {
   // This universe's galaxy: everything below is built to its shape.
   const shape = galaxyShape(universe)
   ARMS = shape.arms
@@ -302,7 +309,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   // born: handles of terminals that just opened, so they arrive with one.
   // stats: per app { tokens, activeMs, firstAt } for the stars' size and colour.
   // searching: a search is typed, so the planets left showing are what it found.
-  function update(items, { focused = null, gone = new Set(), born = new Set(), stats = new Map(), searching: nowSearching = false } = {}) {
+  function update(items, { focused = null, gone = new Set(), born = new Set(), stats = new Map(), growth = new Map(), searching: nowSearching = false } = {}) {
     searching = nowSearching
     host.classList.toggle('gx-searching', searching)
     let lit = 0
@@ -348,6 +355,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       system.busy = Math.min(1, working * 0.5 + active * 0.3)
       paintSystem(system, best, anyShown)
       applyStats(system, stats.get(app))
+      setGrowth(system, growth.get(app) || null)
       const paths = new Set()
       for (const item of byApp.get(app)) {
         const planet = planets.get(item.handle)
@@ -460,6 +468,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     system.core.material.dispose()
     system.disk?.material.dispose()
     for (const m of system.dress.materials) m.dispose()
+    dropGrowth(system)
     for (const g of system.mergeGlints?.children || []) g.material.dispose()
     for (const s of [system.glow, system.corona, system.spikes, system.spikes2, ...system.beacons, ...system.sparkles.map((x) => x.sprite), ...system.crown.children]) s.material.dispose()
     for (const c of system.companions) {
@@ -2179,8 +2188,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
 
   // Puts on the star what dressOf() picked for it. Each dress has its parts, and an update
   // that sizes and lights them every frame.
-  function dress(system) {
-    const look = dressOf(system.app, system.bornAt)
+  function dress(system, look = dressOf(system.app, system.bornAt)) {
     const [a, b] = look.colors.map((c) => new THREE.Color(c))
     const materials = []
     const objects = []
@@ -2275,6 +2283,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     for (const part of system.dress.objects) part.removeFromParent()
     for (const m of system.dress.materials) m.dispose()
     system.dress = dress(system)
+    if (system.grown) buildGrowth(system)
   }
 
   // A star's birth: the earliest its terminals' repo is known to have appeared.
@@ -2686,7 +2695,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     let memories = []
     let line = null
 
-    // One glint for each, along an arc above the way to the galactic core, joined in a line.
+    // One glint for each, along an arc above the way to the galactic core, joined in a line:
+    // the planets drawn in, then what landed on the default branch most recently.
     function placeMemories(merged) {
       clearMemories()
       const up = tmp3.copy(UP).addScaledVector(ahead, -ahead.y).normalize()
@@ -2694,7 +2704,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       const spots = merged
         .map((planet) => {
           const h = hash(planet.handle)
-          return { planet, yaw: ((h % 1000) / 1000 - 0.5) * 1.6, rise: 0.08 + (((h >>> 10) % 1000) / 1000) * 0.2, phase: (h % 628) / 100 }
+          return { text: planet.text, yaw: ((h % 1000) / 1000 - 0.5) * 1.6, rise: 0.08 + (((h >>> 10) % 1000) / 1000) * 0.2, phase: (h % 628) / 100 }
         })
         .sort((p, q) => p.yaw - q.yaw)
       for (const spot of spots) {
@@ -2706,7 +2716,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
           .addScaledVector(side, Math.cos(spot.rise) * Math.sin(spot.yaw))
           .addScaledVector(up, Math.sin(spot.rise))
           .multiplyScalar(0.9)
-        const label = labelObject('gx-memory', `✦ ${spot.planet.item.mergeNote || spot.planet.item.planet || '합쳐진 작업'}`)
+        const label = labelObject('gx-memory', `✦ ${spot.text}`)
         // Neighbours take turns above and below their glints, so their names don't overlap.
         label.center.set(0.5, memories.length % 2 ? -0.6 : 1.6)
         label.position.copy(glint.position)
@@ -2761,11 +2771,12 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
           ring.material.opacity = level * Math.pow(1 - k, 2) * 0.35
         })
         motes.step(dt, t, level, pulse, 1.25 * system.size)
-        const merged = system.planets.filter((p) => p.inside >= 0.99)
-        const key = merged.map((p) => `${p.handle}:${p.item.mergeNote}`).join('|')
+        const merged = system.planets.filter((p) => p.inside >= 0.99).slice(-MEMORIES).map((p) => ({ handle: p.handle, text: p.item.mergeNote || p.item.planet || '합쳐진 작업' }))
+        const landed = (system.growth?.recent || []).slice(0, Math.max(0, MEMORIES - merged.length)).map((r) => ({ handle: r.hash, text: landingNote(r.subject) }))
+        const key = [...merged, ...landed].map((m) => `${m.handle}:${m.text}`).join('|')
         if (key !== mergedKey) {
           mergedKey = key
-          placeMemories(merged)
+          placeMemories([...merged, ...landed])
         }
         memories.forEach((m, i) => {
           const shine = 0.55 + 0.45 * Math.pow(Math.max(0, Math.sin(t * 1.1 + m.phase * 3)), 4)
@@ -2790,7 +2801,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   }
 
   function starBody(system) {
-    return [system.core, system.glow, system.corona, system.spikes, system.spikes2, system.crown, system.label, ...system.beacons, ...system.sparkles.map((s) => s.sprite), ...system.dress.objects, ...(system.mergeGlints ? [system.mergeGlints] : []), ...(system.disk ? [system.disk] : [])]
+    return [system.core, system.glow, system.corona, system.spikes, system.spikes2, system.crown, system.label, ...system.beacons, ...system.sparkles.map((s) => s.sprite), ...system.dress.objects, ...(system.grown?.objects || []), ...(system.mergeGlints ? [system.mergeGlints] : []), ...(system.disk ? [system.disk] : [])]
   }
 
   function hideStarBody(system) {
@@ -2809,14 +2820,14 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   function voiceOf(system) {
     const tokens = system.stats?.tokens || 0
     const size = tokens ? Math.min(1, Math.max(0, Math.log10(tokens / 1e5) / 3)) : 0.4
-    return { warmth: Math.min(1, Math.log1p(system.ageDays ?? 0) / Math.log1p(120)), busy: system.busy >= 0.5, size, seed: system.seed }
+    return { warmth: Math.min(1, Math.log1p(system.ageDays ?? 0) / Math.log1p(120)), busy: system.busy >= 0.5, size, seed: system.seed, stage: system.growth?.stage || 0, releases: system.growth?.releases || 0 }
   }
 
   // Tells the page when the camera takes up with another star, or that star's agents start
   // or stop work.
   function tellWatch() {
     const voice = follow && voiceOf(follow)
-    const key = voice ? `${follow.app}|${voice.busy}|${voice.warmth.toFixed(2)}|${voice.size.toFixed(1)}` : ''
+    const key = voice ? `${follow.app}|${voice.busy}|${voice.warmth.toFixed(2)}|${voice.size.toFixed(1)}|${voice.stage}|${voice.releases}` : ''
     if (key === watchKey) return
     watchKey = key
     onWatch?.(voice)
@@ -2990,6 +3001,158 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     bloom.strength = glow
     labelRenderer.domElement.style.opacity = ''
     warpHud.hidden = true
+  }
+
+  // ---------- growth ----------
+
+  // A star grows with its repo (see src/growth.mjs). A glint joins the ring round it for
+  // each landing on its default branch, up to GROWTH_GLINTS; each stage (GROWTH_STAGES
+  // landings) adds more, each picked by the landing that reached it: a ring of light, a
+  // second dress, a ring across the first, a third dress, and at the last a little spiral
+  // galaxy of its own. Each of its latest releases is a shell of light round it, coloured
+  // by the release's name. Reaching a stage, or a new release, is celebrated once the
+  // page has settled; the music hears the stage too (voiceOf).
+  function setGrowth(system, growth) {
+    const stage = growth ? GROWTH_STAGES.filter((n) => growth.landings >= n).length : 0
+    const before = system.growth
+    system.growth = growth ? { ...growth, stage } : null
+    const key = growth ? JSON.stringify([stage, growth.marks, (growth.latest || []).slice(0, GROWTH_SHELLS).map((r) => r.name), Math.min(GROWTH_GLINTS, growth.landings)]) : ''
+    if (key === (system.growthKey || '')) return
+    system.growthKey = key
+    if (before && growth && performance.now() - openedAt > WARMUP_MS) {
+      if (stage > before.stage) {
+        celebrate(system)
+        onGrowth?.(system.app, { stage })
+      } else if (growth.releases > before.releases) {
+        flashAt(system, system.dress.colors[1])
+        onSound?.('release')
+        onGrowth?.(system.app, { release: growth.latest?.[0]?.name || null })
+      }
+    }
+    buildGrowth(system)
+  }
+
+  function dropGrowth(system) {
+    if (!system.grown) return
+    for (const part of system.grown.objects) part.removeFromParent()
+    for (const m of system.grown.materials) m.dispose()
+    for (const g of system.grown.geometries) g.dispose()
+    system.grown = null
+  }
+
+  function buildGrowth(system) {
+    dropGrowth(system)
+    const g = system.growth
+    if (!g) return
+    const grown = { objects: [], materials: [], geometries: [], steps: [] }
+    system.grown = grown
+    const [a, b] = system.dress.colors.map((c) => new THREE.Color(c))
+    const keep = (m) => (grown.materials.push(m), m)
+    const wear = (parent, ...parts) => {
+      parent.add(...parts)
+      grown.objects.push(...parts)
+    }
+    // Inside a star its body stays hidden, and what grew on it with it.
+    const hidden = inside?.system === system
+
+    // A glint for each landing, on a slow ring in the planets' plane.
+    const count = Math.min(GROWTH_GLINTS, g.landings)
+    if (count) {
+      const ring = new THREE.Group()
+      const glints = Array.from({ length: count }, (_, i) => {
+        const h = hash(`${system.app}|landing|${i}`)
+        const glint = sprite(tex.spikes, 1, 0)
+        keep(glint.material).color.copy(i % 2 ? a : b).lerp(WHITE, 0.45)
+        ring.add(glint)
+        return { sprite: glint, angle: (i / count) * Math.PI * 2 + ((h % 100) / 100 - 0.5) * 0.4, lift: ((h >>> 8) % 100) / 100 - 0.5, phase: (h % 628) / 100 }
+      })
+      wear(system.tilt, ring)
+      grown.steps.push((size, level, t) => {
+        ring.rotation.y = t * 0.05
+        for (const glint of glints) {
+          const shine = 0.45 + 0.55 * Math.pow(Math.max(0, Math.sin(t * 0.9 + glint.phase)), 6)
+          glint.sprite.position.set(Math.cos(glint.angle) * 3.2 * size, glint.lift * 0.4 * size, Math.sin(glint.angle) * 3.2 * size)
+          glint.sprite.material.opacity = Math.min(1, level) * shine * 0.8
+          glint.sprite.scale.setScalar(Math.max(0.001, size * (0.55 + 0.6 * shine)))
+        }
+      })
+    }
+
+    // A thin ring of light lying round the star, tipped `lean` out of the planets' plane.
+    const halo = (radius, color, lean, opacity, spin) => {
+      const holder = new THREE.Group()
+      holder.rotation.z = lean
+      const mesh = new THREE.Mesh(plane, keep(new THREE.MeshBasicMaterial({ map: tex.thinRing, color, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide })))
+      mesh.rotation.x = -Math.PI / 2
+      holder.add(mesh)
+      wear(system.tilt, holder)
+      grown.steps.push((size, level, t) => {
+        holder.rotation.y = t * spin
+        mesh.scale.setScalar(Math.max(0.001, 2 * radius * size))
+        mesh.material.opacity = Math.min(1, level) * opacity * (0.85 + 0.15 * Math.sin(t * 0.6 + radius))
+      })
+    }
+    // Another dress, smaller or larger than its own, picked by the landing that reached the stage.
+    const extra = (mark, stage, scale, light) => {
+      const rand = mulberry32(hash(`${system.app}|${mark || stage}|grown`))
+      const kinds = STAR_DRESSES.filter(([kind]) => kind !== 'bare' && kind !== system.dress.kind)
+      const [kind, name] = kinds[Math.floor(rand() * kinds.length)]
+      const colors = rand() < 0.5 ? [...system.dress.colors].reverse() : [...system.dress.colors]
+      const worn = dress(system, { kind, name, colors, seed: rand() * 100, angle: rand() * Math.PI, petals: 5 + Math.floor(rand() * 3), rand, time: null, bornAt: null })
+      grown.objects.push(...worn.objects)
+      grown.materials.push(...worn.materials)
+      grown.steps.push((size, level, t, dt) => worn.update(size * scale, level * light, t, dt))
+    }
+    if (g.stage >= 1) halo(4.4, a.clone().lerp(WHITE, 0.3), 0, 0.5, 0.02)
+    if (g.stage >= 2) extra(g.marks?.[1], 2, 0.85, 0.75)
+    if (g.stage >= 3) halo(5.6, b.clone().lerp(WHITE, 0.2), 1.05, 0.42, -0.03)
+    if (g.stage >= 4) extra(g.marks?.[3], 4, 1.25, 0.6)
+    if (g.stage >= 5) {
+      // A little spiral of its own, two arms of the star's colours.
+      const rand = mulberry32(hash(`${system.app}|${g.marks?.[4] || 5}|spiral`))
+      const n = 1800
+      const position = new Float32Array(n * 3)
+      const tint = new Float32Array(n * 3)
+      const sizes = new Float32Array(n)
+      const c = new THREE.Color()
+      for (let i = 0; i < n; i++) {
+        const r = 6 + Math.pow(rand(), 0.8) * 9
+        const angle = (i % 2) * Math.PI + (r - 6) * 0.42 + gauss(rand) * 0.18
+        position.set([Math.cos(angle) * r, gauss(rand) * 0.25, Math.sin(angle) * r], i * 3)
+        c.copy(a).lerp(b, (r - 6) / 9).lerp(WHITE, rand() * 0.3).multiplyScalar(0.35 + rand() * 0.35)
+        tint.set([c.r, c.g, c.b], i * 3)
+        sizes[i] = 0.5 + rand() * 0.8
+      }
+      const geometry = geometryOf(position, tint, sizes)
+      grown.geometries.push(geometry)
+      const spiral = new THREE.Points(geometry, keep(pointsMaterial(pointUniforms, THREE.AdditiveBlending)))
+      wear(system.tilt, spiral)
+      grown.steps.push((size, level, t) => {
+        spiral.scale.setScalar(Math.max(0.001, size))
+        spiral.rotation.y = -t * 0.04
+        spiral.material.uniforms.uAlpha.value = Math.min(1, level)
+      })
+    }
+
+    // A shell of light for each of the latest releases, the oldest innermost.
+    const shells = (g.latest || [])
+      .slice(0, GROWTH_SHELLS)
+      .reverse()
+      .map((release, i) => {
+        const h = hash(release.name)
+        const shell = sprite(tex.thinRing, 1, 0)
+        keep(shell.material).color.copy(a).lerp(b, (h % 100) / 100).lerp(WHITE, 0.25)
+        shell.material.rotation = (h % 628) / 100
+        return { sprite: shell, radius: 5.2 + i * 0.9, phase: (h % 100) / 10 }
+      })
+    if (shells.length) wear(system.group, ...shells.map((s) => s.sprite))
+    grown.steps.push((size, level, t) => {
+      for (const shell of shells) {
+        shell.sprite.scale.setScalar(Math.max(0.001, 2 * shell.radius * size * (1 + 0.02 * Math.sin(t * 0.4 + shell.phase))))
+        shell.sprite.material.opacity = Math.min(1, level) * 0.26
+      }
+    })
+    if (hidden) for (const part of grown.objects) part.visible = false
   }
 
   // ---------- merged pull requests ----------
@@ -3338,6 +3501,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     if (system.dress.tint) system.glow.material.color.lerp(system.dress.tint, 0.22)
     if (alert) system.glow.material.color.lerp(AMBER, 0.3)
     system.dress.update(size, system.anyShown ? 1 + busy * 0.3 : 0.12, t, dt)
+    if (system.grown) for (const step of system.grown.steps) step(size, system.anyShown ? 1 + busy * 0.3 : 0.12, t, dt)
     // From far away a star keeps a minimum glow, so its colour still reads in the overview.
     const far = camera.position.distanceTo(system.group.getWorldPosition(tmp2)) * 0.042 * Math.sqrt(system.size)
     system.glow.scale.setScalar(Math.max(0.001, Math.max(10 * size, far * system.grow) * pulse * flicker * (1 + busy * 0.6)))
@@ -3626,7 +3790,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       const system = systems.get(app)
       if (!system) return null
       const { name, time, bornAt, kind } = system.dress
-      return { name, time, bornAt, kind, inside: INTERIORS[kind] }
+      const g = system.growth
+      const growth = g && { stage: g.stage, landings: g.landings, commits: g.commits, releases: g.releases, base: g.base, next: GROWTH_STAGES[g.stage] ?? null, latest: g.latest?.[0]?.name || null }
+      return { name, time, bornAt, kind, inside: INTERIORS[kind], growth }
     },
     overview,
     setArea(rect, { animate = false } = {}) {
@@ -5791,4 +5957,12 @@ function fbm(noise, x, y, z, octaves) {
     amp *= 0.5
   }
   return sum / norm
+}
+
+// What a landing said, short enough to hang in the sky: a merged pull request by its
+// number and branch, a conventional commit without its type.
+function landingNote(subject) {
+  const merge = /^Merge pull request (#\d+) from [^/\s]+\/(\S+)/.exec(subject)
+  const text = merge ? `${merge[1]} ${merge[2]}` : subject.replace(/^[a-z]+(\([^)]*\))?!?:\s*/i, '')
+  return text.length > 32 ? `${text.slice(0, 31)}…` : text
 }

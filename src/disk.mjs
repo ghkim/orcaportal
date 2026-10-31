@@ -53,6 +53,7 @@ export class Disk extends EventEmitter {
   }
 
   async pass() {
+    clearTimeout(this.timer)
     this.timer = null
     if (this.running) return
     this.running = true
