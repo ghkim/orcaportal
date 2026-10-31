@@ -870,6 +870,8 @@ export function createSound() {
         for (let i = 0; i < 4; i++) pluck(ctx, bus.alerts, SCALE[11 + Math.floor(Math.random() * 5)], { at: at + 0.25 + i * (0.05 + Math.random() * 0.08), level: 0.012, pan: pan + (Math.random() - 0.5) * 0.4 })
         return
       }
+      // A whale far off, on the music's level: it's part of the sky, not news.
+      if (kind === 'whale') return whaleSong(ctx, bus.music, { at, pan: Math.random() * 1.2 - 0.6 })
       // A release: a bowl, a bright rising fifth and octave, then a bell.
       if (kind === 'release') {
         bowl(ctx, bus.alerts, 196, { at, level: 0.06 })
@@ -1145,6 +1147,41 @@ function pluck(ctx, out, freq, { at, level, pan = 0 }) {
   tone(ctx, panner, freq, { at, level, attack: 0.004, decay: 1.6 })
   tone(ctx, panner, freq * 2, { at, level: level * 0.25, attack: 0.003, decay: 0.6 })
   tone(ctx, panner, freq * 3.01, { at, level: level * 0.08, attack: 0.002, decay: 0.3 })
+}
+
+// A whale far off: two or three long calls, each sliding up and falling away through a
+// soft vocal filter with a slow wobble, the notes on G so they sit in any star's mode.
+function whaleSong(ctx, out, { at, pan }) {
+  const panner = panTo(ctx, out, pan)
+  const calls = [[196, 293.66, 174.61, 3.4], [146.83, 220, 130.81, 4], [220, 392, 196, 2.8]].slice(0, 2 + Math.floor(Math.random() * 2))
+  let t = at
+  for (const [from, peak, to, length] of calls) {
+    const filter = ctx.createBiquadFilter()
+    filter.type = 'bandpass'
+    filter.frequency.value = 700
+    filter.Q.value = 1.2
+    const level = ctx.createGain()
+    level.gain.setValueAtTime(0, t)
+    level.gain.linearRampToValueAtTime(0.11, t + length * 0.3)
+    level.gain.linearRampToValueAtTime(0.07, t + length * 0.7)
+    level.gain.linearRampToValueAtTime(0, t + length)
+    filter.connect(level).connect(panner)
+    for (const [ratio, amp, type] of [[1, 1, 'sine'], [2.01, 0.25, 'triangle']]) {
+      const osc = ctx.createOscillator()
+      osc.type = type
+      osc.frequency.setValueAtTime(from * ratio, t)
+      osc.frequency.exponentialRampToValueAtTime(peak * ratio, t + length * 0.4)
+      osc.frequency.exponentialRampToValueAtTime(to * ratio, t + length)
+      const gain = ctx.createGain()
+      gain.gain.value = amp
+      osc.connect(gain).connect(filter)
+      const wobble = lfo(ctx, 4.5, from * ratio * 0.01, osc.frequency)
+      osc.start(t)
+      osc.stop(t + length + 0.1)
+      wobble.stop(t + length + 0.1)
+    }
+    t += length + 1.4 + Math.random() * 1.6
+  }
 }
 
 // 싱잉볼: a warm strike that keeps singing, with a gentle wobble.

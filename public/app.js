@@ -108,7 +108,11 @@ const DECOR = [
   ['disks', '원시행성 원반', '태어난 지 일주일 안 된 별의 먼지 원반'],
   ['remnants', '초신성 잔해', '닫힌 앱의 별이 남긴 가스 껍질 · 사흘'],
   ['jets', '은하 중심 제트', '에이전트가 일할 때 중심에서 뿜는 빛줄기'],
-  ['crowns', '별의 왕관', '앱 토큰이 1천만 · 5천만 · 1억… 넘을 때마다 빛 하나']
+  ['crowns', '별의 왕관', '앱 토큰이 1천만 · 5천만 · 1억… 넘을 때마다 빛 하나'],
+  ['accretion', '강착원반', '은하 중심 블랙홀을 도는 빛의 원반과 광자 고리'],
+  ['lanterns', '소원 등불', '작업이 끝날 때마다 그 행성에서 떠오르는 등불'],
+  ['whale', '우주 고래', '몇 분마다 은하 바깥을 헤엄치며 노래하는 빛 고래'],
+  ['fireflies', '반딧불', '2단계 넘게 자란 별 둘레에서 깜빡이는 빛']
 ]
 // A new universe starts plain, and decorations open up as it is used: by tokens the agents
 // spend from the day this browser started counting, or by things seen in the galaxy.
@@ -117,7 +121,11 @@ const UNLOCKS = {
   remnants: { hint: '도감: 초신성 세 번 보기', met: (log) => log.novas >= 3 },
   magellan: { tokens: 3e7 },
   crowns: { tokens: 6e7 },
-  jets: { tokens: 1e8 }
+  jets: { tokens: 1e8 },
+  accretion: { tokens: 2e8 },
+  whale: { tokens: 4e8 },
+  lanterns: { hint: '도감: 별똥별 10개 잡기', met: (log) => log.meteors >= 10 },
+  fireflies: { hint: '도감: 별이 자라는 걸 한 번 보기', met: (log) => log.grown >= 1 }
 }
 // What a browser that had Orrery before unlocks kept showing: everything there was then.
 const DECOR_BEFORE = ['magellan', 'disks', 'remnants', 'jets']
@@ -501,7 +509,10 @@ function queueEvent(handle, kind) {
     setZen(false)
     notifyDesktop(handle)
   }
-  if (kind === 'done' && prefs.view === 'galaxy') galaxy?.shootingStar()
+  if (kind === 'done' && prefs.view === 'galaxy') {
+    galaxy?.shootingStar()
+    galaxy?.lantern(handle)
+  }
   flashUntil.set(handle, Date.now() + 3600)
   followQueue = followQueue.filter((p) => p.handle !== handle)
   followQueue.push({ handle, kind, at: Date.now() })
@@ -1652,6 +1663,7 @@ function adminSection(box) {
     ['🌠 유성우', () => galaxy?.test('shower')],
     ['💫 먼 초신성', () => galaxy?.test('far-nova')],
     ['✨ 먼 별 탄생', () => galaxy?.test('far-birth')],
+    ['🐋 고래 부르기', () => galaxy?.test('whale')],
     ['⏩ 잔해 하루 지나게', () => {
       remnants = remnants.map((r) => ({ ...r, diedAt: r.diedAt - 86_400_000 })).filter((r) => Date.now() - r.diedAt < REMNANT_MS)
       try {
@@ -1721,7 +1733,7 @@ const TINTS = [
   ['보라', '#b77bff'],
   ['무지개', '#ff9fd0']
 ]
-const LOG_FIELDS = { meteor: 'meteors', comet: 'comets', throw: 'thrown', swallow: 'swallowed', core: 'core', splash: 'splashes', clean: 'cleaned', aurora: 'auroras', supernova: 'novas', starbirth: 'births' }
+const LOG_FIELDS = { meteor: 'meteors', comet: 'comets', throw: 'thrown', swallow: 'swallowed', core: 'core', splash: 'splashes', clean: 'cleaned', aurora: 'auroras', supernova: 'novas', starbirth: 'births', grow: 'grown', whale: 'whales' }
 const BADGES = [
   { id: 'meteor', icon: '🌠', name: '첫 별똥별', hint: '지나가는 별똥별을 눌러 잡기', earned: (l) => l.meteors >= 1 },
   { id: 'hunter', icon: '🏹', name: '유성 사냥꾼', hint: '별똥별 10개 잡기', earned: (l) => l.meteors >= 10 },
@@ -1734,7 +1746,9 @@ const BADGES = [
   { id: 'clean', icon: '🕳', name: '우주 청소부', hint: '다 쓴 터미널을 블랙홀로 보내기', earned: (l) => l.cleaned >= 1 },
   { id: 'aurora', icon: '🌌', name: '오로라', hint: '에이전트 여럿이 함께 일할 때 나타나요', earned: (l) => l.auroras >= 1 },
   { id: 'nova', icon: '💫', name: '초신성 목격', hint: '먼 하늘에서 별이 터질 때', earned: (l) => l.novas >= 1 },
-  { id: 'birth', icon: '✨', name: '별의 탄생', hint: '팔의 가스에서 새 별이 켜질 때', earned: (l) => l.births >= 1 }
+  { id: 'birth', icon: '✨', name: '별의 탄생', hint: '팔의 가스에서 새 별이 켜질 때', earned: (l) => l.births >= 1 },
+  { id: 'grow', icon: '🌱', name: '자라는 별', hint: '보는 동안 별이 한 단계 자랄 때', earned: (l) => l.grown >= 1 },
+  { id: 'whale', icon: '🐋', name: '고래의 노래', hint: '은하 바깥을 지나는 고래 보기', earned: (l) => l.whales >= 1 }
 ]
 
 // The newest eight remnants, each kept for three days after its star died.
@@ -1954,7 +1968,7 @@ function addRemnant(remnant) {
 }
 
 function loadLog() {
-  const empty = { meteors: 0, tints: [0, 0, 0, 0, 0, 0, 0], comets: 0, thrown: 0, swallowed: 0, core: 0, splashes: 0, cleaned: 0, auroras: 0, novas: 0, births: 0, badges: [], since: Date.now() }
+  const empty = { meteors: 0, tints: [0, 0, 0, 0, 0, 0, 0], comets: 0, thrown: 0, swallowed: 0, core: 0, splashes: 0, cleaned: 0, auroras: 0, novas: 0, births: 0, grown: 0, whales: 0, badges: [], since: Date.now() }
   try {
     const saved = JSON.parse(localStorage.getItem(LOG_KEY) || '{}')
     return { ...empty, ...saved, tints: empty.tints.map((n, i) => saved.tints?.[i] || n), badges: Array.isArray(saved.badges) ? saved.badges : [] }
@@ -1982,6 +1996,7 @@ function onPlay(event) {
   if (fresh.length) toast(`${fresh[0].icon} 새 배지 · ${fresh[0].name}`)
   else if (event.type === 'meteor') toast(`🌠 별똥별을 잡았어요 · ${playLog.meteors}개째`)
   else if (event.type === 'comet') toast('☄️ 큰 혜성을 잡았어요')
+  else if (event.type === 'whale') toast('🐋 은하 바깥으로 고래가 지나가요')
   if (!logEl.hidden) renderLog()
 }
 
@@ -2025,6 +2040,8 @@ function renderLog() {
   stat('본 오로라', playLog.auroras)
   stat('본 초신성', playLog.novas)
   stat('본 별의 탄생', playLog.births)
+  stat('본 별의 성장', playLog.grown)
+  stat('본 고래', playLog.whales)
 
   const badges = el('ul', { className: 'lg-badges' })
   for (const b of BADGES) {
@@ -2601,7 +2618,10 @@ function ensureGalaxy() {
         onInside: () => leaveStar({ fly: false }),
         onMilestone,
         onGrowth: (app, { stage, release }) => {
-          if (stage) toast(`✨ ${app} 별이 ${stage}단계로 자랐어요 · ${GROWTH_NAMES[stage]}`, 5000)
+          if (stage) {
+            toast(`✨ ${app} 별이 ${stage}단계로 자랐어요 · ${GROWTH_NAMES[stage]}`, 5000)
+            onPlay({ type: 'grow' })
+          }
           else if (release) toast(`🎉 ${app} ${release} 릴리즈 · 별에 빛 껍질이 하나 늘었어요`, 5000)
         },
         onOverview: () => {

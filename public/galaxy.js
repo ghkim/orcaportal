@@ -228,12 +228,19 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   let decorOn = {} // which decorations the viewer left on (anything not named is on)
   // How far each one is shown, 0..1: switching one off fades it out instead of popping it.
   let decorFade = null
-  const DECOR_KEYS = ['magellan', 'disks', 'remnants', 'jets', 'crowns']
+  const DECOR_KEYS = ['magellan', 'disks', 'remnants', 'jets', 'crowns', 'accretion', 'lanterns', 'whale', 'fireflies']
   const DECOR_SECONDS = 1.6
   const auroraRing = aurora()
   const core = galaxyCore(tex.glow, shape)
   let breathAt = 0 // where the core is in its breathing, in radians
   disc.add(...galaxyDisc(pointUniforms, shape), ...core, clouds, globularClusters(pointUniforms), auroraRing)
+  const accretion = accretionDisk(pointUniforms, tex.thinRing, tex.glow, shape)
+  disc.add(accretion.group)
+  const whale = spaceWhale(pointUniforms)
+  scene.add(whale)
+  let whalePass = null // { start, duration, from, dir, height } while one swims by
+  let nextWhale = 100 + Math.random() * 140 // in `time`, seconds
+  const lanterns = [] // lit by finished work, rising out of the disc
   const hole = blackHole(tex.thinRing)
   camera.add(hole.group)
   let nextMeteor = 8 + Math.random() * 12
@@ -1288,6 +1295,97 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       knot.position.y = u.dir * u.t * length
       knot.scale.setScalar(2.5 + 4 * u.t)
       knot.material.opacity = shown * jetLevel * Math.sin(Math.PI * u.t) * 0.55
+    }
+  }
+
+  // The disc round the core's black hole: each band turning at its own pace, the ring
+  // of bent light brightening as the core breathes.
+  function stepAccretion(dt) {
+    const shown = decorFade?.accretion ?? 1
+    accretion.group.visible = shown > 0
+    if (!shown) return
+    for (const band of accretion.bands) {
+      band.rotation.y += dt * band.userData.speed
+      band.material.uniforms.uAlpha.value = shown
+    }
+    const breath = 0.5 + 0.5 * Math.sin(breathAt)
+    accretion.photon.material.opacity = shown * (0.45 + 0.25 * breath)
+    accretion.sheet.material.opacity = shown * (0.16 + 0.05 * breath)
+    accretion.photon.scale.setScalar(7.5 * (1 + 0.04 * breath))
+  }
+
+  // Every four to seven minutes a whale swims round the outside of the galaxy, a sixth of
+  // the way round in about a minute and a half, rising and dipping, and sings once on the way.
+  function stepWhale(dt) {
+    const shown = decorFade?.whale ?? 1
+    if (!whalePass) {
+      whale.visible = false
+      if (shown <= 0 || reduceMotion || time < nextWhale) return
+      // It comes round where the camera is looking, so it's seen.
+      const ahead = camera.getWorldDirection(tmp).multiplyScalar(GALAXY_RADIUS * 2).add(camera.position)
+      const look = Math.atan2(ahead.z, ahead.x)
+      const dir = Math.random() < 0.5 ? 1 : -1
+      whalePass = { start: time, duration: 80 + Math.random() * 25, from: look - dir * 0.55, dir, height: 40 + Math.random() * 90, sang: false }
+    }
+    const k = (time - whalePass.start) / whalePass.duration
+    if (k >= 1) {
+      whalePass = null
+      nextWhale = time + 240 + Math.random() * 180
+      return
+    }
+    const angle = whalePass.from + whalePass.dir * k * 1.1
+    const radius = GALAXY_RADIUS * 1.75
+    const y = whalePass.height + Math.sin(k * Math.PI * 2) * 14
+    whale.position.set(Math.cos(angle) * radius, y, Math.sin(angle) * radius)
+    // Heading along its way round, nose a little up while it rises.
+    tmp.set(-Math.sin(angle) * whalePass.dir, Math.cos(k * Math.PI * 2) * 0.12, Math.cos(angle) * whalePass.dir).add(whale.position)
+    whale.lookAt(tmp)
+    whale.material.uniforms.uSwim.value += dt * 1.1
+    whale.material.uniforms.uAlpha.value = shown * smooth(0, 0.12, k) * (1 - smooth(0.88, 1, k))
+    whale.visible = true
+    if (!whalePass.sang && k > 0.3) {
+      whalePass.sang = true
+      onSound?.('whale')
+      onPlay?.({ type: 'whale' })
+    }
+  }
+
+  // Work finished: from its planet a lantern of warm light floats up out of the disc,
+  // swaying and flickering, and goes out high above it a minute later.
+  function lantern(handle) {
+    const planet = planets.get(handle)
+    if (!planet || (decorFade?.lanterns ?? 1) <= 0 || reduceMotion || lanterns.length >= 12) return
+    const from = disc.worldToLocal(planet.mesh.getWorldPosition(new THREE.Vector3()))
+    const glow = sprite(tex.glow, 3.2, 0)
+    glow.material.color.set('#ffa860')
+    const flame = sprite(tex.glow, 0.9, 0)
+    flame.material.color.set('#fff0c8')
+    const group = new THREE.Group()
+    group.position.copy(from)
+    group.add(glow, flame)
+    disc.add(group)
+    lanterns.push({ group, glow, flame, from, born: time, life: 50 + Math.random() * 20, phase: Math.random() * 10, drift: new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).multiplyScalar(0.3) })
+  }
+
+  function stepLanterns() {
+    const shown = decorFade?.lanterns ?? 1
+    for (const l of [...lanterns]) {
+      const age = time - l.born
+      const k = age / l.life
+      if (k >= 1) {
+        disc.remove(l.group)
+        l.glow.material.dispose()
+        l.flame.material.dispose()
+        lanterns.splice(lanterns.indexOf(l), 1)
+        continue
+      }
+      l.group.position.copy(l.from).addScaledVector(l.drift, age)
+      l.group.position.y += age * 0.8
+      l.group.position.x += Math.sin(age * 0.7 + l.phase) * 0.8
+      const flicker = 0.82 + 0.18 * Math.sin(time * 9 + l.phase) * Math.sin(time * 13.7 + l.phase)
+      const alpha = shown * smooth(0, 2, age) * (1 - smooth(0.65, 1, k))
+      l.glow.material.opacity = 0.5 * alpha * flicker
+      l.flame.material.opacity = alpha * flicker
     }
   }
 
@@ -3162,6 +3260,19 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       })
     }
 
+    // Fireflies from the second stage on, more the further it has grown (a decoration).
+    if (g.stage >= 2) {
+      const swarm = fireflies(16 + g.stage * 12, a, mulberry32(hash(`${system.app}|fireflies`)), pointUniforms)
+      keep(swarm.material)
+      grown.geometries.push(swarm.geometry)
+      wear(system.tilt, swarm)
+      grown.steps.push((size, level) => {
+        swarm.scale.setScalar(size)
+        swarm.material.uniforms.uSize.value = size
+        swarm.material.uniforms.uAlpha.value = Math.min(1, level) * (decorFade?.fireflies ?? 1)
+      })
+    }
+
     // A shell of light for each of the latest releases, the oldest innermost.
     const shells = (g.latest || [])
       .slice(0, GROWTH_SHELLS)
@@ -3482,6 +3593,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     stepDecor(dt)
     stepRemnants(dt)
     stepJets(dt)
+    stepAccretion(dt)
+    stepWhale(dt)
+    stepLanterns()
     stepMeteors(now)
     stepEvents(dt)
     if (aim) stepAim()
@@ -3842,6 +3956,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     },
     comet,
     shootingStar,
+    lantern,
     cosmicEvent,
     // The page confirmed and closed the terminal: the hole eats its planet.
     swallow(handle) {
@@ -3863,6 +3978,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       if (kind === 'shower') nextShower = time
       else if (kind === 'far-nova') cosmicEvent('nova')
       else if (kind === 'far-birth') cosmicEvent('birth')
+      else if (kind === 'whale' && !whalePass) nextWhale = time
     },
     setDecor(flags = {}) {
       decorOn = flags
@@ -5637,6 +5753,184 @@ function spiralTexture(seed) {
       ctx.fillRect(s / 2 + Math.cos(angle) * r, s / 2 + Math.sin(angle) * r, 1.2, 1.2)
     }
   })
+}
+
+// The disc of gas round the black hole at the galactic core, in bands that each turn at
+// their own pace (Kepler's: the inner ones much faster), white-hot at the inner edge, gold,
+// then the core's own colours; tipped out of the galaxy's plane, with streaks wound into
+// it. And round the hole a thin ring of bent light, a sprite so it always faces the eye.
+function accretionDisk(uniforms, ringMap, glowMap, shape) {
+  const group = new THREE.Group()
+  group.rotation.set(0.42, 0, 0.16)
+  const rand = mulberry32(shape.seed + 7)
+  const hot = new THREE.Color('#fff4e2')
+  const gold = new THREE.Color('#ffbf6e')
+  const outer = new THREE.Color(shape.palette.core[2])
+  const c = new THREE.Color()
+  const BANDS = 6
+  const bands = Array.from({ length: BANDS }, (_, b) => {
+    const inner = 3.6 + b * 3
+    const n = Math.round(1100 - b * 120)
+    const position = new Float32Array(n * 3)
+    const tint = new Float32Array(n * 3)
+    const size = new Float32Array(n)
+    for (let i = 0; i < n; i++) {
+      const r = inner + Math.pow(rand(), 0.8) * 3
+      // Clumps along a few streaks wound round, as gas drawn out by the turning.
+      const streak = Math.floor(rand() * 5)
+      const angle = (streak / 5) * Math.PI * 2 + (r - inner) * 0.9 + gauss(rand) * 0.35
+      position.set([Math.cos(angle) * r, gauss(rand) * 0.06 * r * 0.25, Math.sin(angle) * r], i * 3)
+      const k = (r - 3.6) / (BANDS * 3)
+      c.copy(hot).lerp(gold, smooth(0, 0.35, k)).lerp(outer, smooth(0.3, 1, k)).multiplyScalar((1.6 - 1.0 * k) * (0.7 + rand() * 0.5))
+      tint.set([c.r, c.g, c.b], i * 3)
+      size[i] = 0.8 + rand() * 1.1
+    }
+    const points = new THREE.Points(geometryOf(position, tint, size), pointsMaterial(uniforms, THREE.AdditiveBlending, 0, 6))
+    points.userData.speed = 0.55 / Math.pow(inner / 3.6, 1.5)
+    points.rotation.y = rand() * Math.PI * 2
+    return points
+  })
+  const photon = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringMap, color: '#ffe0ad', transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }))
+  photon.scale.setScalar(7.5)
+  // The gas's own warm glow, lying flat in the disc.
+  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(52, 52), new THREE.MeshBasicMaterial({ map: glowMap, color: '#ffae62', transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }))
+  sheet.rotation.x = -Math.PI / 2
+  group.add(sheet, ...bands, photon)
+  for (const part of group.children) part.frustumCulled = false
+  return { group, bands, photon, sheet }
+}
+
+// A whale of light, about 90 units long, head towards +z: a body of soft points, long
+// fins, flukes, and freckles of brighter light along its back. Its tail beats up and
+// down in the shader (uSwim), more the further back along it a point is.
+const WHALE_LENGTH = 90
+function spaceWhale(uniforms) {
+  const rand = mulberry32(4242)
+  const L = WHALE_LENGTH
+  const points = []
+  const add = (x, y, z, along, bright) => points.push([x, y, z, along, bright])
+  // Its girth along it: round at the head, widest a third back, narrowing to the tail.
+  const girth = (u) => 0.12 * L * Math.pow(Math.sin(Math.PI * Math.min(1, (u + 0.06) / 1.0)), 0.75) * (1 - 0.55 * smooth(0.55, 1, u))
+  for (let i = 0; i < 1500; i++) {
+    const u = Math.pow(rand(), 1.15)
+    const r = girth(u) * (rand() < 0.7 ? 1 : Math.sqrt(rand()))
+    const angle = rand() * Math.PI * 2
+    const y = Math.sin(angle) * r * 0.8
+    add(Math.cos(angle) * r, y, (0.5 - u) * L, u, y > r * 0.45 && rand() < 0.08 ? 1 : 0)
+  }
+  // Long fins a third of the way back, sweeping out and back, and the flukes at the tail.
+  for (let i = 0; i < 260; i++) {
+    const side = i % 2 ? 1 : -1
+    const t = rand()
+    const u = 0.3 + t * 0.12
+    add(side * (girth(0.3) * 0.8 + t * 0.32 * L), -girth(0.3) * 0.45 - t * 0.05 * L + gauss(rand) * 0.4, (0.5 - u) * L + gauss(rand) * 0.6 * (1 - t), u, 0)
+  }
+  for (let i = 0; i < 240; i++) {
+    const side = i % 2 ? 1 : -1
+    const t = rand()
+    const w = 0.24 * L * t
+    add(side * w, gauss(rand) * 0.3, -0.5 * L - 0.04 * L - t * t * 0.1 * L + (rand() - 0.5) * 0.05 * L * (1 - t), 1, 0)
+  }
+  const n = points.length
+  const position = new Float32Array(n * 3)
+  const tint = new Float32Array(n * 3)
+  const size = new Float32Array(n)
+  const along = new Float32Array(n)
+  const body = new THREE.Color('#9fd8ff')
+  const belly = new THREE.Color('#c9b8ff')
+  const c = new THREE.Color()
+  points.forEach(([x, y, z, u, bright], i) => {
+    position.set([x, y, z], i * 3)
+    c.copy(body).lerp(belly, smooth(0.2, -0.6, y / (0.1 * L))).multiplyScalar(bright ? 1.6 : 0.35 + rand() * 0.3)
+    tint.set([c.r, c.g, c.b], i * 3)
+    size[i] = bright ? 3 + rand() * 2 : 1.6 + rand() * 2.2
+    along[i] = u
+  })
+  const geometry = geometryOf(position, tint, size)
+  geometry.setAttribute('along', new THREE.BufferAttribute(along, 1))
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uScale: uniforms.uScale, uPixel: uniforms.uPixel, uSwim: { value: 0 }, uAlpha: { value: 0 } },
+    vertexShader: `
+      attribute vec3 tint; attribute float size; attribute float along;
+      uniform float uScale; uniform float uPixel; uniform float uSwim; uniform float uAlpha;
+      varying vec3 vTint; varying float vAlpha;
+      void main() {
+        vec3 p = position;
+        // The tail beats up and down, the wave running back along the body.
+        p.y += sin(uSwim - along * 3.2) * along * along * ${(0.09 * L).toFixed(1)};
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float d = max(0.001, -mv.z);
+        vAlpha = uAlpha * smoothstep(20.0, 120.0, d);
+        gl_PointSize = vAlpha < 0.002 ? 0.0 : clamp(size * uScale / d, 0.0, 9.0 * uPixel);
+        vTint = tint;
+      }`,
+    fragmentShader: `
+      varying vec3 vTint; varying float vAlpha;
+      void main() {
+        vec2 c = gl_PointCoord - 0.5;
+        gl_FragColor = vec4(vTint * exp(-dot(c, c) * 14.0) * vAlpha, 1.0);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+  const mesh = new THREE.Points(geometry, material)
+  mesh.frustumCulled = false
+  mesh.visible = false
+  return mesh
+}
+
+// Fireflies round a star: points that wander slowly about where they were put and blink
+// each to its own beat, all in the shader. Positions are in units of the star's size.
+function fireflies(count, color, rand, uniforms) {
+  const position = new Float32Array(count * 3)
+  const tint = new Float32Array(count * 3)
+  const size = new Float32Array(count)
+  const phase = new Float32Array(count)
+  const warm = [new THREE.Color('#e4ff8c'), new THREE.Color('#ffd76b'), color.clone().lerp(WHITE, 0.4)]
+  for (let i = 0; i < count; i++) {
+    const r = 2.6 + rand() * 4.2
+    const angle = rand() * Math.PI * 2
+    position.set([Math.cos(angle) * r, gauss(rand) * 0.9, Math.sin(angle) * r], i * 3)
+    const c = warm[Math.floor(rand() * 3)]
+    tint.set([c.r, c.g, c.b], i * 3)
+    size[i] = 0.16 + rand() * 0.12
+    phase[i] = rand() * 100
+  }
+  const geometry = geometryOf(position, tint, size)
+  geometry.setAttribute('phase', new THREE.BufferAttribute(phase, 1))
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uScale: uniforms.uScale, uPixel: uniforms.uPixel, uTime: uniforms.uTime, uAlpha: { value: 0 }, uSize: { value: 1 } },
+    vertexShader: `
+      attribute vec3 tint; attribute float size; attribute float phase;
+      uniform float uScale; uniform float uPixel; uniform float uTime; uniform float uAlpha; uniform float uSize;
+      varying vec3 vTint; varying float vAlpha;
+      void main() {
+        vec3 p = position + vec3(sin(uTime * 0.31 + phase * 7.0), 0.6 * sin(uTime * 0.23 + phase * 3.0), cos(uTime * 0.27 + phase * 5.0)) * 0.7;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float d = max(0.001, -mv.z);
+        float blink = pow(max(0.0, sin(uTime * (0.5 + fract(phase * 13.0) * 0.9) + phase * 40.0)), 4.0);
+        vAlpha = uAlpha * (0.12 + 0.88 * blink) * smoothstep(1.0, 6.0, d);
+        gl_PointSize = vAlpha < 0.002 ? 0.0 : clamp(size * uSize * uScale / d, 0.0, 10.0 * uPixel);
+        vTint = tint;
+      }`,
+    fragmentShader: `
+      varying vec3 vTint; varying float vAlpha;
+      void main() {
+        vec2 c = gl_PointCoord - 0.5;
+        // A bright point in a soft glow.
+        float d2 = dot(c, c);
+        gl_FragColor = vec4(vTint * (exp(-d2 * 60.0) * 1.6 + exp(-d2 * 12.0) * 0.5) * vAlpha, 1.0);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+  const points = new THREE.Points(geometry, material)
+  points.frustumCulled = false
+  return points
 }
 
 // Two jets along the galaxy's axis: a strip for each beam and a few knots riding up it.
