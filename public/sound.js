@@ -866,12 +866,44 @@ export function createSound() {
       // warm bowl under a slow climb; a new grain of stardust two bright plucks.
       if (kind === 'firework') {
         const pan = Math.random() - 0.5
-        tone(ctx, panTo(ctx, bus.alerts, pan), 110 + Math.random() * 30, { at, level: 0.05, attack: 0.005, decay: 0.5 })
-        for (let i = 0; i < 4; i++) pluck(ctx, bus.alerts, SCALE[11 + Math.floor(Math.random() * 5)], { at: at + 0.25 + i * (0.05 + Math.random() * 0.08), level: 0.012, pan: pan + (Math.random() - 0.5) * 0.4 })
+        tone(ctx, panTo(ctx, bus.alerts, pan), 90 + Math.random() * 60, { at, level: 0.05, attack: 0.005, decay: 0.5 })
+        const glints = 3 + Math.floor(Math.random() * 4)
+        for (let i = 0; i < glints; i++) pluck(ctx, bus.alerts, SCALE[10 + Math.floor(Math.random() * 6)], { at: at + 0.25 + i * (0.05 + Math.random() * 0.08), level: 0.011, pan: pan + (Math.random() - 0.5) * 0.4 })
+        return
+      }
+      // A display's other sounds: a shell going up is a thin rising whistle; a strobe or a
+      // splitting star crackles; the great willow at the end is a deeper boom that hangs.
+      if (kind === 'firework-launch') {
+        const panner = panTo(ctx, bus.alerts, Math.random() - 0.5)
+        const osc = ctx.createOscillator()
+        const from = 500 + Math.random() * 200
+        osc.frequency.setValueAtTime(from, at)
+        osc.frequency.exponentialRampToValueAtTime(from * 2.4, at + 1.1)
+        const gain = ctx.createGain()
+        gain.gain.setValueAtTime(0, at)
+        gain.gain.linearRampToValueAtTime(0.005, at + 0.3)
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 1.15)
+        osc.connect(gain).connect(panner)
+        osc.start(at)
+        osc.stop(at + 1.2)
+        return
+      }
+      if (kind === 'firework-crackle') {
+        const panner = panTo(ctx, bus.alerts, Math.random() - 0.5)
+        for (let i = 0; i < 16; i++) tone(ctx, panner, 1800 + Math.random() * 2600, { at: at + 0.1 + Math.random() * 0.9, level: 0.006, attack: 0.001, decay: 0.03 })
+        return
+      }
+      if (kind === 'firework-big') {
+        const pan = Math.random() * 0.4 - 0.2
+        tone(ctx, panTo(ctx, bus.alerts, pan), 70, { at, level: 0.07, attack: 0.008, decay: 1.4 })
+        bowl(ctx, bus.alerts, 98, { at: at + 0.1, level: 0.03 })
+        for (let i = 0; i < 6; i++) pluck(ctx, bus.alerts, SCALE[9 + Math.floor(Math.random() * 7)], { at: at + 0.4 + i * 0.18, level: 0.01, pan: pan + (Math.random() - 0.5) * 0.6 })
         return
       }
       // A whale far off, on the music's level: it's part of the sky, not news.
       if (kind === 'whale') return whaleSong(ctx, bus.music, { at, pan: Math.random() * 1.2 - 0.6 })
+      // The other creatures of the sky, on the music's level too.
+      if (CREATURE_SONGS[kind]) return CREATURE_SONGS[kind](ctx, bus.music, { at, pan: Math.random() * 1.2 - 0.6 })
       // A release: a bowl, a bright rising fifth and octave, then a bell.
       if (kind === 'release') {
         bowl(ctx, bus.alerts, 196, { at, level: 0.06 })
@@ -1148,6 +1180,95 @@ function pluck(ctx, out, freq, { at, level, pan = 0 }) {
   tone(ctx, panner, freq * 2, { at, level: level * 0.25, attack: 0.003, decay: 0.6 })
   tone(ctx, panner, freq * 3.01, { at, level: level * 0.08, attack: 0.002, decay: 0.3 })
 }
+
+// A unicorn: a harp run up the scale, a high glass note and a bell.
+function unicornSong(ctx, out, { at, pan }) {
+  for (let i = 0; i < 10; i++) pluck(ctx, out, SCALE[Math.min(SCALE.length - 1, 4 + i)], { at: at + i * 0.075, level: 0.02, pan: pan - 0.3 + i * 0.06 })
+  glassNote(ctx, out, SCALE[Math.min(SCALE.length - 1, 12)], { at: at + 0.85, level: 0.018, pan, glass: 0.8 })
+  windBell(ctx, out, WIND_BELLS[1], { at: at + 1.1, level: 0.014, pan: pan + 0.2 })
+}
+
+// Dolphins: a few quick whistles sliding up and back, then a run of clicks.
+function dolphinSong(ctx, out, { at, pan }) {
+  const panner = panTo(ctx, out, pan)
+  let t = at
+  for (let i = 0; i < 3 + Math.floor(Math.random() * 2); i++) {
+    const length = 0.22 + Math.random() * 0.2
+    const from = 1300 + Math.random() * 400
+    const osc = ctx.createOscillator()
+    osc.frequency.setValueAtTime(from, t)
+    osc.frequency.exponentialRampToValueAtTime(from * (1.5 + Math.random() * 0.4), t + length * 0.6)
+    osc.frequency.exponentialRampToValueAtTime(from * 1.2, t + length)
+    const gain = ctx.createGain()
+    gain.gain.setValueAtTime(0, t)
+    gain.gain.linearRampToValueAtTime(0.012, t + 0.03)
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + length)
+    osc.connect(gain).connect(panner)
+    osc.start(t)
+    osc.stop(t + length + 0.05)
+    t += length + 0.08 + Math.random() * 0.25
+  }
+  for (let i = 0; i < 6; i++) tone(ctx, panner, 2600 + Math.random() * 600, { at: t + 0.1 + i * 0.045, level: 0.006, attack: 0.002, decay: 0.035 })
+}
+
+// Jellyfish: soft round glass notes rising slowly, like bubbles.
+function jellySong(ctx, out, { at, pan }) {
+  ;[3, 5, 4, 7].forEach((step, i) => glassNote(ctx, out, SCALE[step], { at: at + i * 0.7, level: 0.02, pan: pan + (i - 1.5) * 0.15, glass: 0.2 }))
+}
+
+// A dragon: a deep bowl, then a horn far off rising a fourth, and a bell.
+function dragonSong(ctx, out, { at, pan }) {
+  bowl(ctx, out, 98, { at, level: 0.05 })
+  const panner = panTo(ctx, out, pan)
+  const filter = ctx.createBiquadFilter()
+  filter.type = 'lowpass'
+  filter.Q.value = 2
+  filter.frequency.setValueAtTime(300, at + 0.4)
+  filter.frequency.linearRampToValueAtTime(900, at + 1.6)
+  filter.frequency.linearRampToValueAtTime(400, at + 3.2)
+  const level = ctx.createGain()
+  level.gain.setValueAtTime(0, at + 0.4)
+  level.gain.linearRampToValueAtTime(0.03, at + 1.2)
+  level.gain.linearRampToValueAtTime(0.022, at + 2.4)
+  level.gain.linearRampToValueAtTime(0, at + 3.4)
+  filter.connect(level).connect(panner)
+  for (const detune of [0, 7]) {
+    const osc = ctx.createOscillator()
+    osc.type = 'sawtooth'
+    osc.detune.value = detune
+    osc.frequency.setValueAtTime(146.83, at + 0.4)
+    osc.frequency.exponentialRampToValueAtTime(196, at + 1.4)
+    osc.connect(filter)
+    osc.start(at + 0.4)
+    osc.stop(at + 3.5)
+  }
+  windBell(ctx, out, WIND_BELLS[0], { at: at + 2.2, level: 0.014, pan: -pan })
+}
+
+// A phoenix: two bright calls of three quick rising chirps, then a high glass note.
+function phoenixSong(ctx, out, { at, pan }) {
+  const panner = panTo(ctx, out, pan)
+  for (let call = 0; call < 2; call++) {
+    for (let i = 0; i < 3; i++) {
+      const t = at + call * 0.9 + i * 0.14
+      const from = call ? 1174.66 : 1046.5 // D6, C6
+      const osc = ctx.createOscillator()
+      osc.type = 'triangle'
+      osc.frequency.setValueAtTime(from, t)
+      osc.frequency.exponentialRampToValueAtTime(from * 1.5, t + 0.1)
+      const gain = ctx.createGain()
+      gain.gain.setValueAtTime(0, t)
+      gain.gain.linearRampToValueAtTime(0.01, t + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.13)
+      osc.connect(gain).connect(panner)
+      osc.start(t)
+      osc.stop(t + 0.15)
+    }
+  }
+  glassNote(ctx, out, SCALE[SCALE.length - 2], { at: at + 1.9, level: 0.016, pan, glass: 0.9 })
+}
+
+const CREATURE_SONGS = { unicorn: unicornSong, dolphins: dolphinSong, jellyfish: jellySong, dragon: dragonSong, phoenix: phoenixSong }
 
 // A whale far off: two or three long calls, each sliding up and falling away through a
 // soft vocal filter with a slow wobble, the notes on G so they sit in any star's mode.

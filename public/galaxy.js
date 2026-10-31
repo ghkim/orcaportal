@@ -228,7 +228,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   let decorOn = {} // which decorations the viewer left on (anything not named is on)
   // How far each one is shown, 0..1: switching one off fades it out instead of popping it.
   let decorFade = null
-  const DECOR_KEYS = ['magellan', 'disks', 'remnants', 'jets', 'crowns', 'accretion', 'lanterns', 'whale', 'fireflies']
+  const DECOR_KEYS = ['magellan', 'disks', 'remnants', 'jets', 'crowns', 'accretion', 'lanterns', 'whale', 'fireflies', 'unicorn', 'dolphins', 'jellyfish', 'dragon', 'phoenix']
   const DECOR_SECONDS = 1.6
   const auroraRing = aurora()
   const core = galaxyCore(tex.glow, shape)
@@ -240,6 +240,46 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   scene.add(whale)
   let whalePass = null // { start, duration, from, dir, height } while one swims by
   let nextWhale = 100 + Math.random() * 140 // in `time`, seconds
+  // More creatures that pass now and then outside the galaxy like the whale, each a
+  // decoration of its own: a unicorn galloping with a rainbow behind it, a pod of dolphins
+  // leaping out of the dark, jellyfish rising, a dragon after its pearl, a phoenix shedding
+  // embers. One is in the sky at a time, the whale too; each comes round where the camera
+  // is looking, and is seen once on its way.
+  const sparks = skyTrail(2400, pointUniforms)
+  scene.add(sparks.points)
+  const fireworks = fireworkSparks(9000, pointUniforms)
+  scene.add(fireworks.points)
+  const fireworkQueue = [] // what a stardust display does next: { at, run }, in `time`
+  const pod = new THREE.Group()
+  for (let i = 0; i < 4; i++) pod.add(dolphin(pointUniforms, mulberry32(900 + i)))
+  const jellies = new THREE.Group()
+  for (const [rim, glow, radius] of [['#ff9ad5', '#8ff3ff', 16], ['#c7a6ff', '#9effd8', 11], ['#ffc39a', '#ff8fb3', 13]]) jellies.add(jellyfish(pointUniforms, mulberry32(radius * 31), new THREE.Color(rim), new THREE.Color(glow), radius))
+  const dragon = skyDragon(pointUniforms, tex.glow)
+  const creatures = {
+    unicorn: { object: unicorn(pointUniforms), first: [150, 330], every: [420, 600], move: moveUnicorn, begin: () => ({ duration: 40 + Math.random() * 8, span: 1.5, radius: 1.45, height: 20 + Math.random() * 50, lift: (q) => Math.sin(Math.PI * q) * 70 }) },
+    dolphins: {
+      object: pod,
+      first: [120, 300],
+      every: [360, 540],
+      move: moveDolphins,
+      begin: () => {
+        for (const fish of pod.children) delete fish.userData.leap
+        return { duration: 34 + Math.random() * 6, span: 1.2, radius: 1.5, height: Math.random() * 60, lift: () => 0, leaps: 5 + Math.floor(Math.random() * 2) }
+      }
+    },
+    jellyfish: { object: jellies, first: [200, 380], every: [420, 600], move: moveJellyfish, begin: () => ({ duration: 110 + Math.random() * 15, span: 0.3, radius: 1.5, height: -20 + Math.random() * 40, lift: () => 0, rise: [0, 0, 0] }) },
+    dragon: { object: dragon.group, first: [260, 440], every: [480, 660], move: moveDragon, begin: () => ({ duration: 80 + Math.random() * 10, span: 1.5, radius: 1.6, height: 40 + Math.random() * 60, lift: (q) => Math.sin(q * Math.PI * 2) * 22 }) },
+    phoenix: { object: phoenix(pointUniforms), first: [220, 400], every: [420, 600], move: movePhoenix, begin: () => ({ duration: 34 + Math.random() * 6, span: 1.6, radius: 1.35, height: 130 + Math.random() * 30, lift: (q) => -Math.sin(Math.PI * q) * 100 }) }
+  }
+  for (const creature of Object.values(creatures)) {
+    creature.object.visible = false
+    creature.pass = null
+    creature.next = creature.first[0] + Math.random() * (creature.first[1] - creature.first[0])
+    scene.add(creature.object)
+  }
+  let skyQuietUntil = 0 // after one has passed, a while before the next
+  const skyAt = new THREE.Vector3()
+  const skyNext = new THREE.Vector3()
   const lanterns = [] // lit by finished work, rising out of the disc
   const hole = blackHole(tex.thinRing)
   camera.add(hole.group)
@@ -667,7 +707,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     for (const g of grains) g.a = g.arm * Math.PI + gauss(Math.random) * 0.35 - Math.log(0.15 + g.r) * 1.6
     const swirl = new THREE.Points(geometryOf(position, tint, size), pointsMaterial(pointUniforms, THREE.AdditiveBlending, 0))
     swirl.rotation.set((Math.random() - 0.5) * 0.5, 0, (Math.random() - 0.5) * 0.5)
-    const label = labelObject('gx-star gx-forming', app)
+    const label = labelObject('gx-star gx-forming', shortName(app), app)
     label.center.set(0.5, 0)
     label.position.y = -4
     const note = el('small', '')
@@ -1025,10 +1065,160 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     if (kind === 'shower') meteorShower(16)
     else if (kind === 'aurora') auroraUntil = time + 120
     else if (kind === 'swarm') cometSwarm()
-    else if (kind === 'fireworks') {
-      for (let i = 0; i < 7; i++) setTimeout(() => active && farNova({ show: true }), i * (550 + Math.random() * 500))
-    }
+    else if (kind === 'fireworks') fireworkShow()
     return true
+  }
+
+  // A stardust display in the sky in front of the viewer, about twenty seconds: every
+  // kind of shell once in a new order and a few more, rising from below and bursting, often
+  // two at once; then a finale of shells in quick succession across the sky, a great gold
+  // willow, and a supernova far behind to close. Each shell goes up where the camera is
+  // looking when it is fired, so a turning camera never leaves the show behind.
+  const FIREWORK_KINDS = ['peony', 'chrysanthemum', 'ring', 'willow', 'palm', 'crossette', 'heart', 'strobe', 'saturn', 'star', 'double']
+  const FIREWORK_PLAIN = ['peony', 'chrysanthemum', 'ring', 'double', 'strobe', 'palm']
+  const FIREWORK_DISTANCE = 760
+  function fireworkShow() {
+    const pick = (list) => list[Math.floor(Math.random() * list.length)]
+    // Where on the view: across it, and up it, as parts of its half-width and half-height.
+    const place = (wide = 1) => [(Math.random() - 0.5) * 1.3 * wide, 0.1 + Math.random() * 0.6]
+    const order = [...FIREWORK_KINDS].sort(() => Math.random() - 0.5)
+    for (let i = 0; i < 5; i++) order.splice(Math.floor(Math.random() * order.length), 0, pick(FIREWORK_PLAIN))
+    let t = 0.2
+    order.forEach((kind, i) => {
+      fireworkShell(t, kind, place())
+      if (i % 3 === 2) fireworkShell(t + 0.15, pick(FIREWORK_PLAIN), place())
+      t += 0.6 + Math.random() * 0.5
+    })
+    for (let i = 0; i < 12; i++) fireworkShell(t + i * 0.18, pick(FIREWORK_PLAIN), place(1.25))
+    t += 12 * 0.18 + 1.1
+    fireworkShell(t, 'willow', [0, 0.4], 1.7)
+    later(t + 2.4, () => active && farNova({ show: true }))
+  }
+
+  function later(at, run) {
+    fireworkQueue.push({ at: time + at, run })
+  }
+
+  function stepFireworks() {
+    for (const job of fireworkQueue.filter((j) => time >= j.at)) {
+      fireworkQueue.splice(fireworkQueue.indexOf(job), 1)
+      job.run()
+    }
+    fireworks.step(time)
+  }
+
+  // A shell going up `delay` seconds from now at [x, y] on the view, slowing as it climbs,
+  // a thin trail under it, and bursting where it stops.
+  function fireworkShell(delay, kind, [x, y], scale = 1) {
+    const rise = 1.1 + Math.random() * 0.4
+    const at = new THREE.Vector3()
+    let basis = null
+    later(delay, () => {
+      basis = cameraBasis()
+      fireworks.down.copy(basis.up).negate()
+      const half = FIREWORK_DISTANCE * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
+      at.copy(camera.position).addScaledVector(basis.forward, FIREWORK_DISTANCE).addScaledVector(basis.right, x * half * camera.aspect).addScaledVector(basis.up, y * half)
+      const height = 200 + Math.random() * 60
+      const drag = 1.2
+      const from = at.clone().addScaledVector(basis.up, -height)
+      const speed = (height * drag) / (1 - Math.exp(-drag * rise))
+      const up = basis.up.clone().multiplyScalar(speed)
+      for (let j = 0; j < 8; j++) fireworks.emit(from, up, { now: time + j * 0.035, color: FIREWORK_LAUNCH, level: 0.8 - j * 0.08, grain: 6 - j * 0.5, seconds: rise, drag, drop: 0 })
+      onSound?.('firework-launch')
+    })
+    later(delay + rise, () => fireworkBurst(kind, at, basis, scale))
+  }
+
+  // One shell bursting at `at`: a flash, then its sparks in its own shape.
+  function fireworkBurst(kind, at, basis, scale = 1) {
+    const [color, color2] = kind === 'willow' || kind === 'palm' ? FIREWORK_GOLD : FIREWORK_COLORS[Math.floor(Math.random() * FIREWORK_COLORS.length)]
+    const R = (80 + Math.random() * 40) * scale
+    const spark = (dir, speed, opts = {}) => fireworks.emit(at, dir.clone().multiplyScalar(speed), { now: time, color, color2, ...opts })
+    // A spark with a tail: itself again a moment later, smaller and dimmer.
+    const streak = (dir, speed, tail, opts = {}, gap = 0.022) => {
+      for (let j = 0; j <= tail; j++) fireworks.emit(at, dir.clone().multiplyScalar(speed), { now: time + j * gap, color, color2, ...opts, level: (opts.level ?? 1) * (1 - j / (tail + 1)), grain: (opts.grain ?? 9) * (1 - (0.6 * j) / (tail + 1)) })
+    }
+    // Directions in the plane facing the viewer, for shapes drawn on the sky.
+    const flat = (x, y) => basis.right.clone().multiplyScalar(x).addScaledVector(basis.up, y)
+    fireworks.emit(at, new THREE.Vector3(), { now: time, color: WHITE, level: 1.2, grain: 40 * scale, seconds: 0.25, drop: 0 })
+    let sound = 'firework'
+    if (kind === 'peony') for (const dir of sphereDirections(130)) spark(dir, R * 1.6 * (0.92 + Math.random() * 0.08), { seconds: 2.2 + Math.random() * 0.6, drop: 22 })
+    else if (kind === 'chrysanthemum') for (const dir of sphereDirections(110)) streak(dir, R * 1.6, 6, { seconds: 2.4, drop: 18, color: FIREWORK_GOLD[0], grain: 8 })
+    else if (kind === 'ring') {
+      // A ring tipped a little away from facing the viewer, so it shows as an ellipse.
+      const normal = basis.forward.clone().applyAxisAngle(basis.right, (Math.random() - 0.5) * 1.2).applyAxisAngle(basis.up, (Math.random() - 0.5) * 1.2)
+      const e1 = new THREE.Vector3().crossVectors(normal, basis.up).normalize()
+      const e2 = new THREE.Vector3().crossVectors(normal, e1)
+      for (let i = 0; i < 90; i++) {
+        const a = (i / 90) * Math.PI * 2
+        spark(e1.clone().multiplyScalar(Math.cos(a)).addScaledVector(e2, Math.sin(a)), R * 1.7, { seconds: 2.4, drop: 12, grain: 10 })
+      }
+      for (const dir of sphereDirections(16)) spark(dir, R * 0.35, { seconds: 1.6, color: WHITE, color2: color })
+    } else if (kind === 'willow') {
+      for (const dir of sphereDirections(100)) streak(dir, R * 1.2, 8, { seconds: 4.5 + Math.random(), drag: 2.4, drop: 34, grain: 7, level: 0.8 }, 0.05)
+      sound = 'firework-big'
+    } else if (kind === 'palm') {
+      // Seven arms, each a loose fan of sparks thrown up and out, drooping as they fall.
+      for (const dir of sphereDirections(7)) {
+        dir.addScaledVector(basis.up, 0.6).normalize()
+        for (let i = 0; i < 12; i++) {
+          const spread = dir.clone().add(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.16)).normalize()
+          streak(spread, R * 1.7 * (0.6 + Math.random() * 0.4), 4, { seconds: 2.6 + Math.random() * 0.4, drop: 40, grain: 8 })
+        }
+      }
+    } else if (kind === 'crossette') {
+      // Six bright stars fly out and each splits in four a moment later.
+      for (const dir of sphereDirections(6)) {
+        const velocity = dir.clone().multiplyScalar(R * 1.3)
+        const opts = { drag: 1.6, drop: 14 }
+        fireworks.emit(at, velocity, { now: time, color, color2: color, grain: 13, seconds: 0.85, ...opts })
+        const split = fireworks.at(at, velocity, opts, 0.85, new THREE.Vector3())
+        later(0.85, () => {
+          for (const piece of sphereDirections(5)) fireworks.emit(split, piece.multiplyScalar(R * 0.9), { now: time, color: color2, color2: color, grain: 9, seconds: 1.4, drop: 18 })
+          onSound?.('firework-crackle')
+        })
+      }
+    } else if (kind === 'heart') {
+      for (let i = 0; i < 110; i++) {
+        const a = (i / 110) * Math.PI * 2
+        const x = 16 * Math.pow(Math.sin(a), 3)
+        const y = 13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a)
+        spark(flat(x / 17, y / 17), R * 1.7, { seconds: 2.6, drop: 6, grain: 10, color: FIREWORK_COLORS[0][0], color2: FIREWORK_COLORS[0][1] })
+      }
+    } else if (kind === 'star') {
+      for (let i = 0; i < 110; i++) {
+        // Round the outline of a five-pointed star, point up.
+        const u = (i / 110) * 10
+        const k = Math.floor(u)
+        const corner = (n) => {
+          const a = Math.PI / 2 + (n * Math.PI) / 5
+          const r = n % 2 ? 0.42 : 1
+          return [Math.cos(a) * r, Math.sin(a) * r]
+        }
+        const [ax, ay] = corner(k)
+        const [bx, by] = corner(k + 1)
+        const f = u - k
+        spark(flat(ax + (bx - ax) * f, ay + (by - ay) * f), R * 1.8, { seconds: 2.6, drop: 6, grain: 10, color: FIREWORK_GOLD[0], color2: color })
+      }
+    } else if (kind === 'strobe') {
+      for (const dir of sphereDirections(120)) spark(dir, R * 1.1 * (0.6 + Math.random() * 0.4), { seconds: 3 + Math.random(), drop: 10, color: WHITE, color2: color, strobe: 9 + Math.random() * 6, grain: 8 })
+      sound = 'firework-crackle'
+    } else if (kind === 'saturn') {
+      for (const dir of sphereDirections(80)) spark(dir, R * 1.1, { seconds: 2.2, drop: 16 })
+      const other = FIREWORK_COLORS[Math.floor(Math.random() * FIREWORK_COLORS.length)]
+      const normal = basis.forward.clone().applyAxisAngle(basis.right, 1.1)
+      const e1 = new THREE.Vector3().crossVectors(normal, basis.up).normalize()
+      const e2 = new THREE.Vector3().crossVectors(normal, e1)
+      for (let i = 0; i < 80; i++) {
+        const a = (i / 80) * Math.PI * 2
+        spark(e1.clone().multiplyScalar(Math.cos(a)).addScaledVector(e2, Math.sin(a)), R * 1.9, { seconds: 2.6, drop: 10, color: other[0], color2: other[1] })
+      }
+    } else if (kind === 'double') {
+      const other = FIREWORK_COLORS[Math.floor(Math.random() * FIREWORK_COLORS.length)]
+      for (const dir of sphereDirections(70)) spark(dir, R * 0.9, { seconds: 2, drop: 18, color: other[0], color2: other[1] })
+      for (const dir of sphereDirections(120)) spark(dir, R * 1.8, { seconds: 2.5, drop: 22 })
+    }
+    onSound?.(sound)
   }
 
   // Six comets in pastel colours, one after another from beside the viewer, each steered
@@ -1321,6 +1511,10 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     if (!whalePass) {
       whale.visible = false
       if (shown <= 0 || reduceMotion || time < nextWhale) return
+      if (time < skyQuietUntil || Object.values(creatures).some((c) => c.pass)) {
+        nextWhale = time + 20 + Math.random() * 30
+        return
+      }
       // It comes round where the camera is looking, so it's seen.
       const ahead = camera.getWorldDirection(tmp).multiplyScalar(GALAXY_RADIUS * 2).add(camera.position)
       const look = Math.atan2(ahead.z, ahead.x)
@@ -1331,6 +1525,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     if (k >= 1) {
       whalePass = null
       nextWhale = time + 240 + Math.random() * 180
+      skyQuietUntil = time + 40 + Math.random() * 30
       return
     }
     const angle = whalePass.from + whalePass.dir * k * 1.1
@@ -1348,6 +1543,162 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       onSound?.('whale')
       onPlay?.({ type: 'whale' })
     }
+  }
+
+  function stepCreatures(dt) {
+    let busy = Boolean(whalePass) || Object.values(creatures).some((c) => c.pass)
+    for (const [kind, creature] of Object.entries(creatures)) {
+      const shown = decorFade?.[kind] ?? 1
+      if (!creature.pass) {
+        creature.object.visible = false
+        if (shown <= 0 || reduceMotion || time < creature.next) continue
+        if ((busy || time < skyQuietUntil) && !creature.called) {
+          creature.next = time + 20 + Math.random() * 30
+          continue
+        }
+        creature.called = false
+        creature.pass = startPass(creature)
+        busy = true
+      }
+      const k = (time - creature.pass.start) / creature.pass.duration
+      if (k >= 1) {
+        creature.pass = null
+        creature.object.visible = false
+        creature.next = time + creature.every[0] + Math.random() * (creature.every[1] - creature.every[0])
+        skyQuietUntil = time + 40 + Math.random() * 30
+        continue
+      }
+      creature.object.visible = true
+      creature.move(creature.pass, k, dt, shown * smooth(0, 0.1, k) * (1 - smooth(0.9, 1, k)))
+      if (!creature.pass.seen && k > 0.3) {
+        creature.pass.seen = true
+        onSound?.(kind)
+        onPlay?.({ type: kind })
+      }
+    }
+    sparks.step(time)
+  }
+
+  // A pass starts a little behind where the camera is looking, to come round in front of it.
+  function startPass(creature) {
+    const ahead = camera.getWorldDirection(tmp).multiplyScalar(GALAXY_RADIUS * 2).add(camera.position)
+    const look = Math.atan2(ahead.z, ahead.x)
+    const dir = Math.random() < 0.5 ? 1 : -1
+    const pass = { start: time, dir, seen: false, ...creature.begin() }
+    pass.from = look - dir * pass.span * 0.45
+    pass.radius *= GALAXY_RADIUS
+    return pass
+  }
+
+  // Where a creature is k of the way on its pass: round a ring outside the galaxy, at its
+  // height and what it rises or falls by there; `out` and `up` move it off the ring.
+  function passPoint(pass, k, target, out = 0, up = 0) {
+    const angle = pass.from + pass.dir * k * pass.span
+    const r = pass.radius + out
+    return target.set(Math.cos(angle) * r, pass.height + up + pass.lift(k), Math.sin(angle) * r)
+  }
+
+  // Up over an arch and down again, as if over a rainbow, with one behind it: a band of
+  // each colour from its flanks, one above another.
+  function moveUnicorn(pass, k, dt, alpha) {
+    const horse = creatures.unicorn.object
+    passPoint(pass, k, horse.position)
+    horse.lookAt(passPoint(pass, k + 0.01, skyNext))
+    horse.material.uniforms.uRun.value += dt * 9
+    horse.material.uniforms.uAlpha.value = alpha
+    pass.dust = (pass.dust ?? 0) + dt
+    if (pass.dust < 0.035 || alpha < 0.05) return
+    pass.dust = 0
+    horse.updateMatrixWorld()
+    RIBBON.forEach((color, i) => {
+      skyAt.set((Math.random() - 0.5) * 2, (0.13 - i * 0.032) * UNICORN_LENGTH, -0.3 * UNICORN_LENGTH)
+      const jitter = () => (Math.random() - 0.5) * 0.6
+      sparks.emit(horse.localToWorld(skyAt), color, alpha * 0.5, { now: time, seconds: 6 + Math.random() * 2, grain: 5, move: [jitter(), jitter(), jitter()] })
+    })
+  }
+
+  // Four dolphins a little apart, each leaping out of the dark and back in, again and
+  // again; where one goes back in, a splash of light.
+  const POD = [[0, 0, 0], [12, 7, 0.03], [-11, -5, 0.055], [22, 12, 0.08]] // further out, higher, how far behind
+  function moveDolphins(pass, k, dt, alpha) {
+    pod.children.forEach((fish, i) => {
+      const [out, up, behind] = POD[i]
+      const q = k - behind
+      const arc = (at) => Math.abs(Math.sin(at * pass.leaps * Math.PI + i * 0.35)) * 0.85 * DOLPHIN_LENGTH
+      passPoint(pass, q, fish.position, out, up + arc(q))
+      fish.lookAt(passPoint(pass, q + 0.004, skyNext, out, up + arc(q + 0.004)))
+      const u = fish.material.uniforms
+      u.uSwim.value += dt * 7
+      u.uAlpha.value = q < 0 ? 0 : alpha * smooth(0.02, 0.25, arc(q) / (0.85 * DOLPHIN_LENGTH))
+      const leap = Math.floor((q * pass.leaps * Math.PI + i * 0.35) / Math.PI)
+      if (fish.userData.leap !== undefined && leap !== fish.userData.leap && q > 0 && alpha > 0.05) splash(fish.position, alpha)
+      fish.userData.leap = leap
+    })
+  }
+
+  function splash(at, alpha) {
+    for (let i = 0; i < 22; i++) {
+      const a = Math.random() * Math.PI * 2
+      const out = 2 + Math.random() * 4
+      sparks.emit(at, SPLASH[i % 3 ? 0 : 1], alpha * 0.6, { now: time, seconds: 1.6 + Math.random() * 0.8, grain: 2.2, move: [Math.cos(a) * out, 5 + Math.random() * 5, Math.sin(a) * out], drop: 4 })
+    }
+  }
+
+  // Three jellyfish drifting up, each beating to its own time, a beat lifting it a little.
+  const DRIFT = [[-0.06, 0, -30], [0.03, 14, 8], [0.1, -10, -12]] // further along, further out, higher
+  function moveJellyfish(pass, k, dt, alpha) {
+    jellies.children.forEach((jelly, i) => {
+      const [along, out, up] = DRIFT[i]
+      const u = jelly.material.uniforms
+      u.uPulse.value += dt * (2 + i * 0.25)
+      pass.rise[i] += dt * (0.3 + 1.6 * Math.pow(0.5 + 0.5 * Math.sin(u.uPulse.value), 3))
+      passPoint(pass, k + along, jelly.position, out, up + pass.rise[i])
+      jelly.rotation.set(Math.sin(time * 0.31 + i) * 0.12, 0, Math.cos(time * 0.27 + i * 2) * 0.12)
+      u.uAlpha.value = alpha
+    })
+  }
+
+  // The dragon rises and falls twice on its way, its pearl bobbing ahead of its nose.
+  function moveDragon(pass, k, dt, alpha) {
+    passPoint(pass, k, dragon.group.position)
+    dragon.group.lookAt(passPoint(pass, k + 0.01, skyNext))
+    dragon.body.material.uniforms.uSwim.value += dt * 2.4
+    dragon.body.material.uniforms.uAlpha.value = alpha
+    for (const s of [dragon.pearl, dragon.heart]) s.position.set(Math.sin(time * 0.9) * 3, 2 + Math.sin(time * 1.3) * 2.5, dragon.ahead)
+    dragon.pearl.material.opacity = alpha * 0.8
+    dragon.heart.material.opacity = alpha * 0.9
+  }
+
+  // The phoenix swoops down from high up and climbs again, embers falling from its wing
+  // tips and its plumes.
+  function movePhoenix(pass, k, dt, alpha) {
+    const bird = creatures.phoenix.object
+    passPoint(pass, k, bird.position)
+    bird.lookAt(passPoint(pass, k + 0.01, skyNext))
+    const u = bird.material.uniforms
+    u.uFlap.value += dt * 6.5
+    u.uAlpha.value = alpha
+    pass.dust = (pass.dust ?? 0) + dt
+    if (pass.dust < 0.04 || alpha < 0.05) return
+    pass.dust = 0
+    bird.updateMatrixWorld()
+    const flap = u.uFlap.value
+    const [tx, ty, tz] = bird.userData.tip
+    for (const side of [1, -1]) {
+      // The tip, swung about its shoulder the way the shader swings it.
+      const th = side * (0.6 * Math.sin(flap - 1.1) + 0.12)
+      const x = side * (tx - 2.6)
+      const y = ty - 1.4
+      skyAt.set(side * 2.6 + x * Math.cos(th) - y * Math.sin(th), 1.4 + x * Math.sin(th) + y * Math.cos(th) - Math.sin(flap) * 1.2, tz)
+      ember(bird.localToWorld(skyAt), alpha)
+    }
+    skyAt.set((Math.random() - 0.5) * 24, -10, -72)
+    ember(bird.localToWorld(skyAt), alpha)
+  }
+
+  function ember(at, alpha) {
+    const jitter = () => (Math.random() - 0.5) * 2
+    sparks.emit(at, EMBERS[Math.floor(Math.random() * EMBERS.length)], alpha * 0.7, { now: time, seconds: 2 + Math.random() * 1.5, grain: 2.4, move: [jitter(), -2 - Math.random() * 2, jitter()] })
   }
 
   // Work finished: from its planet a lantern of warm light floats up out of the disc,
@@ -1882,7 +2233,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     controls.enabled = false
     holeGoal = 1
     tip.hidden = true
-    ghost.querySelector('span').textContent = planet.item.planet
+    ghost.querySelector('span').textContent = shortName(planet.item.planet)
     ghost.dataset.status = planet.item.status
     ghost.classList.remove('held', 'near')
     ghost.hidden = false
@@ -2226,7 +2577,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     const spikes2 = sprite(tex.spikes, 11, 0)
     const hit = new THREE.Mesh(hitSphere, hitMaterial)
     hit.scale.setScalar(4.5)
-    const label = labelObject('gx-star', app)
+    const label = labelObject('gx-star', shortName(app), app)
     label.center.set(0.5, 0)
     const sparkles = Array.from({ length: 9 }, () => {
       const s = sprite(tex.glow, 1, 0)
@@ -2526,7 +2877,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     mesh.rotation.z = ((seed >>> 4) % 100) / 100 - 0.5
     const hit = new THREE.Mesh(hitSphere, hitMaterial)
     hit.scale.setScalar(2.6)
-    const label = labelObject('gx-planet', item.planet)
+    const label = labelObject('gx-planet', shortName(item.planet), item.planet)
     label.center.set(0.5, 0)
     label.element.prepend(Object.assign(document.createElement('i'), { className: 'ret' }))
     const beacons = [sprite(tex.ring, 1, 0), sprite(tex.ring, 1, 0)]
@@ -2568,7 +2919,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     planet.orbit.material.color.copy(tone)
     planet.orbit.material.opacity = !item.show ? (searching ? 0.015 : 0.04) : ALERT.has(item.status) ? 0.42 : item.status === 'working' ? 0.3 : 0.11
     for (const beacon of planet.beacons) beacon.material.color.copy(tone)
-    planet.label.element.querySelector('span').textContent = item.planet
+    planet.label.element.querySelector('span').textContent = shortName(item.planet)
+    planet.label.element.title = item.planet
     planet.label.element.dataset.status = item.status
     planet.label.element.classList.toggle('dim', !item.show)
     planet.label.element.classList.toggle('found', searching && item.show)
@@ -3596,6 +3948,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     stepJets(dt)
     stepAccretion(dt)
     stepWhale(dt)
+    stepCreatures(dt)
+    stepFireworks()
     stepLanterns()
     stepMeteors(now)
     stepEvents(dt)
@@ -3980,6 +4334,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       else if (kind === 'far-nova') cosmicEvent('nova')
       else if (kind === 'far-birth') cosmicEvent('birth')
       else if (kind === 'whale' && !whalePass) nextWhale = time
+      else if (creatures[kind] && !creatures[kind].pass) Object.assign(creatures[kind], { next: time, called: true })
+      else if (kind === 'fireworks') fireworkShow()
     },
     setDecor(flags = {}) {
       decorOn = flags
@@ -5882,6 +6238,680 @@ function spaceWhale(uniforms) {
   return mesh
 }
 
+// ---------- fireworks ----------
+
+// Shells' colours: where each spark starts and what it turns to as it burns down.
+const FIREWORK_COLORS = [
+  ['#ff7ac8', '#ffd1ec'],
+  ['#6fe8ff', '#d8fbff'],
+  ['#ffd36b', '#ff9a3d'],
+  ['#b38bff', '#ff8fd0'],
+  ['#7dffb0', '#e9fff2'],
+  ['#ff5f6d', '#ffb38a'],
+  ['#6f9bff', '#c7b8ff'],
+  ['#fff6e8', '#ffd9a8']
+].map((pair) => pair.map((c) => new THREE.Color(c)))
+const FIREWORK_GOLD = [new THREE.Color('#ffd889'), new THREE.Color('#ff9a3d')]
+const FIREWORK_LAUNCH = new THREE.Color('#ffe9c4')
+
+// The sparks of a stardust display. Each is written once where its shell bursts, with
+// its speed out, the two colours it burns between, how the air slows it (drag), how fast
+// it falls and whether it strobes; the shader flies it from there. A trail is the same
+// spark again, born a moment later, so it follows the same path a step behind.
+function fireworkSparks(capacity, uniforms) {
+  const fields = { position: 3, velocity: 3, tint: 3, tint2: 3, size: 1, born: 1, life: 1, drag: 1, fall: 1, strobe: 1 }
+  const arrays = Object.fromEntries(Object.entries(fields).map(([name, width]) => [name, new Float32Array(capacity * width)]))
+  arrays.born.fill(-1e6)
+  arrays.life.fill(1)
+  arrays.drag.fill(1)
+  const geometry = new THREE.BufferGeometry()
+  for (const [name, width] of Object.entries(fields)) geometry.setAttribute(name, new THREE.BufferAttribute(arrays[name], width))
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uScale: uniforms.uScale, uPixel: uniforms.uPixel, uTime: uniforms.uTime, uDown: { value: new THREE.Vector3(0, -1, 0) } },
+    vertexShader: `
+      attribute vec3 velocity; attribute vec3 tint; attribute vec3 tint2; attribute float size;
+      attribute float born; attribute float life; attribute float drag; attribute float fall; attribute float strobe;
+      uniform float uScale; uniform float uPixel; uniform float uTime; uniform vec3 uDown;
+      varying vec3 vTint; varying float vAlpha;
+      void main() {
+        float age = uTime - born;
+        float k = age / life;
+        // Out fast, slowed by the air, falling more and more.
+        vec3 p = position + velocity * (1.0 - exp(-drag * age)) / drag + uDown * fall * age * age * 0.5;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float d = max(0.001, -mv.z);
+        float on = step(0.0, k) * step(k, 1.0);
+        float blink = strobe > 0.0 ? step(0.45, fract(age * strobe + born * 7.31)) * 1.5 : 1.0;
+        vAlpha = on * pow(1.0 - clamp(k, 0.0, 1.0), 1.3) * blink * smoothstep(20.0, 120.0, d);
+        gl_PointSize = vAlpha < 0.002 ? 0.0 : clamp(size * (1.0 - 0.45 * k) * uScale / d, 0.0, 14.0 * uPixel);
+        vTint = mix(tint, tint2, smoothstep(0.2, 0.75, k));
+      }`,
+    fragmentShader: CREATURE_FRAGMENT,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+  const points = new THREE.Points(geometry, material)
+  points.frustumCulled = false
+  points.visible = false
+  let next = 0
+  let dirty = false
+  let lastsUntil = -1
+  return {
+    points,
+    down: material.uniforms.uDown.value,
+    // Where a spark is `age` seconds after it was born, worked out the way the shader does.
+    at(from, velocity, { drag, drop }, age, target) {
+      return target.copy(from).addScaledVector(velocity, (1 - Math.exp(-drag * age)) / drag).addScaledVector(material.uniforms.uDown.value, drop * age * age * 0.5)
+    },
+    emit(from, velocity, { now, color, color2 = color, level = 1, grain = 9, seconds = 2.4, drag = 1.6, drop = 14, strobe = 0 }) {
+      const i = next
+      next = (next + 1) % capacity
+      arrays.position.set([from.x, from.y, from.z], i * 3)
+      arrays.velocity.set([velocity.x, velocity.y, velocity.z], i * 3)
+      arrays.tint.set([color.r * level, color.g * level, color.b * level], i * 3)
+      arrays.tint2.set([color2.r * level, color2.g * level, color2.b * level], i * 3)
+      arrays.size[i] = grain
+      arrays.born[i] = now
+      arrays.life[i] = seconds
+      arrays.drag[i] = Math.max(0.001, drag)
+      arrays.fall[i] = drop
+      arrays.strobe[i] = strobe
+      dirty = true
+      lastsUntil = Math.max(lastsUntil, now + seconds)
+    },
+    step(now) {
+      points.visible = now < lastsUntil
+      if (!dirty) return
+      dirty = false
+      for (const attribute of Object.values(geometry.attributes)) attribute.needsUpdate = true
+    }
+  }
+}
+
+// Directions spread evenly over a sphere (a Fibonacci spiral), a little shaken.
+function sphereDirections(n, rand = Math.random) {
+  const out = []
+  const golden = Math.PI * (3 - Math.sqrt(5))
+  for (let i = 0; i < n; i++) {
+    const y = 1 - ((i + 0.5) / n) * 2
+    const r = Math.sqrt(1 - y * y)
+    const a = i * golden + rand() * 0.2
+    out.push(new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r))
+  }
+  return out
+}
+
+// ---------- creatures of the sky ----------
+
+const CREATURE_FRAGMENT = `
+  varying vec3 vTint; varying float vAlpha;
+  void main() {
+    vec2 c = gl_PointCoord - 0.5;
+    gl_FragColor = vec4(vTint * exp(-dot(c, c) * 14.0) * vAlpha, 1.0);
+  }`
+
+// A creature of light as points: where each point rests, its colour and size, and a
+// shader that moves them (`move`, GLSL working on `p`). `attributes` names more numbers
+// for each point (1 to 3 wide) and `own` the creature's own uniforms, all floats. Faded
+// out right in front of the camera, like the whale, so the camera can pass through one.
+function creaturePoints(points, { uniforms, attributes = {}, own = {}, functions = '', move = '', cap = 9 }) {
+  const n = points.length
+  const position = new Float32Array(n * 3)
+  const tint = new Float32Array(n * 3)
+  const size = new Float32Array(n)
+  const extra = Object.entries(attributes).map(([name, width]) => [name, width, new Float32Array(n * width)])
+  points.forEach((point, i) => {
+    position.set(point.p, i * 3)
+    tint.set([point.c.r, point.c.g, point.c.b], i * 3)
+    size[i] = point.s
+    for (const [name, width, array] of extra) {
+      const value = point[name] ?? (width === 1 ? 0 : new Array(width).fill(0))
+      array.set(width === 1 ? [value] : value, i * width)
+    }
+  })
+  const geometry = geometryOf(position, tint, size)
+  for (const [name, width, array] of extra) geometry.setAttribute(name, new THREE.BufferAttribute(array, width))
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uScale: uniforms.uScale, uPixel: uniforms.uPixel, uTime: uniforms.uTime, uAlpha: { value: 0 }, ...Object.fromEntries(Object.entries(own).map(([name, value]) => [name, { value }])) },
+    vertexShader: `
+      attribute vec3 tint; attribute float size;
+      ${extra.map(([name, width]) => `attribute ${width === 1 ? 'float' : `vec${width}`} ${name};`).join(' ')}
+      uniform float uScale; uniform float uPixel; uniform float uTime; uniform float uAlpha;
+      ${Object.keys(own).map((name) => `uniform float ${name};`).join(' ')}
+      varying vec3 vTint; varying float vAlpha;
+      ${functions}
+      void main() {
+        vec3 p = position;
+        ${move}
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float d = max(0.001, -mv.z);
+        vAlpha = uAlpha * smoothstep(20.0, 120.0, d);
+        gl_PointSize = vAlpha < 0.002 ? 0.0 : clamp(size * uScale / d, 0.0, ${cap.toFixed(1)} * uPixel);
+        vTint = tint;
+      }`,
+    fragmentShader: CREATURE_FRAGMENT,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+  const mesh = new THREE.Points(geometry, material)
+  mesh.frustumCulled = false
+  return mesh
+}
+
+// A point on (mostly) or inside an ellipsoid round c with radii r.
+function onEllipsoid(rand, c, r, surface = 0.75) {
+  const u = rand() * 2 - 1
+  const a = rand() * Math.PI * 2
+  const s = Math.sqrt(1 - u * u)
+  const k = rand() < surface ? 1 : Math.cbrt(rand())
+  return [c[0] + r[0] * s * Math.cos(a) * k, c[1] + r[1] * u * k, c[2] + r[2] * s * Math.sin(a) * k]
+}
+
+// A point on (mostly) or inside a tube from a to b whose radius goes from r0 to r1, t of
+// the way along.
+function onTube(rand, a, b, r0, r1, t = rand(), surface = 0.75) {
+  const from = new THREE.Vector3(...a)
+  const axis = new THREE.Vector3(...b).sub(from)
+  const n = axis.clone().normalize()
+  const e1 = new THREE.Vector3().crossVectors(n, Math.abs(n.y) < 0.9 ? UP : X_AXIS).normalize()
+  const e2 = new THREE.Vector3().crossVectors(n, e1)
+  const r = (r0 + (r1 - r0) * t) * (rand() < surface ? 1 : Math.sqrt(rand()))
+  const angle = rand() * Math.PI * 2
+  return from.addScaledVector(axis, t).addScaledVector(e1, Math.cos(angle) * r).addScaledVector(e2, Math.sin(angle) * r).toArray()
+}
+
+const X_AXIS = new THREE.Vector3(1, 0, 0)
+// Pastel rainbow, red to violet: the unicorn's mane and tail.
+const PASTEL_RAINBOW = ['#ff9ac1', '#ffc29a', '#fff0a0', '#a8f5c4', '#9fd8ff', '#c3a8ff'].map((c) => new THREE.Color(c))
+// The bands of the rainbow a unicorn leaves behind, top to bottom.
+const RIBBON = ['#ff6f9f', '#ffaa6b', '#ffe86b', '#6bffa6', '#6bbcff', '#a87bff'].map((c) => new THREE.Color(c))
+// A dolphin's splash.
+const SPLASH = ['#bfe8ff', '#ffd6f0'].map((c) => new THREE.Color(c))
+// A phoenix's embers.
+const EMBERS = ['#ffd36b', '#ffa04d', '#ff6a4d', '#ff5f8f'].map((c) => new THREE.Color(c))
+
+function rainbowAt(u) {
+  const x = Math.max(0, Math.min(1, u)) * (PASTEL_RAINBOW.length - 1)
+  const i = Math.min(PASTEL_RAINBOW.length - 2, Math.floor(x))
+  return PASTEL_RAINBOW[i].clone().lerp(PASTEL_RAINBOW[i + 1], x - i)
+}
+
+// Dust the creatures leave: a unicorn's rainbow, dolphins' splashes, a phoenix's embers.
+// Each grain is written once where it starts, and the shader carries it on (drift), lets
+// it fall (fall), and fades it over its life; the oldest grain is reused for the next.
+function skyTrail(capacity, uniforms) {
+  const position = new Float32Array(capacity * 3)
+  const tint = new Float32Array(capacity * 3)
+  const size = new Float32Array(capacity)
+  const born = new Float32Array(capacity).fill(-1e6)
+  const life = new Float32Array(capacity).fill(1)
+  const drift = new Float32Array(capacity * 3)
+  const fall = new Float32Array(capacity)
+  const geometry = geometryOf(position, tint, size)
+  const attributes = { born: [born, 1], life: [life, 1], drift: [drift, 3], fall: [fall, 1] }
+  for (const [name, [array, width]] of Object.entries(attributes)) geometry.setAttribute(name, new THREE.BufferAttribute(array, width))
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uScale: uniforms.uScale, uPixel: uniforms.uPixel, uTime: uniforms.uTime },
+    vertexShader: `
+      attribute vec3 tint; attribute float size; attribute float born; attribute float life; attribute vec3 drift; attribute float fall;
+      uniform float uScale; uniform float uPixel; uniform float uTime;
+      varying vec3 vTint; varying float vAlpha;
+      void main() {
+        float age = uTime - born;
+        float k = age / life;
+        vec3 p = position + drift * age - vec3(0.0, fall * age * age, 0.0);
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float d = max(0.001, -mv.z);
+        float on = step(0.0, k) * step(k, 1.0);
+        vAlpha = on * pow(1.0 - clamp(k, 0.0, 1.0), 1.4) * (0.75 + 0.25 * sin(age * 11.0 + born * 37.0)) * smoothstep(20.0, 120.0, d);
+        gl_PointSize = vAlpha < 0.002 ? 0.0 : clamp(size * (1.0 + 0.5 * k) * uScale / d, 0.0, 7.0 * uPixel);
+        vTint = tint;
+      }`,
+    fragmentShader: CREATURE_FRAGMENT,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+  const points = new THREE.Points(geometry, material)
+  points.frustumCulled = false
+  points.visible = false
+  let next = 0
+  let dirty = false
+  let lastsUntil = -1
+  return {
+    points,
+    // A grain at `at` (world), its colour times `level`.
+    emit(at, color, level, { now, seconds = 3, grain = 2.4, move = [0, 0, 0], drop = 0 }) {
+      const i = next
+      next = (next + 1) % capacity
+      position.set([at.x, at.y, at.z], i * 3)
+      tint.set([color.r * level, color.g * level, color.b * level], i * 3)
+      size[i] = grain
+      born[i] = now
+      life[i] = seconds
+      drift.set(move, i * 3)
+      fall[i] = drop
+      dirty = true
+      lastsUntil = Math.max(lastsUntil, now + seconds)
+    },
+    step(now) {
+      points.visible = now < lastsUntil
+      if (!dirty) return
+      dirty = false
+      for (const attribute of Object.values(geometry.attributes)) attribute.needsUpdate = true
+    }
+  }
+}
+
+// A unicorn of light, about 80 units nose to tail, head towards +z: a pearly coat, a
+// golden horn twisting to its point, a mane and tail in pastel rainbow. It gallops in the
+// shader (uRun): each leg swings from its hip and folds at the knee on the way forward, a
+// beat after the last, the body rises and falls twice a stride, and the mane and tail
+// stream and ripple.
+const UNICORN_LENGTH = 80
+function unicorn(uniforms) {
+  const rand = mulberry32(5150)
+  const L = UNICORN_LENGTH
+  const points = []
+  const coat = new THREE.Color('#fbf6ff')
+  const shade = new THREE.Color('#ab9cff')
+  const gold = new THREE.Color('#ffe2a0')
+  // The coat is lit from above: pearl on the back, lavender underneath.
+  const hide = (p, more = {}) => points.push({ p, c: shade.clone().lerp(coat, smooth(-0.12 * L, 0.2 * L, p[1])).multiplyScalar(0.24 + rand() * 0.2), s: 1.4 + rand() * 1.5, leg: -1, ...more })
+  for (let i = 0; i < 900; i++) hide(onEllipsoid(rand, [0, 0.02 * L, -0.01 * L], [0.1 * L, 0.112 * L, 0.27 * L]))
+  for (let i = 0; i < 170; i++) hide(onEllipsoid(rand, [0, 0.035 * L, 0.19 * L], [0.094 * L, 0.108 * L, 0.1 * L]))
+  for (let i = 0; i < 170; i++) hide(onEllipsoid(rand, [0, 0.05 * L, -0.2 * L], [0.104 * L, 0.108 * L, 0.11 * L]))
+  for (let i = 0; i < 320; i++) hide(onTube(rand, [0, 0.08 * L, 0.2 * L], [0, 0.36 * L, 0.37 * L], 0.074 * L, 0.047 * L))
+  for (let i = 0; i < 230; i++) hide(onTube(rand, [0, 0.38 * L, 0.37 * L], [0, 0.29 * L, 0.54 * L], 0.05 * L, 0.031 * L))
+  for (let i = 0; i < 70; i++) hide(onEllipsoid(rand, [0, 0.283 * L, 0.548 * L], [0.033 * L, 0.03 * L, 0.036 * L]))
+  for (const side of [1, -1]) for (let i = 0; i < 16; i++) hide(onTube(rand, [side * 0.022 * L, 0.405 * L, 0.385 * L], [side * 0.03 * L, 0.468 * L, 0.36 * L], 0.012 * L, 0.002 * L))
+  for (const side of [1, -1]) points.push({ p: [side * 0.037 * L, 0.38 * L, 0.46 * L], c: new THREE.Color('#d8c8ff').multiplyScalar(1.2), s: 2.6, leg: -1 })
+  // The horn: two threads twisting up to a bright point.
+  const base = new THREE.Vector3(0, 0.43 * L, 0.43 * L)
+  const tip = new THREE.Vector3(0, 0.62 * L, 0.535 * L)
+  const axis = tip.clone().sub(base)
+  const across = new THREE.Vector3().crossVectors(axis.clone().normalize(), X_AXIS)
+  for (let i = 0; i < 120; i++) {
+    const t = Math.floor(i / 2) / 59
+    const angle = t * Math.PI * 5 + (i % 2) * Math.PI
+    const r = 0.014 * L * (1 - t) + 0.001 * L
+    const p = base.clone().addScaledVector(axis, t).addScaledVector(X_AXIS, Math.cos(angle) * r).addScaledVector(across, Math.sin(angle) * r)
+    points.push({ p: p.toArray(), c: gold.clone().lerp(WHITE, t * 0.6).multiplyScalar(0.7 + 0.3 * t), s: 2 + 0.6 * t, leg: -1 })
+  }
+  points.push({ p: tip.toArray(), c: gold.clone().lerp(WHITE, 0.6).multiplyScalar(1.4), s: 6, leg: -1 })
+  // Four legs from their hips, a golden hoof at the end of each.
+  const UPPER = 0.17 * L
+  const LOWER = 0.19 * L
+  ;[[0.05, 0.17], [-0.05, 0.17], [0.055, -0.2], [-0.055, -0.2]].forEach(([x, z], leg) => {
+    const pivot = [x * L, -0.05 * L, z * L]
+    const knee = [pivot[0], pivot[1] - UPPER, pivot[2]]
+    const hoof = [pivot[0], knee[1] - LOWER, pivot[2]]
+    for (let i = 0; i < 120; i++) {
+      const lt = rand()
+      hide(lt <= 0.5 ? onTube(rand, pivot, knee, 0.034 * L, 0.02 * L, lt * 2) : onTube(rand, knee, hoof, 0.019 * L, 0.015 * L, lt * 2 - 1), { leg, lt, pivot })
+    }
+    for (let i = 0; i < 14; i++) points.push({ p: onEllipsoid(rand, [hoof[0], hoof[1] + 0.012 * L, hoof[2]], [0.02 * L, 0.014 * L, 0.022 * L]), c: gold.clone().multiplyScalar(0.9), s: 2.2, leg, lt: 1, pivot })
+  })
+  // The mane falls from the crest of the neck to both sides and streams back; a forelock
+  // falls over the brow.
+  const neckTop = new THREE.Vector3(0, 0.36 * L, 0.37 * L)
+  const neckFoot = new THREE.Vector3(0, 0.08 * L, 0.2 * L)
+  const crestward = new THREE.Vector3(0, 0.52, -0.85)
+  for (let i = 0; i < 460; i++) {
+    const u = rand()
+    const crest = neckTop.clone().lerp(neckFoot, u).addScaledVector(crestward, (0.047 + 0.027 * u) * L)
+    const side = rand() < 0.5 ? 1 : -1
+    const fall = new THREE.Vector3(side * 0.55, -0.35, -1).normalize()
+    const s = Math.pow(rand(), 0.8)
+    const length = (0.06 + 0.07 * Math.sin(Math.PI * Math.min(1, u * 1.2))) * L * (0.7 + 0.6 * rand())
+    const p = crest.addScaledVector(fall, length * s).add(new THREE.Vector3(gauss(rand), gauss(rand), gauss(rand)).multiplyScalar(0.006 * L))
+    points.push({ p: p.toArray(), c: rainbowAt(u).multiplyScalar(0.42 + 0.3 * (1 - s) + (rand() < 0.06 ? 0.5 : 0)), s: 1.6 + rand() * 1.1, leg: -1, flow: 0.2 + s, along: u * 1.5 + s })
+  }
+  for (let i = 0; i < 40; i++) {
+    const s = rand()
+    const p = [gauss(rand) * 0.012 * L, 0.43 * L - 0.035 * L * s, 0.4 * L + 0.07 * L * s]
+    points.push({ p, c: rainbowAt(0).multiplyScalar(0.5), s: 1.5, leg: -1, flow: 0.2 * s, along: s })
+  }
+  // The tail: a long plume, widening as it streams back and down.
+  const root = [0, 0.11 * L, -0.31 * L]
+  for (let i = 0; i < 480; i++) {
+    const s = Math.pow(rand(), 0.85)
+    const spread = (0.015 + 0.075 * s) * L * Math.sqrt(rand())
+    const a = rand() * Math.PI * 2
+    const p = [Math.cos(a) * spread * 0.8, root[1] - (0.04 * s + 0.16 * s * s) * L + Math.sin(a) * spread * 0.5, root[2] - 0.44 * L * s]
+    points.push({ p, c: rainbowAt(s).multiplyScalar(0.4 + 0.35 * (1 - s) + (rand() < 0.08 ? 0.5 : 0)), s: 1.6 + rand() * 1.2, leg: -1, flow: 0.3 + s, along: s * 1.6 })
+  }
+  return creaturePoints(points, {
+    uniforms,
+    attributes: { leg: 1, lt: 1, pivot: 3, flow: 1, along: 1 },
+    own: { uRun: 0 },
+    functions: `vec3 rotX(vec3 v, float a) { float c = cos(a); float s = sin(a); return vec3(v.x, v.y * c - v.z * s, v.y * s + v.z * c); }`,
+    move: `
+      if (leg > -0.5) {
+        // A rotary gallop: left fore, right fore, then the hind pair half a stride on.
+        float off = leg < 0.5 ? 0.0 : leg < 1.5 ? 0.55 : leg < 2.5 ? 3.0 : 3.6;
+        float front = step(leg, 1.5);
+        float a = -sin(uRun + off) * mix(0.5, 0.62, front);
+        float b = max(0.0, cos(uRun + off)) * mix(0.8, 1.25, front);
+        vec3 v = position - pivot;
+        vec3 knee = vec3(0.0, ${(-UPPER).toFixed(2)}, 0.0);
+        v = lt <= 0.5 ? rotX(v, a) : rotX(knee, a) + rotX(v - knee, a + b);
+        p = pivot + v;
+      }
+      p.y += sin(uRun * 2.0) * ${(0.018 * L).toFixed(2)};
+      p.x += sin(uTime * 3.1 - along * 4.0) * flow * ${(0.02 * L).toFixed(2)};
+      p.y += sin(uTime * 2.3 - along * 3.0 + 1.3) * flow * ${(0.015 * L).toFixed(2)};`
+  })
+}
+
+// A dolphin of light, about 40 units long, head towards +z: a beak and a rounded brow, a
+// curved fin on its back, flippers and flukes. Its flukes beat up and down (uSwim).
+const DOLPHIN_LENGTH = 40
+function dolphin(uniforms, rand) {
+  const L = DOLPHIN_LENGTH
+  const back = new THREE.Color('#8fb8ff')
+  const belly = new THREE.Color('#ffd0ec')
+  const points = []
+  // u: 0 at the beak, 1 at the flukes.
+  const girth = (u) => 0.085 * L * Math.pow(Math.sin(Math.PI * Math.min(1, u * 1.05 + 0.04)), 0.8) * (1 - 0.5 * smooth(0.6, 1, u))
+  const add = (p, u, bright = false) => points.push({ p, c: belly.clone().lerp(back, smooth(-0.04 * L, 0.05 * L, p[1])).multiplyScalar(bright ? 1.3 : 0.2 + rand() * 0.18), s: bright ? 2.6 : 1.3 + rand() * 1.3, along: u })
+  for (let i = 0; i < 700; i++) {
+    const u = 0.08 + rand() * 0.88
+    const r = girth(u) * (rand() < 0.75 ? 1 : Math.sqrt(rand()))
+    const a = rand() * Math.PI * 2
+    add([Math.cos(a) * r * 0.9, Math.sin(a) * r, (0.5 - u) * L], u)
+  }
+  for (let i = 0; i < 60; i++) {
+    const t = rand()
+    add(onTube(rand, [0, -0.01 * L, 0.42 * L], [0, -0.015 * L, 0.56 * L], 0.025 * L, 0.012 * L, t), 0.08 * (1 - t))
+  }
+  for (let i = 0; i < 60; i++) add(onEllipsoid(rand, [0, 0.025 * L, 0.38 * L], [0.05 * L, 0.05 * L, 0.06 * L]), 0.12)
+  // The fin on its back sweeps back as it rises.
+  for (let i = 0; i < 120; i++) {
+    const t = rand()
+    const w = rand()
+    const u = 0.4 + 0.15 * w * (1 - t) + 0.12 * t
+    add([(rand() - 0.5) * 0.008 * L, girth(0.45) * 0.95 + t * 0.11 * L, (0.5 - u) * L], u)
+  }
+  for (const side of [1, -1]) {
+    for (let i = 0; i < 50; i++) {
+      const t = rand()
+      add(onTube(rand, [side * girth(0.25) * 0.8, -0.03 * L, 0.25 * L], [side * 0.15 * L, -0.07 * L, 0.17 * L], 0.02 * L, 0.004 * L, t), 0.25 + 0.08 * t)
+    }
+    for (let i = 0; i < 60; i++) {
+      const t = rand()
+      add([side * 0.14 * L * t, gauss(rand) * 0.004 * L, -0.5 * L - 0.03 * L - t * t * 0.05 * L + (rand() - 0.5) * 0.03 * L * (1 - t)], 1)
+    }
+    add([side * 0.042 * L, 0.012 * L, 0.36 * L], 0.12, true)
+  }
+  return creaturePoints(points, {
+    uniforms,
+    attributes: { along: 1 },
+    own: { uSwim: 0 },
+    move: `p.y += sin(uSwim - along * 3.0) * along * along * ${(0.08 * L).toFixed(2)};`
+  })
+}
+
+// A jellyfish of light, its bell `radius` across, hanging along -y: a ribbed dome with a
+// frilled rim and four glowing loops inside, four frilled arms and sixteen long threads.
+// The bell beats (uPulse), quick to close and slow to open, and what hangs from it follows
+// a moment behind and sways.
+function jellyfish(uniforms, rand, rim, glow, radius) {
+  const R = radius
+  const points = []
+  const RIM = Math.PI * 0.52
+  const lip = R * 0.72 * Math.cos(RIM)
+  for (let i = 0; i < 900; i++) {
+    const th = Math.pow(rand(), 0.7) * RIM
+    const ph = rand() * Math.PI * 2
+    const rib = Math.pow(Math.abs(Math.cos(ph * 4)), 12)
+    const r = R * (rand() < 0.8 ? 1 : 0.85 + rand() * 0.15)
+    const edge = smooth(0.6, 1, th / RIM)
+    points.push({ p: [Math.sin(th) * Math.cos(ph) * r, Math.cos(th) * r * 0.72, Math.sin(th) * Math.sin(ph) * r], c: glow.clone().lerp(rim, edge).multiplyScalar(0.22 + 0.4 * edge + 0.35 * rib), s: 1.6 + rand() * 1.6 + 1.2 * edge, part: 0, ang: ph })
+  }
+  for (let i = 0; i < 260; i++) {
+    const ph = rand() * Math.PI * 2
+    const r = R * (1 + 0.06 * Math.sin(ph * 16))
+    points.push({ p: [Math.cos(ph) * r * Math.sin(RIM), lip - rand() * R * 0.08, Math.sin(ph) * r * Math.sin(RIM)], c: rim.clone().multiplyScalar(0.8), s: 2.4, part: 0, ang: ph })
+  }
+  // Four glowing loops under the crown, each standing up and leaning out, so they show
+  // as rings from the side as well as from below.
+  for (let i = 0; i < 160; i++) {
+    const loop = i % 4
+    const t = rand() * Math.PI * 2
+    const centre = (loop * Math.PI) / 2 + Math.PI / 4
+    const out = R * (0.26 + 0.11 * Math.cos(t))
+    const along = R * 0.07 * Math.sin(t)
+    points.push({ p: [Math.cos(centre) * out - Math.sin(centre) * along, R * (0.36 + 0.11 * Math.sin(t)), Math.sin(centre) * out + Math.cos(centre) * along], c: glow.clone().lerp(WHITE, 0.3).multiplyScalar(0.8), s: 2.1, part: 1, ang: centre })
+  }
+  for (let i = 0; i < 480; i++) {
+    const arm = i % 4
+    const s = rand()
+    const ph = (arm * Math.PI) / 2 + Math.PI / 4 + s * 1.2
+    const rr = R * (0.1 + 0.08 * Math.sin(s * Math.PI * 3)) + (rand() - 0.5) * R * 0.12 * (1 + s)
+    points.push({ p: [Math.cos(ph) * rr, -0.05 * R - s * 2.4 * R, Math.sin(ph) * rr], c: glow.clone().lerp(rim, s).multiplyScalar(0.45 - 0.25 * s), s: 1.5 + rand(), part: 2, hang: s, ang: ph })
+  }
+  for (let j = 0; j < 16; j++) {
+    const ph = (j / 16) * Math.PI * 2 + rand() * 0.1
+    const length = R * (3 + rand() * 1.8)
+    for (let i = 0; i < 44; i++) {
+      const s = i / 43
+      const r = R * Math.sin(RIM) * 0.98 * (1 - 0.1 * s)
+      points.push({ p: [Math.cos(ph) * r, lip - s * length, Math.sin(ph) * r], c: rim.clone().multiplyScalar(0.5 - 0.35 * s), s: 1.2 + (1 - s) * 0.8, part: 3, hang: s, ang: ph })
+    }
+  }
+  return creaturePoints(points, {
+    uniforms,
+    attributes: { part: 1, hang: 1, ang: 1 },
+    own: { uPulse: 0 },
+    move: `
+      float beat = pow(0.5 + 0.5 * sin(uPulse), 3.0);
+      if (part < 0.5) {
+        p.xz *= 1.0 - 0.2 * beat * smoothstep(0.0, ${R.toFixed(1)}, length(p.xz));
+        p.y *= 1.0 + 0.1 * beat;
+      } else if (part > 1.5) {
+        float lag = pow(0.5 + 0.5 * sin(uPulse - 1.2 - hang * 1.5), 3.0);
+        p.xz *= 1.0 - 0.17 * lag * (1.0 - hang * 0.6);
+        p.x += sin(uTime * 0.8 + hang * 4.0 + ang * 2.0) * hang * hang * ${(R * 0.45).toFixed(2)};
+        p.z += cos(uTime * 0.6 + hang * 3.4 + ang * 1.7) * hang * hang * ${(R * 0.45).toFixed(2)};
+        p.y += lag * hang * ${(R * 0.25).toFixed(2)};
+      }`
+  })
+}
+
+// A dragon of light, about 180 units long, head towards +z, chasing a glowing pearl (여의주)
+// a little ahead of it: a jade body with a golden belly and coral spines along its back,
+// antlers, long whiskers, a mane, four clawed legs and a flame of a tail. Its body ripples
+// in the shader (uSwim), the wave running back from the neck; the whiskers and mane stream.
+const DRAGON_LENGTH = 180
+function skyDragon(uniforms, glowMap) {
+  const rand = mulberry32(8888)
+  const L = DRAGON_LENGTH
+  const points = []
+  const jade = new THREE.Color('#5ff0c8')
+  const deep = new THREE.Color('#2a9cc8')
+  const belly = new THREE.Color('#ffe2a8')
+  const coral = new THREE.Color('#ff9f7a')
+  const gold = new THREE.Color('#ffe6a6')
+  const head = 0.5 * L + 8
+  const girth = (s) => 7 * (1 - 0.8 * Math.pow(s, 1.4)) + 0.5
+  const add = (p, c, s, along, flow = 0) => points.push({ p, c, s, along, flow })
+  for (let i = 0; i < 2700; i++) {
+    const s = 0.04 + 0.96 * Math.pow(rand(), 0.85)
+    const ph = rand() * Math.PI * 2
+    const r = girth(s) * (rand() < 0.75 ? 1 : Math.sqrt(rand()))
+    const under = Math.sin(ph) < -0.35
+    const scale = (((s * 70 + ph * 1.6) % 1) + 1) % 1 < 0.1
+    const c = (under ? belly.clone() : jade.clone().lerp(deep, s)).multiplyScalar((0.3 + rand() * 0.2) * (scale ? 1.8 : 1))
+    add([Math.cos(ph) * r, Math.sin(ph) * r * 0.9, (0.5 - s) * L], c, 1.4 + rand() * 1.4, s)
+  }
+  // Low fins along its back, each a little triangle leaning back.
+  for (let s = 0.06; s < 0.96; s += 0.03) {
+    const h = (2.4 + 1.6 * Math.sin(s * Math.PI)) * (1 - 0.5 * s)
+    const base = 3 * (1 - 0.5 * s)
+    for (let i = 0; i < 18; i++) {
+      const t = Math.sqrt(rand())
+      const across = (rand() - 0.5) * base * (1 - t)
+      add([0, girth(s) * 0.88 + h * t, (0.5 - s) * L - h * 0.6 * t + across], coral.clone().lerp(gold, t).multiplyScalar(0.3 + 0.25 * t), 1.5 + 0.6 * t, s)
+    }
+  }
+  // The head: skull, snout and jaw, gold eyes.
+  for (let i = 0; i < 420; i++) add(onEllipsoid(rand, [0, 1.6, head], [6.2, 4.8, 11]), jade.clone().multiplyScalar(0.4 + rand() * 0.15), 1.5 + rand() * 1.2, 0)
+  for (let i = 0; i < 200; i++) add(onEllipsoid(rand, [0, 0.6, head + 10], [4.5, 3.4, 7]), jade.clone().lerp(belly, 0.3).multiplyScalar(0.42), 1.4 + rand(), 0)
+  for (let i = 0; i < 130; i++) add(onEllipsoid(rand, [0, -2.2, head + 7], [3.9, 1.7, 8.4]), belly.clone().multiplyScalar(0.38), 1.3 + rand(), 0)
+  for (const side of [1, -1]) {
+    add([side * 4.6, 3.4, head + 4], gold.clone().multiplyScalar(1.5), 4.5, 0)
+    // Antlers, each with a tine.
+    for (let i = 0; i < 50; i++) add(onTube(rand, [side * 3.4, 5.3, head - 1.5], [side * 7, 14.7, head - 14], 0.9, 0.25, rand(), 0.6), gold.clone().multiplyScalar(0.75), 1.8, 0)
+    for (let i = 0; i < 20; i++) add(onTube(rand, [side * 5, 9.8, head - 7], [side * 5.9, 15.4, head - 4], 0.6, 0.18, rand(), 0.6), gold.clone().multiplyScalar(0.75), 1.6, 0)
+    // Whiskers trailing from the snout.
+    for (let i = 0; i < 60; i++) {
+      const s = i / 59
+      add([side * (4.2 + 12 * s), -1.4 - 5.6 * s + 4 * Math.sin(3 * s), head + 14 - 46 * s], gold.clone().lerp(WHITE, 0.3).multiplyScalar(0.55 - 0.25 * s), 1.4, 0.02, s)
+    }
+    // Legs: a thigh, a shin, three claws reaching forward.
+    for (const at of [0.17, 0.6]) {
+      const r = girth(at)
+      const z = (0.5 - at) * L
+      const hip = [side * r * 0.9, -r * 0.4, z]
+      const knee = [side * (r + 3), -r - 3, z + 2]
+      const foot = [side * (r + 4), -r - 6, z + 5]
+      for (let i = 0; i < 24; i++) add(onTube(rand, hip, knee, 1.3, 0.9), jade.clone().multiplyScalar(0.38), 1.4, at)
+      for (let i = 0; i < 20; i++) add(onTube(rand, knee, foot, 0.9, 0.6), jade.clone().multiplyScalar(0.38), 1.4, at)
+      for (let claw = -1; claw <= 1; claw++) for (let i = 0; i < 6; i++) add([foot[0] + claw * 0.9 * side + (i / 5) * claw * 0.6 * side, foot[1] - (i / 5) * 0.8, foot[2] + (i / 5) * 2.2], gold.clone().multiplyScalar(0.8), 1.3, at)
+    }
+  }
+  // A mane round the neck, streaming back like flame.
+  for (let i = 0; i < 300; i++) {
+    const s = 0.02 + rand() * 0.14
+    const ph = Math.PI * (0.15 + rand() * 0.7)
+    const r = girth(s)
+    const t = Math.pow(rand(), 0.8)
+    const length = 8 + rand() * 8
+    const out = new THREE.Vector3(Math.cos(ph) * 0.5, 0.6, -1).normalize()
+    add([Math.cos(ph) * r + out.x * length * t, Math.sin(ph) * r * 0.9 + out.y * length * t, (0.5 - s) * L + out.z * length * t], new THREE.Color('#ff8fa0').lerp(new THREE.Color('#ffc59a'), t).multiplyScalar(0.5 - 0.2 * t), 1.6, s, t * 0.8)
+  }
+  // The tail ends in a fan of flame.
+  for (let i = 0; i < 160; i++) {
+    const t = rand()
+    const spread = (rand() - 0.5) * 2 * t * 12
+    add([gauss(rand) * 0.6, spread, -0.5 * L - t * 16], coral.clone().lerp(gold, Math.abs(spread) / 12).multiplyScalar(0.55 - 0.25 * t), 1.6 + rand(), 1, t)
+  }
+  const body = creaturePoints(points, {
+    uniforms,
+    attributes: { along: 1, flow: 1 },
+    own: { uSwim: 0 },
+    move: `
+      float w = smoothstep(0.0, 0.18, along);
+      p.x += sin(uSwim - along * 7.5) * w * ${(0.07 * L).toFixed(2)};
+      p.y += sin(uSwim * 0.7 - along * 5.0 + 0.8) * w * ${(0.035 * L).toFixed(2)};
+      p.x += sin(uTime * 2.4 - flow * 5.0) * flow * 3.0;
+      p.y += cos(uTime * 1.9 - flow * 4.0) * flow * 2.0;`
+  })
+  const pearl = sprite(glowMap, 12, 0)
+  pearl.material.color.set('#fff3d0')
+  const heart = sprite(glowMap, 4.5, 0)
+  heart.material.color.set('#ffffff')
+  const group = new THREE.Group()
+  group.add(body, pearl, heart)
+  group.visible = false
+  return { group, body, pearl, heart, ahead: head + 42 }
+}
+
+// A phoenix of light, wings about 95 units across, head towards +z: a white-gold body, a
+// crest, wings of long feathers going gold to orange to rose at their tips, and five long
+// tail plumes each ending in an eye. Its wings beat in the shader (uFlap), the tips a
+// moment behind, the body dipping as they rise; the plumes stream and wave.
+function phoenix(uniforms) {
+  const rand = mulberry32(3131)
+  const points = []
+  const gold = new THREE.Color('#ffd36b')
+  const orange = new THREE.Color('#ff8a3d')
+  const rose = new THREE.Color('#ff4d6d')
+  const violet = new THREE.Color('#b07cff')
+  const pale = new THREE.Color('#fff1c4')
+  const add = (p, c, s, more = {}) => points.push({ p, c, s, ...more })
+  for (let i = 0; i < 380; i++) add(onEllipsoid(rand, [0, 0, 0], [3.4, 3.4, 11]), pale.clone().multiplyScalar(0.45 + rand() * 0.2), 1.5 + rand() * 1.2)
+  for (let i = 0; i < 120; i++) add(onTube(rand, [0, 1.5, 9], [0, 4.8, 15], 2.4, 1.8), pale.clone().multiplyScalar(0.45), 1.5)
+  for (let i = 0; i < 120; i++) add(onEllipsoid(rand, [0, 5.2, 16.5], [2.6, 2.6, 3.2]), pale.clone().multiplyScalar(0.5), 1.5)
+  for (let i = 0; i < 30; i++) add(onTube(rand, [0, 4.6, 19.2], [0, 3.4, 23], 0.9, 0.1), gold.clone().lerp(orange, 0.4).multiplyScalar(0.9), 1.4)
+  for (const side of [1, -1]) add([side * 1.9, 5.8, 18], new THREE.Color('#fff8e0').multiplyScalar(1.4), 2.6)
+  for (let j = 0; j < 3; j++) {
+    for (let i = 0; i < 30; i++) {
+      const s = i / 29
+      add([(j - 1) * 1.2 * s, 7.3 + 9 * s, 15.5 - 7 * s - 2 * s * s + j * 0.8], gold.clone().lerp(rose, s).multiplyScalar(0.5 + 0.4 * s), 1.4 + s, { flow: s * 0.6, along: j })
+    }
+  }
+  // Wings: rows of feathers fanning from the arm, the outer ones longest.
+  const ARM = 24
+  for (const side of [1, -1]) {
+    for (let j = 0; j < 24; j++) {
+      const u = j / 23
+      const root = [side * (2.6 + u * ARM), 1.4 + Math.sin(u * Math.PI) * 2.2, 3 + u * 5 - u * u * 7]
+      const angle = 0.12 + u * 1.15
+      const dir = [side * Math.sin(angle), -0.05, -Math.cos(angle)]
+      const length = 6 + 13 * Math.pow(u, 1.4) + 3
+      for (let i = 0; i < 36; i++) {
+        const t = rand()
+        const width = 0.6 * (1 - t) + 0.2
+        const p = [root[0] + dir[0] * length * t + gauss(rand) * width * 0.3, root[1] + dir[1] * length * t + gauss(rand) * 0.15, root[2] + dir[2] * length * t + gauss(rand) * width]
+        const c = (t < 0.5 ? gold.clone().lerp(orange, t * 2) : orange.clone().lerp(rose, (t - 0.5) * 2)).lerp(rose, u * 0.3)
+        add(p, c.multiplyScalar(0.32 + 0.38 * t), 1.4 + rand(), { side, span: Math.min(1, (Math.abs(p[0]) - 2.6) / 46) })
+      }
+    }
+    for (let i = 0; i < 300; i++) {
+      const u = rand()
+      const angle = 0.12 + u * 1.15
+      const length = (6 + 13 * Math.pow(u, 1.4) + 3) * rand() * 0.35
+      const p = [side * (2.6 + u * ARM + Math.sin(angle) * length), 1.4 + Math.sin(u * Math.PI) * 2.2, 3 + u * 5 - u * u * 7 - Math.cos(angle) * length]
+      add(p, gold.clone().lerp(pale, 0.3).multiplyScalar(0.42), 1.5, { side, span: Math.min(1, (Math.abs(p[0]) - 2.6) / 46) })
+    }
+  }
+  // Five tail plumes, each ending in an eye.
+  for (let j = 0; j < 5; j++) {
+    const spread = (j - 2) / 2
+    const reach = 62 + 10 * (1 - Math.abs(spread))
+    const at = (s) => [spread * s * 16 + Math.sin(s * 3 + j) * 2, -s * 10 + Math.sin(s * 2.4 + j) * 3, -10 - s * reach]
+    for (let i = 0; i < 70; i++) {
+      const s = rand()
+      const c = s < 0.5 ? gold.clone().lerp(rose, s * 2) : rose.clone().lerp(violet, (s - 0.5) * 2)
+      add(at(s), c.multiplyScalar(0.3 + 0.25 * s), 1.4 + 0.8 * s, { flow: s, along: j })
+    }
+    const end = at(1)
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2
+      add([end[0] + Math.cos(a) * 2.2, end[1] + Math.sin(a) * 2.2, end[2]], gold.clone().multiplyScalar(0.8), 1.8, { flow: 1, along: j })
+    }
+    add(end, new THREE.Color('#7fe8ff').multiplyScalar(1.1), 3, { flow: 1, along: j })
+  }
+  const mesh = creaturePoints(points, {
+    uniforms,
+    attributes: { side: 1, span: 1, flow: 1, along: 1 },
+    own: { uFlap: 0 },
+    move: `
+      if (side != 0.0) {
+        float th = side * (0.6 * sin(uFlap - span * 1.1) + 0.12);
+        vec3 shoulder = vec3(side * 2.6, 1.4, 3.0);
+        vec3 v = p - shoulder;
+        float c = cos(th);
+        float s = sin(th);
+        p = shoulder + vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+      }
+      p.y -= sin(uFlap) * 1.2;
+      p.x += sin(uTime * 2.2 - flow * 5.0 + along) * flow * 5.0;
+      p.y += cos(uTime * 1.6 - flow * 4.0 + along) * flow * 3.5;`
+  })
+  // Where a wing's tip rests, on the right, for the embers it sheds.
+  const angle = 0.12 + 1.15
+  mesh.userData.tip = [2.6 + ARM + Math.sin(angle) * 22, 1.4 - 0.05 * 22, 3 + 5 - 7 - Math.cos(angle) * 22]
+  return mesh
+}
+
 // Fireflies round a star: points that wander slowly about where they were put and blink
 // each to its own beat, all in the shader. Positions are in units of the star's size.
 function fireflies(count, color, rand, uniforms) {
@@ -6165,11 +7195,20 @@ function sprite(map, scale, opacity) {
   return s
 }
 
-function labelObject(className, text) {
+// title: the whole text, on hover, when what shows is cut short.
+function labelObject(className, text, title = '') {
   const element = document.createElement('div')
   element.className = className
+  if (title && title !== text) element.title = title
   element.append(Object.assign(document.createElement('span'), { textContent: text }))
   return new CSS2DObject(element)
+}
+
+// Names in the sky are kept short: past LABEL_CHARS they are cut with "…".
+const LABEL_CHARS = 20
+function shortName(text) {
+  const chars = Array.from(String(text ?? ''))
+  return chars.length > LABEL_CHARS ? `${chars.slice(0, LABEL_CHARS - 1).join('')}…` : chars.join('')
 }
 
 function el(tag, text) {
