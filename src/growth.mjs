@@ -3,22 +3,26 @@
 // it), all the commits that branch holds, and its releases. Read from the repo's own
 // refs, never fetched or written; it moves when the user pulls or fetches.
 // Releases are GitHub's first: a repo on GitHub that has releases there counts those,
-// asked through the user's own `gh` (read only). Any other repo, or one the signed-in
-// account cannot see, or with GitHub out of reach, counts the tags on its default branch.
+// asked through the user's own `gh` (read only), as whichever of its signed-in accounts
+// can see the repo. Any other repo, or one none of them can see, or with GitHub out of
+// reach, counts the tags on its default branch.
 import { EventEmitter } from 'node:events'
 import { execFile } from 'node:child_process'
+import { findGh, githubAccounts } from './projects.mjs'
 
 const REFRESH_MS = 3 * 60_000
 const REMOTE_MS = 10 * 60_000 // GitHub is asked once in this long for each repo
+const ACCOUNTS_MS = 60 * 60_000 // gh's signed-in accounts are looked up again after this
 // Landings for each stage a star grows through; the page and the galaxy use the same.
 export const STAGES = [5, 20, 60, 150, 400]
 const RECENT = 12 // the latest landings, with what each one said
 const RELEASES = 12 // the latest releases
-// Tags moved along to whatever was built last, not releases of their own.
+// Tags (and GitHub releases) moved along to whatever was built last, not releases of
+// their own.
 const ROLLING = /(^|[-_/.])(latest|nightly|edge|canary)$/i
 
 export class Growth extends EventEmitter {
-  constructor({ paths, read = readGrowth, releases = githubReleases, refreshMs = REFRESH_MS, remoteMs = REMOTE_MS }) {
+  constructor({ paths, read = readGrowth, releases = releasesReader(), refreshMs = REFRESH_MS, remoteMs = REMOTE_MS }) {
     super()
     this.paths = paths
     this.read = read
@@ -186,11 +190,48 @@ export function githubRepo(url) {
   return match ? `${match[1]}/${match[2]}` : null
 }
 
-// A repo's published releases on GitHub, the newest first, asked through `gh` as the
-// account signed in to it: null when GitHub has no such repo for that account (a 403 is
-// more likely the rate limit, and is asked again like GitHub out of reach). Drafts
-// are not releases yet.
-export async function githubReleases(repo, gh = runGh) {
+// Asks for a repo's releases as each account gh is signed in to on this Mac until one
+// can see it, and keeps that account for the owner's other repos ("torderdev" as the
+// work account, the user's own repos as their own). Tokens stay in memory and reach gh
+// only through its environment. Null on a Mac without gh.
+export function releasesReader({ gh = findGh(), accounts = () => githubAccounts(gh), run = runGh } = {}) {
+  if (!gh) return null
+  const byOwner = new Map() // owner -> token of the account that sees its repos
+  let signedIn = { list: null, at: 0 }
+  // The active account first (githubAccounts lists it last).
+  const tokens = async () => {
+    if (!signedIn.list || Date.now() - signedIn.at > ACCOUNTS_MS) signedIn = { list: await accounts().catch(() => []), at: Date.now() }
+    return signedIn.list.map((a) => a.token).reverse()
+  }
+  // Null when no account can see the repo. An account in trouble (its token gone, or the
+  // owner's IP allow list shutting this network out) leaves the next to try; if none
+  // sees the repo then, the others' "not found" is no answer, and what GitHub said last
+  // is kept, so a star counted by GitHub at the office is not counted by tags at home.
+  return async function releases(repo) {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return null
+    const owner = repo.split('/')[0]
+    const known = byOwner.get(owner)
+    let trouble = null
+    for (const token of [...new Set([known, ...(await tokens())])].filter(Boolean)) {
+      try {
+        const found = await githubReleases(repo, (args) => run(gh, args, token))
+        if (!found) continue
+        byOwner.set(owner, token)
+        return found
+      } catch (error) {
+        trouble = error
+      }
+    }
+    if (trouble) throw trouble
+    return null
+  }
+}
+
+// A repo's published releases on GitHub, the newest first, asked through `gh`: null
+// when GitHub has no such repo for that account (a 403 is more likely the rate limit,
+// and is asked again like GitHub out of reach). Drafts are not releases yet, and
+// releases moved along to the latest build are not releases of their own.
+export async function githubReleases(repo, gh) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return null
   let out
   try {
@@ -200,6 +241,7 @@ export async function githubReleases(repo, gh = runGh) {
     throw error
   }
   return rows(out)
+    .filter(([name]) => !ROLLING.test(name))
     .map(([name, at, pre]) => ({ name, at: Date.parse(at) || null, pre: pre === 'true' }))
     .sort((a, b) => (b.at || 0) - (a.at || 0))
 }
@@ -217,9 +259,9 @@ function runGit(cwd, args) {
   })
 }
 
-function runGh(args) {
+function runGh(gh, args, token) {
   return new Promise((resolve, reject) => {
-    const env = { ...process.env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' }
-    execFile('gh', args, { timeout: 20_000, maxBuffer: 8 * 1024 * 1024, env }, (error, stdout, stderr) => (error ? reject(Object.assign(error, { stderr })) : resolve(stdout)))
+    const env = { ...process.env, GH_TOKEN: token, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' }
+    execFile(gh, args, { timeout: 20_000, maxBuffer: 8 * 1024 * 1024, env }, (error, stdout, stderr) => (error ? reject(Object.assign(error, { stderr })) : resolve(stdout)))
   })
 }

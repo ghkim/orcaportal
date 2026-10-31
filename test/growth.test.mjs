@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { readGrowth, Growth, STAGES, githubRepo, githubReleases } from '../src/growth.mjs'
+import { readGrowth, Growth, STAGES, githubRepo, githubReleases, releasesReader } from '../src/growth.mjs'
 
 function repo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-growth-'))
@@ -112,7 +112,7 @@ test("a repo's place on GitHub, and its releases there through gh", async () => 
   assert.equal(githubRepo(''), null)
 
   let args
-  const gh = async (a) => ((args = a), 'v1.0.0\t2026-01-02T00:00:00Z\tfalse\nv1.1.0-rc\t2026-03-04T00:00:00Z\ttrue\n')
+  const gh = async (a) => ((args = a), 'v1.0.0\t2026-01-02T00:00:00Z\tfalse\nmac-latest\t2026-05-06T00:00:00Z\tfalse\nv1.1.0-rc\t2026-03-04T00:00:00Z\ttrue\n')
   const releases = await githubReleases('k/r', gh)
   assert.ok(args.includes('repos/k/r/releases?per_page=100'))
   assert.deepEqual(releases, [
@@ -128,4 +128,40 @@ test("a repo's place on GitHub, and its releases there through gh", async () => 
     throw Object.assign(new Error('exit 1'), { stderr: 'error connecting to api.github.com' })
   }))
   assert.equal(await githubReleases('k/r; rm -rf', gh), null)
+})
+
+test("releases are asked as each signed-in account until one sees the repo, kept for its owner", async () => {
+  // gh lists the active account last; it is asked first.
+  const accounts = async () => [
+    { login: 'work', token: 'tw' },
+    { login: 'gone', token: 'tg' },
+    { login: 'me', token: 'tm' }
+  ]
+  const sees = { tm: ['me/app'], tw: ['corp/api', 'corp/web'], tg: [] }
+  const asked = []
+  const run = async (gh, args, token) => {
+    const repo = /repos\/(.+)\/releases/.exec(args.find((a) => a.startsWith('repos/')))[1]
+    asked.push(`${token}:${repo}`)
+    if (token === 'tg') throw Object.assign(new Error('exit 1'), { stderr: 'HTTP 401: Bad credentials' })
+    if (!sees[token].includes(repo)) throw Object.assign(new Error('exit 1'), { stderr: 'gh: Not Found (HTTP 404)' })
+    return `${repo}-v1\t2026-01-02T00:00:00Z\tfalse\n`
+  }
+  const releases = releasesReader({ gh: '/bin/gh', accounts, run })
+  assert.deepEqual((await releases('me/app')).map((r) => r.name), ['me/app-v1'])
+  assert.deepEqual(asked.splice(0), ['tm:me/app'])
+  // The work account's repos: past the active account, and past one whose token is gone.
+  assert.deepEqual((await releases('corp/api')).map((r) => r.name), ['corp/api-v1'])
+  assert.deepEqual(asked.splice(0), ['tm:corp/api', 'tg:corp/api', 'tw:corp/api'])
+  // Its owner's next repo goes straight to the account that saw the first.
+  await releases('corp/web')
+  assert.deepEqual(asked.splice(0), ['tw:corp/web'])
+  // No account sees it while one is in trouble: no answer yet, not "none".
+  await assert.rejects(releases('else/x'))
+  // No account sees it, every one answering: none.
+  const two = releasesReader({ gh: '/bin/gh', accounts: async () => [{ login: 'me', token: 'tm' }, { login: 'work', token: 'tw' }], run })
+  assert.equal(await two('else/x'), null)
+  // Every account in trouble is GitHub out of reach.
+  const down = releasesReader({ gh: '/bin/gh', accounts, run: async () => Promise.reject(new Error('offline')) })
+  await assert.rejects(down('me/app'))
+  assert.equal(releasesReader({ gh: null }), null)
 })
