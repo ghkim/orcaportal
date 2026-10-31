@@ -280,6 +280,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   let skyQuietUntil = 0 // after one has passed, a while before the next
   const skyAt = new THREE.Vector3()
   const skyNext = new THREE.Vector3()
+  const viewTurn = new THREE.Matrix4() // how the camera moved last frame on its own
+  let lastView = null // where it was then, the other way round
   const lanterns = [] // lit by finished work, rising out of the disc
   const hole = blackHole(tex.thinRing)
   camera.add(hole.group)
@@ -1617,6 +1619,37 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     })
   }
 
+  // Where `points` fall on screen as the camera looks now: the box round them in pixels,
+  // and how far ahead of the camera their middle is (none if any is behind it).
+  function seenBox(points) {
+    const ahead = camera.getWorldDirection(new THREE.Vector3())
+    const box = { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity, depth: 0 }
+    for (const p of points) {
+      const depth = tmp.copy(p).sub(camera.position).dot(ahead)
+      if (depth < 10) return { ...box, depth: 0 }
+      box.depth += depth / points.length
+      const seen = tmp.copy(p).project(camera)
+      const x = ((seen.x + 1) / 2) * size.width
+      const y = ((1 - seen.y) / 2) * size.height
+      Object.assign(box, { left: Math.min(box.left, x), right: Math.max(box.right, x), top: Math.min(box.top, y), bottom: Math.max(box.bottom, y) })
+    }
+    return box
+  }
+
+  // A shift across the view as it is now that centres the box round `points` on `across`
+  // and `down` of the free area beside the session pane (as parts of its width and
+  // height), so a passer comes in where it's seen best, wherever the camera looks.
+  function placeInView(points, across, down) {
+    const box = seenBox(points)
+    const shift = new THREE.Matrix4()
+    if (box.depth < 50) return shift
+    const perPixel = (box.depth * 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / fullView.height
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0)
+    const above = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1)
+    right.multiplyScalar((area.x + area.width * across - (box.left + box.right) / 2) * perPixel)
+    return shift.makeTranslation(right.addScaledVector(above, ((box.top + box.bottom) / 2 - (area.y + area.height * down)) * perPixel))
+  }
+
   // Who swims this time: three to five grown dolphins, each its own size, and now and
   // then a calf or two, each close at its mother's side, a little above her. The grown
   // ones are spread about the pod a body length or so apart, none near another, a mother
@@ -1659,18 +1692,44 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     return members
   }
 
+  // As the pod comes in, the whole way it swims is set in the middle of the view, a third
+  // of the way down. A way wider than the view is cut short to fit: the pod swims as fast
+  // and as far apart as ever, just not for as long.
+  function fitPod(pass) {
+    const route = (ks) => pass.members.flatMap((m) => ks.map((k) => passPoint(pass, k - m.behind, new THREE.Vector3(), m.out, m.up)))
+    const ALONG = [0.08, 0.3, 0.5, 0.7, 0.92]
+    const whole = seenBox(route(ALONG))
+    const pod = seenBox(route([0.5]))
+    const room = 0.85 * area.width
+    const wide = whole.right - whole.left
+    const podWide = pod.right - pod.left
+    if (whole.depth >= 50 && wide > room && wide > podWide) {
+      const fit = Math.max(0.4, (room - podWide) / (wide - podWide))
+      pass.span *= fit
+      pass.duration *= fit
+      pass.waves *= fit
+      for (const m of pass.members) {
+        m.behind /= fit
+        m.lag /= fit
+      }
+    }
+    return placeInView(route(ALONG), 0.5, 0.33)
+  }
+
   // The pod rises and falls on long, easy waves, each nose following its wave as the
   // whale's does. The ones behind are half a beat behind on the wave and each a little
   // off it, so they move as one pod without ever crossing. Over the top of each wave a
-  // little glitter comes off a back.
+  // little glitter comes off a back. They move along with the camera when it moves on
+  // its own, so it doesn't swing them out of view.
   function moveDolphins(pass, k, dt, alpha) {
+    pass.carry = (pass.carry ?? fitPod(pass)).premultiply(viewTurn)
     for (const { fish, out, up, behind, lag, own, weave: turn, beat } of pass.members) {
       const q = k - behind
       const wave = (at) => own + (at + lag) * pass.waves * Math.PI * 2
       const rise = (at) => Math.sin(wave(at)) * 0.45 * DOLPHIN_LENGTH
       const weave = (at) => Math.sin(wave(at) * 0.5 + turn) * 6
-      passPoint(pass, q, fish.position, out + weave(q), up + rise(q))
-      fish.lookAt(passPoint(pass, q + 0.004, skyNext, out + weave(q + 0.004), up + rise(q + 0.004)))
+      passPoint(pass, q, fish.position, out + weave(q), up + rise(q)).applyMatrix4(pass.carry)
+      fish.lookAt(passPoint(pass, q + 0.004, skyNext, out + weave(q + 0.004), up + rise(q + 0.004)).applyMatrix4(pass.carry))
       const u = fish.material.uniforms
       // Its flukes beat harder as it climbs and rest as it glides down; a calf's beat faster.
       u.uSwim.value += dt * beat * (1.8 + 1.2 * Math.max(0, Math.cos(wave(q))))
@@ -1712,13 +1771,23 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     })
   }
 
-  // Each beats to its own time, a beat lifting it a little.
+  // Each beats to its own time, a beat lifting it a little. They come in where they'll be
+  // seen best: halfway along, the swarm off to one side of the middle, clear of the core's
+  // jet, and a little over a quarter of the way down, with room above to rise into. They
+  // take a couple of minutes, long enough for the idle turn to swing the view most of the
+  // way round, so they move along with the camera when it moves on its own.
   function moveJellyfish(pass, k, dt, alpha) {
+    pass.carry ??= placeInView(
+      pass.members.map((m) => passPoint(pass, 0.5, new THREE.Vector3(), m.out, m.up).add(m.side)),
+      0.5 + (Math.random() < 0.5 ? -1 : 1) * (0.15 + Math.random() * 0.07),
+      0.28
+    )
+    pass.carry.premultiply(viewTurn)
     for (const m of pass.members) {
       const u = m.jelly.material.uniforms
       u.uPulse.value += dt * m.beat
       m.rise += dt * (0.3 + 1.6 * Math.pow(0.5 + 0.5 * Math.sin(u.uPulse.value), 3))
-      passPoint(pass, k, m.jelly.position, m.out, m.up + m.rise).add(m.side)
+      passPoint(pass, k, m.jelly.position, m.out, m.up + m.rise).add(m.side).applyMatrix4(pass.carry)
       m.jelly.rotation.set(Math.sin(time * 0.31 + m.sway) * 0.12, 0, Math.cos(time * 0.27 + m.sway * 2) * 0.12)
       u.uAlpha.value = alpha
     }
@@ -4039,6 +4108,13 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     controls.minDistance = flying ? 0 : inside ? 0.12 * s : 4
     controls.maxDistance = flying ? Infinity : inside ? 0.95 * s : 2200
     controls.update(dt)
+    // How the camera moved this frame with nobody moving it (the idle turn, the tour), for
+    // a slow passer in the sky to move along with and stay in view. When someone turns or
+    // flies it, the passer is left where it is.
+    camera.updateMatrixWorld()
+    viewTurn.identity()
+    if (lastView && !dragging && (controls.autoRotate || (cruising && (!flight || flight.cruise)))) viewTurn.multiplyMatrices(camera.matrixWorld, lastView)
+    lastView = (lastView ?? new THREE.Matrix4()).copy(camera.matrixWorld).invert()
     updateLabels()
     if (pointerDirty && !aim && !grab) hoverAt(pointer)
     composer.render()
