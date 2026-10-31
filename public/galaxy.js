@@ -2573,21 +2573,18 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
 
   // ---------- inside a star ----------
 
-  // The viewer can go into a star to work there. Its body (core, glow, spikes, dress)
-  // gives way to a thin shell of its light all round, thicker towards the edges of sight,
-  // its planets turn about the eye, and the galaxy shows through, the core straight ahead.
-  let inside = null // { system, shell, level, goal }
+  // The viewer can go into a star to look round. Its body (core, glow, spikes, dress)
+  // gives way to its inside, drawn by the same rule as its dress (see interior()): its
+  // walls, motes drifting through it, its heart, and the pull requests merged into it.
+  // Its planets turn about the eye, and the galaxy shows through, the core straight ahead.
+  let inside = null // { system, view }
 
   function enterStar(app) {
     const system = systems.get(app)
-    if (!system) return false
-    if (inside?.system === system) return true
+    if (!system) return null
+    if (inside?.system === system) return voiceOf(system)
     if (inside) leaveStar({ quiet: true })
-    const [a] = system.dress.colors.map((c) => new THREE.Color(c))
-    const shell = new THREE.Mesh(sphere, insideMaterial(system.color.clone().lerp(WHITE, 0.25), a, pointUniforms.uTime))
-    shell.frustumCulled = false
-    system.group.add(shell)
-    inside = { system, shell }
+    inside = { system, view: interior(system) }
     controls.minDistance = 0.12 * system.size
     controls.maxDistance = 0.95 * system.size
     flight = {
@@ -2595,28 +2592,33 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       fromTarget: controls.target.clone(),
       start: performance.now(),
       duration: reduceMotion ? 0 : FLY_MS * 1.4,
-      // Just off the centre on the far side from the galactic core, so the eye looks
-      // straight out at it, through the window, with the disc across the view.
+      // Behind the heart and a little above it, on the far side from the galactic core:
+      // the core straight ahead through the window, the heart just below it.
       end: () => {
         const at = system.group.getWorldPosition(tmp2).clone()
         const toCore = tmp.copy(at).negate().normalize()
         if (toCore.lengthSq() === 0) toCore.set(0, 0, -1)
-        return { target: at, position: at.clone().addScaledVector(toCore, -0.45 * system.size) }
+        const s = system.size
+        const target = at.clone().addScaledVector(toCore, 0.15 * s)
+        target.y += 0.06 * s
+        const position = at.clone().addScaledVector(toCore, -0.5 * s)
+        position.y += 0.16 * s
+        return { target, position }
       },
       system
     }
     follow = system
     onGlide?.((FLY_MS * 1.4) / 1000, 0)
-    return true
+    return voiceOf(system)
   }
 
   // Out of the star. With `fly` the camera goes back to the star's usual view; otherwise it
   // is already on its way somewhere else. The page hears unless it asked.
   function leaveStar({ quiet = false, fly = false } = {}) {
     if (!inside) return
-    const { system, shell } = inside
+    const { system, view } = inside
     inside = null
-    leftShells.push(shell)
+    leftViews.push(view)
     controls.minDistance = 4
     controls.maxDistance = 2200
     showStarBody(system)
@@ -2624,24 +2626,156 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     if (fly) flyToSystem(system)
   }
 
-  const leftShells = [] // shells of stars just left, fading before they go
+  const leftViews = [] // insides of stars just left, fading before they go
 
   function stepInside(dt) {
-    for (const shell of [...leftShells]) {
-      const level = shell.material.uniforms.uLevel
-      level.value = Math.max(0, level.value - dt * 2.5)
-      if (level.value > 0) continue
-      shell.removeFromParent()
-      shell.material.dispose()
-      leftShells.splice(leftShells.indexOf(shell), 1)
+    for (const view of [...leftViews]) {
+      view.level = Math.max(0, view.level - dt * 2.5)
+      if (view.level > 0) {
+        view.step(dt)
+        continue
+      }
+      view.dispose()
+      leftViews.splice(leftViews.indexOf(view), 1)
     }
     if (!inside) return
-    const { system, shell } = inside
-    // The shell lights as the camera passes through the surface.
-    const level = shell.material.uniforms.uLevel
-    if (camera.position.distanceTo(system.group.getWorldPosition(tmp)) < 1.3 * system.size) level.value = Math.min(1, level.value + dt * 1.2)
-    shell.scale.setScalar(1.25 * system.size)
+    const { system, view } = inside
+    // It lights as the camera passes through the surface.
+    if (camera.position.distanceTo(system.group.getWorldPosition(tmp)) < 1.3 * system.size) view.level = Math.min(1, view.level + dt * 1.2)
+    view.step(dt)
     hideStarBody(system)
+  }
+
+  // A star's inside, in units of its radius, turned with its planets' plane. The walls
+  // are its light all round (interiorMaterial), kept faint enough for the galaxy to show
+  // through and clear towards the galactic core. In the middle its heart, a little sun of
+  // its own light that beats twice a beat, quicker while its agents work and bigger the
+  // more work went into the star. On the wall above the way out, the pull requests merged
+  // into it, a constellation of gold with the branch each one was.
+  function interior(system) {
+    const look = system.dress
+    const [a, b] = look.colors.map((c) => new THREE.Color(c))
+    const light = system.color.clone().lerp(WHITE, 0.25)
+    const group = new THREE.Group()
+    const wall = new THREE.Mesh(sphere, interiorMaterial(look, a, b, light, pointUniforms.uTime))
+    wall.frustumCulled = false
+    const heart = new THREE.Mesh(sphere, starMaterial(look.seed, pointUniforms.uTime))
+    heart.material.uniforms.color.value.copy(light)
+    const halo = sprite(tex.glow, 1, 0)
+    halo.material.color.copy(a).lerp(WHITE, 0.35)
+    const beats = [sprite(tex.thinRing, 1, 0), sprite(tex.thinRing, 1, 0)]
+    for (const ring of beats) ring.material.color.copy(b).lerp(WHITE, 0.25)
+    const motes = interiorMotes(look, a, b, light, pointUniforms)
+    const sky = new THREE.Group() // the merged pull requests
+    group.add(wall, heart, halo, ...beats, motes.points, sky)
+    system.tilt.add(group)
+    const ahead = new THREE.Vector3()
+    let beat = 0
+    let mergedKey = null
+    let memories = []
+    let line = null
+
+    // One glint for each, along an arc above the way to the galactic core, joined in a line.
+    function placeMemories(merged) {
+      clearMemories()
+      const up = tmp3.copy(UP).addScaledVector(ahead, -ahead.y).normalize()
+      const side = tmp4.crossVectors(ahead, up)
+      const spots = merged
+        .map((planet) => {
+          const h = hash(planet.handle)
+          return { planet, yaw: ((h % 1000) / 1000 - 0.5) * 1.6, rise: 0.08 + (((h >>> 10) % 1000) / 1000) * 0.2, phase: (h % 628) / 100 }
+        })
+        .sort((p, q) => p.yaw - q.yaw)
+      for (const spot of spots) {
+        const glint = sprite(tex.spikes, 1, 0)
+        glint.material.color.set('#ffd98a')
+        glint.position
+          .copy(ahead)
+          .multiplyScalar(Math.cos(spot.rise) * Math.cos(spot.yaw))
+          .addScaledVector(side, Math.cos(spot.rise) * Math.sin(spot.yaw))
+          .addScaledVector(up, Math.sin(spot.rise))
+          .multiplyScalar(0.9)
+        const label = labelObject('gx-memory', `✦ ${spot.planet.item.mergeNote || spot.planet.item.planet || '합쳐진 작업'}`)
+        // Neighbours take turns above and below their glints, so their names don't overlap.
+        label.center.set(0.5, memories.length % 2 ? -0.6 : 1.6)
+        label.position.copy(glint.position)
+        sky.add(glint, label)
+        memories.push({ glint, label, phase: spot.phase })
+      }
+      if (memories.length > 1) {
+        line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(memories.map((m) => m.glint.position)), new THREE.LineBasicMaterial({ color: '#ffd98a', transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending }))
+        sky.add(line)
+      }
+    }
+
+    function clearMemories() {
+      for (const { glint, label } of memories) {
+        glint.material.dispose()
+        label.element.remove()
+        sky.remove(glint, label)
+      }
+      memories = []
+      if (line) {
+        line.geometry.dispose()
+        line.material.dispose()
+        sky.remove(line)
+        line = null
+      }
+    }
+
+    const view = {
+      level: 0,
+      step(dt) {
+        const level = smooth(0, 1, view.level)
+        const t = time + (system.seed % 100)
+        group.scale.setScalar(1.25 * system.size)
+        ahead.set(0, 0, 0)
+        group.worldToLocal(ahead).normalize()
+        wall.material.uniforms.uAhead.value.copy(ahead)
+        wall.material.uniforms.uLevel.value = level
+        const pulse = look.kind === 'pulsar' ? Math.pow(0.5 + 0.5 * Math.sin(t * 5.2), 8) : 0
+        wall.material.uniforms.uPulse.value = pulse
+        beat = (beat + dt * (system.busy >= 0.5 ? 1.25 : 0.7)) % 1
+        const thump = Math.exp(-Math.pow(beat / 0.05, 2)) + 0.6 * Math.exp(-Math.pow((beat - 0.2) / 0.05, 2))
+        const work = Math.min(1, Math.max(0, (Math.log10((system.stats?.tokens || 0) + 1) - 5) / 3))
+        const r = (0.006 + 0.007 * work) * (1 + 0.14 * thump)
+        // An opaque sun can't fade, so it shrinks away instead.
+        heart.scale.setScalar(Math.max(0.0001, r * level))
+        heart.material.uniforms.level.value = 2.2 + 1.4 * thump
+        halo.scale.setScalar(r * 16)
+        halo.material.opacity = level * (0.3 + 0.4 * thump)
+        beats.forEach((ring, i) => {
+          const k = (beat + 1 - i * 0.2) % 1
+          ring.scale.setScalar(r * (3 + 40 * Math.sqrt(k)))
+          ring.material.opacity = level * Math.pow(1 - k, 2) * 0.35
+        })
+        motes.step(dt, t, level, pulse, 1.25 * system.size)
+        const merged = system.planets.filter((p) => p.inside >= 0.99)
+        const key = merged.map((p) => `${p.handle}:${p.item.mergeNote}`).join('|')
+        if (key !== mergedKey) {
+          mergedKey = key
+          placeMemories(merged)
+        }
+        memories.forEach((m, i) => {
+          const shine = 0.55 + 0.45 * Math.pow(Math.max(0, Math.sin(t * 1.1 + m.phase * 3)), 4)
+          m.glint.material.opacity = level * shine
+          m.glint.material.rotation = t * 0.05 + i
+          m.glint.scale.setScalar(0.05 * (0.7 + 0.5 * shine))
+          m.label.element.style.opacity = String(level)
+        })
+        if (line) line.material.opacity = level * 0.28
+      },
+      dispose() {
+        clearMemories()
+        group.removeFromParent()
+        wall.material.dispose()
+        heart.material.dispose()
+        halo.material.dispose()
+        for (const ring of beats) ring.material.dispose()
+        motes.dispose()
+      }
+    }
+    return view
   }
 
   function starBody(system) {
@@ -2783,6 +2917,10 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
         flight?.fromTarget.add(delta)
         aim?.from.add(delta)
         aim?.to.add(delta)
+        // Inside a star the view also turns with the galaxy, so the core stays in the window.
+        if (inside?.system === follow && !flight) {
+          for (const v of [camera.position, controls.target]) v.sub(at).applyAxisAngle(UP, DISC_SPIN * dt).add(at)
+        }
       }
       follow.lastAt = (follow.lastAt || new THREE.Vector3()).copy(at)
     }
@@ -3474,8 +3612,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     lookOf: (app) => {
       const system = systems.get(app)
       if (!system) return null
-      const { name, time, bornAt } = system.dress
-      return { name, time, bornAt }
+      const { name, time, bornAt, kind } = system.dress
+      return { name, time, bornAt, kind, inside: INTERIORS[kind] }
     },
     overview,
     setArea(rect, { animate = false } = {}) {
@@ -4296,20 +4434,37 @@ function beamMaterial(color) {
 // disc, so as it turns they seem to drift slowly round it.
 // The inside of a star: its light on a shell all round the eye, faint where the eye looks
 // straight out and thicker towards the edges of sight, with granules drifting across it.
-function insideMaterial(color, tint, uTime) {
+// What a star's inside looks like, by the kind of its dress: the light its gas makes when
+// seen from within.
+const INTERIORS = {
+  bare: '일렁이는 플라스마 바다',
+  shell: '겹겹이 둘러싼 가스 고리',
+  wings: '양옆으로 펼친 빛의 날개',
+  rose: '꽃잎이 도는 천장',
+  aurora: '머리 위 오로라 커튼',
+  halo: '수평선을 두른 빛의 띠',
+  whirl: '머리 위로 도는 소용돌이',
+  pulsar: '훑고 지나가는 등대 빛',
+  prism: '무지갯빛 결정 벽'
+}
+
+// The walls of a star's inside: a sphere seen from within, its pattern drawn by the kind
+// of the star's dress in the star's two colours. Additive and faint, so the galaxy shows
+// through, and fainter still towards the galactic core (uAhead): a window out.
+function interiorMaterial(look, a, b, light, uTime) {
   return new THREE.ShaderMaterial({
-    uniforms: { uTime, uColor: { value: color }, uTint: { value: tint }, uLevel: { value: 0 } },
+    uniforms: { uTime, uA: { value: a }, uB: { value: b }, uLight: { value: light }, uLevel: { value: 0 }, uAhead: { value: new THREE.Vector3(0, 0, -1) }, uSeed: { value: look.seed }, uPetals: { value: look.petals }, uPulse: { value: 0 } },
+    defines: { [`KIND_${look.kind.toUpperCase()}`]: '' },
     vertexShader: `
-      varying vec3 vView; varying vec3 vDir;
+      varying vec3 vDir;
       void main() {
-        vDir = normalize(position);
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vView = mv.xyz;
-        gl_Position = projectionMatrix * mv;
+        vDir = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }`,
     fragmentShader: `
-      uniform float uTime; uniform vec3 uColor; uniform vec3 uTint; uniform float uLevel;
-      varying vec3 vView; varying vec3 vDir;
+      uniform float uTime; uniform vec3 uA; uniform vec3 uB; uniform vec3 uLight; uniform float uLevel;
+      uniform vec3 uAhead; uniform float uSeed; uniform float uPetals; uniform float uPulse;
+      varying vec3 vDir;
       float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
       float noise(vec3 p) {
         vec3 i = floor(p);
@@ -4318,20 +4473,291 @@ function insideMaterial(color, tint, uTime) {
         return mix(mix(mix(hash(i), hash(i + vec3(1.0, 0.0, 0.0)), f.x), mix(hash(i + vec3(0.0, 1.0, 0.0)), hash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
                    mix(mix(hash(i + vec3(0.0, 0.0, 1.0)), hash(i + vec3(1.0, 0.0, 1.0)), f.x), mix(hash(i + vec3(0.0, 1.0, 1.0)), hash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
       }
+      float fbm(vec3 p) { return 0.62 * noise(p) + 0.38 * noise(p * 2.03 + 7.1); }
       void main() {
-        // 0 straight ahead, about 0.25 at the corners of the screen.
-        float off = 1.0 - (-normalize(vView).z);
-        float edge = smoothstep(0.01, 0.24, off);
-        float g = 0.6 * noise(vDir * 7.0 + vec3(0.0, uTime * 0.04, 0.0)) + 0.4 * noise(vDir * 19.0 - vec3(uTime * 0.07));
-        vec3 col = mix(uColor, uTint, smoothstep(0.35, 0.75, g));
-        float a = uLevel * (0.01 + 0.09 * edge) * (0.5 + 0.8 * g);
-        gl_FragColor = vec4(col * a, 1.0);
+        vec3 d = normalize(vDir);
+        vec3 A = normalize(uAhead);
+        float t = uTime;
+        // Longitude round the planets' axis. atan(0, 0) is NaN on some GPUs.
+        float lon = abs(d.x) + abs(d.z) < 1e-5 ? 0.0 : atan(d.z, d.x);
+        float lat = asin(clamp(d.y, -1.0, 1.0));
+        // The star's own light everywhere, churning slowly.
+        float g = fbm(d * 3.5 + vec3(uSeed, t * 0.02, 0.0));
+        vec3 col = mix(uLight, uA, g) * 0.03 * (0.4 + g);
+        #ifdef KIND_BARE
+          // Its surface from below: cells of rising plasma with bright lanes between,
+          // and here and there a loop of it thrown up and falling back.
+          float cells = noise(d * 15.0 + vec3(0.0, t * 0.05, uSeed));
+          float lanes = 1.0 - smoothstep(0.0, 0.16, abs(cells - 0.5));
+          float big = fbm(d * 2.6 + vec3(t * 0.015, uSeed, 0.0));
+          col += mix(uA, uLight, big) * (0.035 + 0.15 * lanes * big);
+          float arc = 1.0 - smoothstep(0.0, 0.025, abs(noise(d * 2.2 + vec3(uSeed)) - 0.5));
+          col += uB * arc * 0.2 * smoothstep(0.45, 0.7, noise(d * 4.0 - vec3(t * 0.03)));
+        #endif
+        #ifdef KIND_SHELL
+          // Shells of gas one inside another: bands round the sky, one brighter than the rest.
+          float w = noise(d * 4.5 + vec3(uSeed, t * 0.02, 0.0));
+          float bands = pow(0.5 + 0.5 * cos(lat * 9.0 + w * 2.5 - t * 0.04), 5.0);
+          float bright = exp(-pow((lat - 0.32 * sin(uSeed)) / (0.045 + 0.02 * w), 2.0));
+          col += mix(uA, uB, 0.5 + 0.5 * sin(lat * 4.5)) * (bands * 0.13 * (0.4 + w) + bright * 0.24);
+        #endif
+        #ifdef KIND_WINGS
+          // Two wings of gas spread to either side of the way out, veined, brightest at the rim.
+          vec3 W = normalize(cross(vec3(0.0, 1.0, 0.0), A) + vec3(1e-4, 0.0, 0.0));
+          float x = abs(dot(d, W));
+          float y = d.y;
+          float width = 0.08 + 0.55 * sin(clamp(x * 1.6, 0.0, 1.0) * 1.5708) * (0.9 + 0.1 * sin(t * 0.25 + uSeed));
+          float lobe = (1.0 - smoothstep(width * 0.6, width, abs(y))) * smoothstep(0.1, 0.45, x);
+          float rim = 0.35 + 0.65 * smoothstep(width * 0.25, width * 0.9, abs(y));
+          float vein = 0.75 + 0.25 * sin(atan(y, x + 1e-4) * 14.0);
+          float n = fbm(d * 4.0 + vec3(uSeed, t * 0.02, 0.0));
+          col += mix(uA, uB, smoothstep(0.2, 0.95, x)) * lobe * rim * vein * (0.2 + 0.5 * n);
+        #endif
+        #ifdef KIND_ROSE
+          // Petals round the way out, two rings of them turning slowly against each other.
+          vec3 U = normalize(vec3(0.0, 1.0, 0.0) - A * A.y + vec3(0.0, 0.0, 1e-4));
+          vec3 V = cross(A, U);
+          float off = acos(clamp(dot(d, A), -1.0, 1.0));
+          float phi = atan(dot(d, V), dot(d, U) + 1e-5);
+          float turn = t * 0.015;
+          float p1 = pow(abs(cos((phi + turn) * uPetals * 0.5)), 3.0);
+          float p2 = pow(abs(cos((phi - turn * 0.7) * uPetals * 0.5 + 0.8)), 3.0);
+          float ring1 = smoothstep(0.35, 0.75, off) * (1.0 - smoothstep(0.9 + 0.35 * p1, 1.5 + 0.35 * p1, off));
+          float ring2 = smoothstep(0.9, 1.3, off) * (1.0 - smoothstep(1.6 + 0.4 * p2, 2.3 + 0.4 * p2, off));
+          float n = fbm(d * 5.0 + vec3(uSeed, t * 0.02, 0.0));
+          col += uA * ring1 * p1 * (0.1 + 0.2 * n) + uB * ring2 * p2 * (0.07 + 0.16 * n);
+        #endif
+        #ifdef KIND_AURORA
+          // Curtains hanging overhead, folding and swaying, one colour at the hem, the other above.
+          float sway = noise(d * 3.0 + vec3(0.0, 0.0, t * 0.06)) * 3.0;
+          float folds = pow(0.5 + 0.5 * sin(lon * 7.0 + sway), 2.0) * (0.55 + 0.45 * pow(0.5 + 0.5 * sin(lon * 23.0 + sway * 2.0 + t * 0.1), 3.0));
+          float curtain = smoothstep(-0.22, 0.04, d.y) * (1.0 - smoothstep(0.5 + 0.2 * noise(d * 6.0), 0.95, d.y));
+          col += mix(uA, uB, smoothstep(-0.1, 0.5, d.y)) * folds * curtain * 0.7;
+        #endif
+        #ifdef KIND_HALO
+          // A ring of light all round the horizon, in fine ringlets, a wide glow about it.
+          float n = noise(d * 9.0 + vec3(t * 0.05, uSeed, 0.0));
+          float band = exp(-pow(d.y / (0.05 + 0.025 * n), 2.0)) * (0.7 + 0.3 * sin(d.y * 140.0));
+          float wide = exp(-pow(d.y / 0.3, 2.0));
+          col += mix(uA, uB, 0.5 + 0.5 * sin(lon * 2.0 + t * 0.05)) * (band * 0.3 + wide * 0.05);
+        #endif
+        #ifdef KIND_WHIRL
+          // Spiral arms wheeling round the poles, overhead and underfoot.
+          float th = acos(clamp(abs(d.y), 0.0, 1.0));
+          float arms = pow(0.5 + 0.5 * cos(2.0 * lon - 5.0 * log(th + 0.05) - t * 0.15), 4.0);
+          float span = smoothstep(0.04, 0.35, th) * (1.0 - 0.6 * smoothstep(1.2, 1.57, th));
+          float n = fbm(d * 5.0 + vec3(uSeed, -t * 0.03, 0.0));
+          col += mix(uA, uB, smoothstep(0.2, 1.3, th)) * arms * span * (0.16 + 0.4 * n) + uLight * (1.0 - smoothstep(0.0, 0.25, th)) * 0.1;
+        #endif
+        #ifdef KIND_PULSAR
+          // Its beam sweeping round like a lighthouse's, and the gas flaring on each beat.
+          float m = abs(sin(lon - t * 1.4 - uSeed));
+          float beam = exp(-pow(m / 0.05, 2.0)) * (0.35 + 0.65 * cos(lat));
+          float n = fbm(d * 4.0 + vec3(uSeed, t * 0.02, 0.0));
+          col += uA * beam * 0.3 + mix(uA, uB, n) * (0.03 + 0.12 * uPulse) * n;
+        #endif
+        #ifdef KIND_PRISM
+          // Walls of cut crystal: facets, each its own colour of the rainbow, now and then
+          // one catching the light, and bright edges between.
+          vec3 p = d * 5.0;
+          vec3 i = floor(p);
+          vec3 f = fract(p);
+          float d1 = 8.0;
+          float d2 = 8.0;
+          vec3 cell = vec3(0.0);
+          for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
+            vec3 o = vec3(float(x), float(y), float(z));
+            vec3 h = fract(sin(vec3(dot(i + o, vec3(127.1, 311.7, 74.7)), dot(i + o, vec3(269.5, 183.3, 246.1)), dot(i + o, vec3(113.5, 271.9, 124.6)))) * 43758.5453);
+            vec3 c = o + h - f;
+            float dd = dot(c, c);
+            if (dd < d1) { d2 = d1; d1 = dd; cell = i + o; } else if (dd < d2) d2 = dd;
+          }
+          float edge = 1.0 - smoothstep(0.0, 0.1, sqrt(d2) - sqrt(d1));
+          float hue = hash(cell + uSeed);
+          vec3 rainbow = 0.5 + 0.5 * cos(6.2832 * (hue + vec3(0.0, 0.33, 0.67)) + t * 0.1);
+          float flash = pow(max(0.0, sin(t * (0.4 + hue) + hue * 40.0)), 24.0);
+          col += rainbow * (0.008 + 0.09 * flash) + mix(uA, vec3(1.0), 0.4) * edge * 0.05;
+        #endif
+        float window = 1.0 - 0.75 * smoothstep(0.8, 0.97, dot(d, A));
+        gl_FragColor = vec4(col * uLevel * window, 1.0);
       }`,
     side: THREE.BackSide,
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending
   })
+}
+
+// Motes drifting through a star's inside, moving the way its dress does: plasma sparks
+// rising from the heart, petals falling, glints of crystal winking, motes wheeling round
+// in its rings or spiralling in, or fluttering like moths. Positions are in units of the
+// star's radius; `unit` is that radius in the world, for the size of each mote.
+const MOTES = 220
+function interiorMotes(look, a, b, light, uniforms) {
+  const motion = { bare: 'rise', aurora: 'rise', pulsar: 'rise', shell: 'orbit', halo: 'orbit', whirl: 'spiral', wings: 'flutter', rose: 'fall', prism: 'glint' }[look.kind] || 'rise'
+  const shape = motion === 'fall' ? 'PETAL' : motion === 'glint' ? 'GLINT' : 'DOT'
+  const rand = mulberry32(Math.floor(look.seed * 1000) + 99)
+  const position = new Float32Array(MOTES * 3)
+  const tint = new Float32Array(MOTES * 3)
+  const size = new Float32Array(MOTES)
+  const alpha = new Float32Array(MOTES)
+  const spin = new Float32Array(MOTES)
+  const motes = Array.from({ length: MOTES }, () => ({ p: new THREE.Vector3(), v: new THREE.Vector3(), age: 0, life: 1, size: 1, phase: 0, rate: 1, radius: 0, angle: 0, height: 0 }))
+  const c = new THREE.Color()
+  const dir = new THREE.Vector3()
+
+  function spawn(m, i, first) {
+    m.age = first ? rand() * 8 : 0
+    m.phase = rand() * 100
+    m.rate = 0.6 + rand() * 1.2
+    if (motion === 'rise') {
+      dir.set(gauss(rand), gauss(rand), gauss(rand)).normalize()
+      m.p.copy(dir).multiplyScalar(0.05 + rand() * 0.1)
+      m.v.copy(dir).multiplyScalar(0.025 + rand() * 0.045)
+      m.life = 9 + rand() * 9
+      m.size = 0.006 + rand() * 0.01
+    } else if (motion === 'orbit' || motion === 'spiral') {
+      m.radius = 0.25 + rand() * 0.65
+      m.angle = rand() * Math.PI * 2
+      // Rings sit in the planets' plane; a shell's stand in bands above and below it.
+      m.height = motion === 'orbit' && look.kind === 'shell' ? Math.tan((Math.floor(rand() * 5) - 2) * 0.32) * m.radius : gauss(rand) * 0.03
+      m.life = Infinity
+      m.size = 0.005 + rand() * 0.009
+    } else if (motion === 'flutter') {
+      dir.set(gauss(rand), gauss(rand) * 0.5, gauss(rand)).normalize()
+      m.p.copy(dir).multiplyScalar(0.2 + rand() * 0.6)
+      m.v.set(gauss(rand), gauss(rand) * 0.3, gauss(rand)).normalize().multiplyScalar(0.02 + rand() * 0.02)
+      m.life = 10 + rand() * 12
+      m.size = 0.008 + rand() * 0.01
+    } else if (motion === 'fall') {
+      const r = Math.sqrt(rand()) * 0.7
+      const angle = rand() * Math.PI * 2
+      m.p.set(Math.cos(angle) * r, first ? rand() * 1.4 - 0.7 : 0.6 + rand() * 0.2, Math.sin(angle) * r)
+      m.v.set(0, -(0.018 + rand() * 0.02), 0)
+      m.life = Infinity
+      m.size = 0.013 + rand() * 0.012
+      spin[i] = rand() * Math.PI * 2
+    } else {
+      dir.set(gauss(rand), gauss(rand), gauss(rand)).normalize()
+      m.p.copy(dir).multiplyScalar(0.2 + rand() * 0.7)
+      m.v.set(gauss(rand), gauss(rand), gauss(rand)).multiplyScalar(0.004)
+      m.life = Infinity
+      m.size = 0.012 + rand() * 0.016
+    }
+    if (motion === 'glint') c.setHSL(rand(), 0.85, 0.7)
+    else c.copy(a).lerp(rand() < 0.5 ? b : light, rand() * 0.8)
+    tint.set([c.r, c.g, c.b], i * 3)
+  }
+  motes.forEach((m, i) => spawn(m, i, true))
+
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(position, 3).setUsage(THREE.DynamicDrawUsage))
+  geometry.setAttribute('tint', new THREE.BufferAttribute(tint, 3))
+  geometry.setAttribute('size', new THREE.BufferAttribute(size, 1).setUsage(THREE.DynamicDrawUsage))
+  geometry.setAttribute('alpha', new THREE.BufferAttribute(alpha, 1).setUsage(THREE.DynamicDrawUsage))
+  geometry.setAttribute('spin', new THREE.BufferAttribute(spin, 1).setUsage(THREE.DynamicDrawUsage))
+  const material = new THREE.ShaderMaterial({
+    uniforms: { uScale: uniforms.uScale, uPixel: uniforms.uPixel, uUnit: { value: 1 } },
+    defines: { [`SHAPE_${shape}`]: '' },
+    vertexShader: `
+      attribute vec3 tint; attribute float size; attribute float alpha; attribute float spin;
+      uniform float uScale; uniform float uPixel; uniform float uUnit;
+      varying vec3 vTint; varying float vAlpha; varying float vSpin;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float d = max(0.001, -mv.z);
+        gl_PointSize = clamp(size * uUnit * uScale / d, 0.0, 44.0 * uPixel);
+        // Nothing flares up right in front of the eye.
+        vAlpha = alpha * smoothstep(0.03 * uUnit, 0.12 * uUnit, d);
+        vTint = tint;
+        vSpin = spin;
+      }`,
+    fragmentShader: `
+      varying vec3 vTint; varying float vAlpha; varying float vSpin;
+      void main() {
+        vec2 c = gl_PointCoord - 0.5;
+        #ifdef SHAPE_PETAL
+          c = mat2(cos(vSpin), -sin(vSpin), sin(vSpin), cos(vSpin)) * c;
+          float r = length(vec2(c.x * 2.4, c.y + 0.08 * cos(c.x * 9.0))) * 2.2;
+          float a = (1.0 - smoothstep(0.55, 1.0, r)) * (0.65 + 0.35 * (0.5 - c.y));
+        #elif defined(SHAPE_GLINT)
+          c = mat2(cos(vSpin), -sin(vSpin), sin(vSpin), cos(vSpin)) * c;
+          float a = exp(-dot(c, c) * 70.0) + 0.7 * exp(-abs(c.x) * 38.0 - abs(c.y) * 7.0) + 0.7 * exp(-abs(c.y) * 38.0 - abs(c.x) * 7.0);
+        #else
+          float a = exp(-dot(c, c) * 18.0);
+        #endif
+        gl_FragColor = vec4(vTint * a * vAlpha, 1.0);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+  const points = new THREE.Points(geometry, material)
+  points.frustumCulled = false
+
+  return {
+    points,
+    step(dt, t, level, pulse, unit) {
+      material.uniforms.uUnit.value = unit
+      motes.forEach((m, i) => {
+        m.age += dt
+        const p = m.p
+        let shine = 1
+        if (motion === 'rise') {
+          // Rising from the heart, wandering a little, gone before the wall.
+          p.addScaledVector(m.v, dt)
+          p.x += Math.sin(t * 0.7 + m.phase) * 0.004 * dt
+          p.z += Math.cos(t * 0.6 + m.phase) * 0.004 * dt
+          const r = p.length()
+          shine = smooth(0, 1.5, m.age) * (1 - smooth(0.7, 0.95, r))
+          if (look.kind === 'pulsar') shine *= 0.3 + 0.7 * pulse
+          if (m.age > m.life || r > 0.95) spawn(m, i, false)
+        } else if (motion === 'orbit' || motion === 'spiral') {
+          m.angle += dt * (0.05 / Math.max(0.15, m.radius)) * (motion === 'spiral' ? 1.6 : 1)
+          if (motion === 'spiral') {
+            m.radius -= dt * 0.012
+            if (m.radius < 0.06) {
+              m.radius = 0.85 + Math.random() * 0.05
+              m.age = 0
+            }
+            shine = smooth(0, 2, m.age) * smooth(0.06, 0.2, m.radius)
+          }
+          p.set(Math.cos(m.angle) * m.radius, m.height + Math.sin(t * 0.3 + m.phase) * 0.01, Math.sin(m.angle) * m.radius)
+          shine *= 0.55 + 0.45 * Math.sin(t * m.rate + m.phase)
+        } else if (motion === 'flutter') {
+          p.addScaledVector(m.v, dt)
+          p.y += Math.sin(t * 3.1 * m.rate + m.phase) * 0.012 * dt
+          shine = smooth(0, 2, m.age) * (1 - smooth(m.life - 2, m.life, m.age)) * (0.5 + 0.5 * Math.abs(Math.sin(t * 4 * m.rate + m.phase)))
+          if (m.age > m.life || p.length() > 0.92) spawn(m, i, false)
+        } else if (motion === 'fall') {
+          // Petals drifting down, swaying and turning as they go.
+          p.addScaledVector(m.v, dt)
+          p.x += Math.sin(t * 0.8 * m.rate + m.phase) * 0.01 * dt
+          p.z += Math.cos(t * 0.7 * m.rate + m.phase) * 0.01 * dt
+          spin[i] += dt * 0.6 * (m.phase % 2 > 1 ? 1 : -1)
+          shine = smooth(0.8, 0.6, p.y) * smooth(-0.75, -0.5, p.y)
+          if (p.y < -0.75) spawn(m, i, false)
+        } else {
+          // Glints of crystal, now and then catching the light.
+          p.addScaledVector(m.v, dt)
+          if (p.length() > 0.92) m.v.negate()
+          shine = Math.pow(Math.max(0, Math.sin(t * 0.5 * m.rate + m.phase)), 12)
+          spin[i] = t * 0.08 + m.phase
+        }
+        position[i * 3] = p.x
+        position[i * 3 + 1] = p.y
+        position[i * 3 + 2] = p.z
+        size[i] = m.size * (motion === 'glint' ? 0.4 + shine : 1)
+        alpha[i] = level * shine
+      })
+      for (const key of ['position', 'size', 'alpha', 'spin']) geometry.attributes[key].needsUpdate = true
+    },
+    dispose() {
+      geometry.dispose()
+      material.dispose()
+    }
+  }
 }
 
 function magellanicClouds(tex, uniforms) {

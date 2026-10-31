@@ -248,12 +248,13 @@ const cosmos = document.querySelector('.cosmos')
 const layoutEl = document.querySelector('.layout')
 const paneEl = document.querySelector('.pane')
 const paneToggle = document.querySelector('.pane-toggle')
-// Inside a star: a tab for each of its planets, over the terminal.
-const starTabs = Object.assign(document.createElement('nav'), { className: 'star-tabs', hidden: true })
-starTabs.setAttribute('aria-label', '이 별의 행성')
-paneEl.prepend(starTabs)
 const reportEl = document.querySelector('.gx-report')
 const gxHud = document.querySelector('.gx-hud')
+// Inside a star: what star it is, and a chip for each of its planets that opens its
+// terminal over the view.
+const starTabs = Object.assign(document.createElement('nav'), { className: 'star-tabs', hidden: true })
+starTabs.setAttribute('aria-label', '이 별의 행성')
+gxHud.append(starTabs)
 const gxSignals = document.querySelector('.gx-signals')
 const soundButton = document.querySelector('.sound-btn')
 const settingsButton = document.querySelector('.settings-btn')
@@ -563,7 +564,8 @@ function setFocus(handle, { auto = false, reason, quiet = false, stay = false } 
     galaxy?.flyTo(handle)
     // The full terminal stays in the pane only once the user has gone in; otherwise a pick
     // (or a question arriving) shows the short report.
-    if (!paneOpen && ((!auto && !quiet) || sectionOf(handle) === 'attention' || report)) openReport(sessions.get(handle).project, handle)
+    // Inside a star nothing opens by itself: its chip lights instead.
+    if (!paneOpen && !insideApp && ((!auto && !quiet) || sectionOf(handle) === 'attention' || report)) openReport(sessions.get(handle).project, handle)
   }
   scheduleRender()
 }
@@ -2508,7 +2510,8 @@ function ensureGalaxy() {
   galaxyLoad = import('./galaxy.js')
     .then(({ createGalaxy }) => {
       galaxy = createGalaxy(cosmos, {
-        onPick: pick,
+        // Inside a star, one of its own planets opens its window there.
+        onPick: (handle) => (insideApp && sessions.get(handle)?.project === insideApp ? openStarWindow(handle) : pick(handle)),
         onPickSystem: (app) => {
           if (app === insideApp) return
           if ([...testItems.values()].some((i) => i.app === app)) testFocus = app
@@ -2673,7 +2676,7 @@ function renderReport() {
   if (look) title.append(el('small', { className: 'rp-look', textContent: lookLine(look) }))
   const planet = el('button', { type: 'button', className: 'rp-new', title: '이 프로젝트에 에이전트를 하나 더 띄워요', textContent: '🪐 새 행성' })
   planet.addEventListener('click', () => openPlanetForm(report.app))
-  const enter = el('button', { type: 'button', className: 'rp-new rp-enter', title: '별 안으로 들어가 이 별의 터미널에서 일해요', textContent: '🌟 별 안으로' })
+  const enter = el('button', { type: 'button', className: 'rp-new rp-enter', title: '별 안으로 들어가 둘러봐요', textContent: '🌟 별 안으로' })
   enter.addEventListener('click', () => enterStar(report.app))
   const close = el('button', { type: 'button', className: 'rp-close', title: '닫기 (Esc)', textContent: '×' })
   close.addEventListener('click', closeReport)
@@ -2800,21 +2803,22 @@ function drillIn(handle) {
   setPaneOpen(true)
 }
 
-// Into a star to work there: the camera goes inside, its terminal opens as the main
-// window with a tab for each planet, and the galaxy shows all round.
+// Into a star to look round: the camera goes inside and the galaxy shows all round. A
+// chip for each of its planets opens that terminal as a window of glass over the view.
 function enterStar(app) {
-  const own = starHandles(app)
-  const handle = own.includes(report?.handle) ? report.handle : own.includes(focusedHandle) ? focusedHandle : own[0]
-  if (!handle || !galaxy?.enterStar(app)) return
+  if (!starHandles(app).length) return
+  const voice = galaxy?.enterStar(app)
+  if (!voice) return
   insideApp = app
   document.body.classList.add('inside-star')
   setZen(false)
-  setPaneOpen(true)
-  setFocus(handle)
+  closeReport()
+  setPaneOpen(false)
   layoutGalaxy({ animate: true })
   renderStarTabs()
   sound.chime('enter')
-  toast(`🌟 ${app} 안이에요 · Esc로 나가요`, 3000)
+  sound.setInside(voice)
+  toast(`🌟 ${app} 안이에요 · 행성을 누르면 터미널이 열려요 · Esc로 나가요`, 3600)
 }
 
 // Out again, to the star's usual view; or, when something else already took the camera
@@ -2826,10 +2830,32 @@ function leaveStar({ fly = true } = {}) {
   document.body.classList.remove('inside-star')
   starTabs.hidden = true
   starTabs.replaceChildren()
+  delete starTabs.dataset.key
+  sound.setInside(null)
   if (fly) galaxy?.leaveStar()
   setPaneOpen(false)
   layoutGalaxy({ animate: true })
   if (fly && focusedHandle && sessions.get(focusedHandle)?.project === app) openReport(app, focusedHandle)
+}
+
+// Inside a star, a planet's terminal opens over the view; the same chip, or Esc, shuts it
+// again to go on looking.
+function openStarWindow(handle) {
+  if (!insideApp) return
+  const own = starHandles(insideApp)
+  const pick = own.includes(handle) ? handle : own.includes(focusedHandle) ? focusedHandle : own[0]
+  if (!pick) return
+  if (paneOpen && pick === focusedHandle) return closeStarWindow()
+  setFocus(pick, { stay: true })
+  setPaneOpen(true)
+  layoutGalaxy()
+  renderStarTabs()
+}
+
+function closeStarWindow() {
+  setPaneOpen(false)
+  document.activeElement?.blur()
+  renderStarTabs()
 }
 
 function starHandles(app) {
@@ -2840,25 +2866,31 @@ function starHandles(app) {
 function renderStarTabs() {
   if (!insideApp) return
   const handles = starHandles(insideApp)
-  // The star's last terminal closed: nothing left to work in.
+  // The star's last terminal closed: nothing left inside.
   if (!handles.length) return leaveStar()
-  if (!handles.includes(focusedHandle)) return setFocus(handles[0])
-  const key = JSON.stringify([insideApp, focusedHandle, handles.map((h) => [h, statusOf(h), sessions.get(h).title, sessions.get(h).name])])
+  const open = paneOpen && handles.includes(focusedHandle) ? focusedHandle : null
+  const key = JSON.stringify([insideApp, open, handles.map((h) => [h, statusOf(h), sessions.get(h).title, sessions.get(h).name, sessions.get(h).branch])])
   if (key === starTabs.dataset.key) return
   starTabs.dataset.key = key
-  const name = el('b', { className: 'st-star', textContent: `🌟 ${insideApp}` })
+  const look = galaxy?.lookOf(insideApp)
+  const name = el('div', { className: 'st-star' })
+  name.append(el('b', { textContent: `🌟 ${insideApp}` }), ...(look?.inside ? [el('small', { textContent: `${look.name} · ${look.inside}` })] : []))
   const tabs = el('div', { className: 'st-tabs', role: 'tablist' })
   for (const handle of handles) {
     const session = sessions.get(handle)
-    const tab = el('button', { type: 'button', className: 'st-tab', role: 'tab', dataset: { status: statusOf(handle) }, title: [session.title, session.branch, session.path].filter(Boolean).join('\n') })
-    tab.setAttribute('aria-selected', String(handle === focusedHandle))
+    const tab = el('button', { type: 'button', className: 'st-tab', role: 'tab', dataset: { status: statusOf(handle) }, title: [session.title, session.branch, session.path, handle === open ? '다시 누르면 닫혀요' : '눌러서 터미널 열기'].filter(Boolean).join('\n') })
+    tab.setAttribute('aria-selected', String(handle === open))
     tab.append(el('i', { className: 'dot' }), el('span', { textContent: session.title || session.name || '터미널' }), ...(session.branch ? [el('small', { textContent: session.branch })] : []))
-    tab.addEventListener('click', () => setFocus(handle))
+    tab.addEventListener('click', () => openStarWindow(handle))
     tabs.append(tab)
   }
+  const toggle = open
+    ? el('button', { type: 'button', className: 'st-out', title: '터미널을 닫고 둘러봐요 (Esc)', textContent: '🔭 둘러보기' })
+    : el('button', { type: 'button', className: 'st-out', title: '터미널 열기 (Enter)', textContent: '터미널 열기 ↵' })
+  toggle.addEventListener('click', () => (open ? closeStarWindow() : openStarWindow()))
   const out = el('button', { type: 'button', className: 'st-out', title: '별 밖으로 (Esc)', textContent: '별 밖으로' })
   out.addEventListener('click', () => leaveStar())
-  starTabs.replaceChildren(name, tabs, out)
+  starTabs.replaceChildren(name, tabs, toggle, out)
   starTabs.hidden = false
 }
 
@@ -3262,6 +3294,7 @@ function onShortcut(e) {
   }
   if (e.key === '?') return run(openHelp)
   if (e.key === '/') return run(openPalette)
+  if (e.key === 'Enter' && insideApp && !paneOpen && !e.target.closest('button')) return run(() => openStarWindow())
   if (e.key === 'Enter') {
     const row = e.target.closest('.row')
     // Other buttons keep their own Enter.
@@ -3344,6 +3377,7 @@ function onEscape() {
   else if (!guideEl.hidden) toggleGuide(false)
   else if (document.activeElement?.matches('textarea, input, select')) document.activeElement.blur()
   else if (report && !paneOpen) closeReport()
+  else if (insideApp && paneOpen) closeStarWindow()
   else if (insideApp) leaveStar()
   else if (prefs.view === 'galaxy' && paneOpen) {
     setPaneOpen(false)

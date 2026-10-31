@@ -113,6 +113,8 @@ export function createSound() {
   let shimmer = null
   const births = new Map() // a star being made -> how far it has got, 0 to 1
   let gathering = null // the music of a star forming, while one is (see gather())
+  let insideStar = null // the star the camera is inside, for its hum
+  let hum = null
 
   function setup() {
     ctx = new AudioContext()
@@ -186,7 +188,9 @@ export function createSound() {
       bamboo: gain(limiter, mix.bamboo),
       bambooWet: gain(bellBus, mix.bamboo),
       // A star forming has music of its own, at the music's volume, out in the open air.
-      gather: gain(bellBus, 0)
+      gather: gain(bellBus, 0),
+      // Inside a star its hum, at the music's volume, dry: a reverb would only muddy it.
+      hum: gain(limiter, mix.music)
     }
     applyTone()
   }
@@ -245,6 +249,24 @@ export function createSound() {
       stopTimers()
     }
     if (births.size) gather()
+    syncHum()
+  }
+
+  // Inside a star, with the galaxy's sounds on: its hum, on its own note; changing stars
+  // fades one hum out as the next comes in.
+  function syncHum() {
+    if (!ctx) return
+    const note = enabled && ambientOn && insideStar ? humNote(insideStar) : null
+    if (hum && hum.note !== note) {
+      const old = hum
+      hum = null
+      fade(old.level, 0, 1.5)
+      setTimeout(() => old.stop(), 2500)
+    }
+    if (note && !hum) {
+      hum = startHum(ctx, bus.hum, note)
+      fade(hum.level, 0.045, 5)
+    }
   }
 
   // The usual music steps back while a star forms, so its own music can be heard.
@@ -604,6 +626,7 @@ export function createSound() {
       if (!ctx) return
       for (const key of Object.keys(MIX_DEFAULTS)) if (key !== 'music') bus[key].gain.setTargetAtTime(mix[key], ctx.currentTime, 0.15)
       bus.bambooWet.gain.setTargetAtTime(mix.bamboo, ctx.currentTime, 0.15)
+      bus.hum.gain.setTargetAtTime(mix.music, ctx.currentTime, 0.15)
       if (enabled && ambientOn) {
         fade(bus.music, musicLevel(), 0.4)
         fade(bus.gather, mix.music, 0.4)
@@ -654,6 +677,11 @@ export function createSound() {
       moodOn = on
       if (!on) tension = null
       applyTone()
+    },
+    // The star the camera went into ({ warmth, busy, size, seed }), or null on the way out.
+    setInside(star) {
+      insideStar = star
+      syncHum()
     },
     // The sea, the wind and the bells belong to the galaxy view.
     setAmbient(on) {
@@ -1071,6 +1099,43 @@ function bowl(ctx, out, freq, { at, level }) {
     const decay = 9 / Math.sqrt(ratio)
     tone(ctx, panner, freq * ratio, { at, level: level * amp, attack: 0.01, decay })
     tone(ctx, panner, freq * ratio * 1.0025, { at, level: level * amp * 0.6, attack: 0.01, decay })
+  }
+}
+
+// The hum inside a star: its own note brought down below 110 Hz, with a voice a hair
+// apart beating slowly against it, a fifth and an octave over it, and its brightness
+// breathing.
+function humNote(star) {
+  let note = starNote(star)
+  while (note > 110) note /= 2
+  return note
+}
+
+function startHum(ctx, out, freq) {
+  const level = ctx.createGain()
+  level.gain.value = 0
+  const tone = ctx.createBiquadFilter()
+  tone.type = 'lowpass'
+  tone.frequency.value = 380
+  tone.Q.value = 0.6
+  tone.connect(level).connect(out)
+  const voices = [[1, 0.5, 'sine'], [1.004, 0.35, 'sine'], [1.5, 0.18, 'triangle'], [2, 0.12, 'sine']].map(([ratio, amp, type]) => {
+    const osc = ctx.createOscillator()
+    osc.type = type
+    osc.frequency.value = freq * ratio
+    const gain = ctx.createGain()
+    gain.gain.value = amp
+    osc.connect(gain).connect(tone)
+    osc.start()
+    return osc
+  })
+  const breath = lfo(ctx, 0.06, 140, tone.frequency)
+  return {
+    note: freq,
+    level,
+    stop() {
+      for (const osc of [...voices, breath]) osc.stop()
+    }
   }
 }
 

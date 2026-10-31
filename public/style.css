@@ -711,13 +711,14 @@ body[data-view='galaxy'] .pane-toggle:hover { background: rgb(30 34 70 / 80%); c
 body[data-view='galaxy'] .pane-toggle span::before { content: '›'; font-size: 18px; line-height: 1; }
 body[data-view='galaxy'].pane-closed .pane-toggle { right: 0; }
 body[data-view='galaxy'].pane-closed .pane-toggle span::before { content: '‹'; }
-/* Inside a star: the terminal is a window of glass in the middle, the galaxy all round
-   it and faintly through it, with a tab for each of the star's planets on top. */
+/* Inside a star: the galaxy all round, and along the bottom which star this is with a chip
+   for each of its planets. A chip opens that terminal as a window of glass in the middle,
+   the galaxy faintly through it; the same chip, or Esc, shuts it to go on looking. */
 .star-tabs { display: none; }
 body[data-view='galaxy'].inside-star .pane {
-  top: 8%;
+  top: 6%;
   right: auto;
-  bottom: 8%;
+  bottom: 92px;
   left: 50%;
   width: min(1120px, 72%);
   border: 1px solid rgb(255 226 168 / 26%);
@@ -727,9 +728,12 @@ body[data-view='galaxy'].inside-star .pane {
   box-shadow: 0 0 0 1px rgb(255 255 255 / 4%), 0 0 70px rgb(255 214 150 / 12%), 0 30px 90px rgb(0 0 0 / 45%);
   backdrop-filter: blur(4px) saturate(130%);
   transform: translateX(-50%);
-  animation: star-in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: opacity 0.35s ease, transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s;
 }
-@keyframes star-in { from { opacity: 0; transform: translateX(-50%) scale(0.94); } }
+body[data-view='galaxy'].inside-star.pane-closed:not(.maximized) .pane {
+  transform: translateX(-50%) scale(0.95);
+  transition: opacity 0.3s ease, transform 0.35s ease, visibility 0s 0.35s;
+}
 body[data-view='galaxy'].inside-star .pane-toggle { display: none; }
 body[data-view='galaxy'].inside-star .card { background: rgb(6 8 20 / 22%); box-shadow: none; }
 body[data-view='galaxy'].inside-star .card .screen { background: rgb(2 3 10 / 34%); }
@@ -738,12 +742,24 @@ body[data-view='galaxy'].inside-star .gx-foot,
 body[data-view='galaxy'].inside-star .gx-report { display: none; }
 body[data-view='galaxy'].inside-star .star-tabs:not([hidden]) {
   display: flex;
+  align-self: center;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px 6px 14px;
-  border-bottom: 1px solid rgb(255 226 168 / 14%);
+  max-width: min(1120px, 100%);
+  margin-top: auto;
+  padding: 7px 8px 7px 14px;
+  border: 1px solid rgb(255 226 168 / 18%);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgb(10 10 26 / 58%), rgb(6 6 18 / 70%));
+  box-shadow: 0 0 40px rgb(255 214 150 / 8%), 0 18px 50px rgb(0 0 0 / 40%);
+  pointer-events: auto;
+  backdrop-filter: blur(10px) saturate(130%);
+  animation: star-bar 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) 0.6s both;
 }
-.st-star { flex: none; color: #ffe9c2; font-family: var(--display-ko); font-size: 13.5px; letter-spacing: -0.02em; }
+@keyframes star-bar { from { opacity: 0; transform: translateY(14px); } }
+.st-star { display: grid; flex: none; gap: 1px; max-width: 240px; }
+.st-star b { overflow: hidden; color: #ffe9c2; font-family: var(--display-ko); font-size: 13.5px; font-weight: 400; letter-spacing: -0.02em; text-overflow: ellipsis; white-space: nowrap; }
+.st-star small { overflow: hidden; color: var(--faint); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .st-tabs { display: flex; flex: 1; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .st-tab {
   display: inline-flex;
@@ -783,8 +799,24 @@ body[data-view='galaxy'].inside-star .star-tabs:not([hidden]) {
 .rp-enter { margin-left: auto; }
 .rp-enter + .rp-new { margin-left: 6px; }
 @media (max-width: 720px) {
-  body[data-view='galaxy'].inside-star .pane { top: 8%; bottom: 4%; width: calc(100% - 24px); }
+  body[data-view='galaxy'].inside-star .pane { top: 6%; bottom: 84px; width: calc(100% - 24px); }
+  .st-star small { display: none; }
 }
+/* A pull request merged into the star, on its wall inside: faint until pointed at. */
+.gx-memory { pointer-events: none; }
+.gx-memory span {
+  display: block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgb(40 28 8 / 45%);
+  color: #ffe2a8;
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0.6;
+  pointer-events: auto;
+  transition: opacity 0.3s ease;
+}
+.gx-memory span:hover { opacity: 1; }
 
 /* The star report: what needs a decision and how work is going, nothing more. */
 .gx-report { display: none; }
