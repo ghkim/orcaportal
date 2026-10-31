@@ -84,6 +84,8 @@ const GROWTH_VOICES = [
 const TONE_OPEN = 6000
 const TONE_YOUNG = 9000
 const TONE_OLD = 1600
+// How loud the galaxy stays under a video playing in a star's browser.
+const HUSHED = 0.15
 // Water drops are tuned an octave or two above the music, in its mode: from this step up.
 const DROP_FROM = 10
 // Three crickets, each with its own pitch and place.
@@ -136,6 +138,8 @@ export function createSound() {
   let gathering = null // the music of a star forming, while one is (see gather())
   let insideStar = null // the star the camera is inside, for its hum
   let hum = null
+  let hushed = false // a video plays in a star's browser
+  let scenery = [] // what steps back then: everything but the alerts
 
   function setup() {
     ctx = new AudioContext()
@@ -160,14 +164,24 @@ export function createSound() {
     reverb.connect(clear).connect(damp).connect(wet).connect(limiter)
     // The sea and the wind are outdoors: no reverb. This bus fades them in and out
     // with the galaxy view; each has its own volume after it.
+    // While a video plays in a star's browser, the galaxy's own sounds step back through
+    // these; the alerts go round them and still ring out.
+    const scene = ctx.createGain()
+    const sceneWet = ctx.createGain()
+    const sceneBells = ctx.createGain()
+    scenery = [scene, sceneWet, sceneBells]
+    for (const node of scenery) node.gain.value = hushed ? HUSHED : 1
+    scene.connect(limiter)
+    sceneWet.connect(reverb)
     const ambientBus = ctx.createGain()
     ambientBus.gain.value = 0
-    ambientBus.connect(limiter)
+    ambientBus.connect(scene)
     const bellBus = ctx.createGain()
     const bellDry = ctx.createGain()
     bellDry.gain.value = 0.4
     bellBus.connect(bellDry).connect(limiter)
     bellBus.connect(reverb)
+    sceneBells.connect(bellBus)
     const musicBus = ctx.createGain()
     musicBus.gain.value = 0
     // The star the camera is with colours the music: brighter for a young star, warmer for
@@ -184,8 +198,8 @@ export function createSound() {
     wobble.connect(shimmer).connect(tremolo.gain)
     wobble.start()
     musicBus.connect(musicTone).connect(tremolo)
-    tremolo.connect(limiter)
-    tremolo.connect(reverb)
+    tremolo.connect(scene)
+    tremolo.connect(sceneWet)
     // One volume per sound the listener can set. Birds and crickets stay dry like the
     // sea; water drops, bells and alerts ring out through the reverb.
     const gain = (to, level) => {
@@ -199,19 +213,19 @@ export function createSound() {
       music: musicBus,
       waves: gain(ambientBus, mix.waves),
       wind: gain(ambientBus, mix.wind),
-      birds: gain(limiter, mix.birds),
-      crickets: gain(limiter, mix.crickets),
-      drops: gain(bellBus, mix.drops),
-      windbells: gain(bellBus, mix.windbells),
-      temple: gain(bellBus, mix.temple),
+      birds: gain(scene, mix.birds),
+      crickets: gain(scene, mix.crickets),
+      drops: gain(sceneBells, mix.drops),
+      windbells: gain(sceneBells, mix.windbells),
+      temple: gain(sceneBells, mix.temple),
       alerts: gain(bellBus, mix.alerts),
       // The grove's leaves are outdoors and dry; a stem's knock carries a little.
-      bamboo: gain(limiter, mix.bamboo),
-      bambooWet: gain(bellBus, mix.bamboo),
+      bamboo: gain(scene, mix.bamboo),
+      bambooWet: gain(sceneBells, mix.bamboo),
       // A star forming has music of its own, at the music's volume, out in the open air.
-      gather: gain(bellBus, 0),
+      gather: gain(sceneBells, 0),
       // Inside a star its hum, at the music's volume, dry: a reverb would only muddy it.
-      hum: gain(limiter, mix.music)
+      hum: gain(scene, mix.music)
     }
     applyTone()
   }
@@ -725,6 +739,13 @@ export function createSound() {
       moodOn = on
       if (!on) tension = null
       applyTone()
+    },
+    // A video playing in a star's browser: the sea, the music and the bells step back
+    // until it stops; questions and finished work still ring.
+    hush(on) {
+      if (hushed === on) return
+      hushed = on
+      if (ctx) for (const node of scenery) fade(node, on ? HUSHED : 1, on ? 1.2 : 4)
     },
     // The star the camera went into ({ warmth, busy, size, seed }), or null on the way out.
     setInside(star) {

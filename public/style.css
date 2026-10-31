@@ -800,11 +800,129 @@ body[data-view='galaxy'].inside-star .star-tabs:not([hidden]) {
 .st-out:hover { color: var(--text); }
 .rp-enter { margin-left: auto; }
 .rp-enter + .rp-new { margin-left: 6px; }
+.st-web[aria-pressed='true'] { border-color: rgb(255 226 168 / 35%); background: rgb(255 226 168 / 10%); color: #ffe9c2; }
+/* Inside a star, its browser: a window of glass in the middle like the terminal's, or
+   tucked into the bottom corner, still playing, while a terminal is open. */
+.star-browser { display: none; }
+body[data-view='galaxy'].inside-star .star-browser:not([hidden]) {
+  position: absolute;
+  top: 6%;
+  bottom: 92px;
+  left: 50%;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  width: min(1120px, 72%);
+  border: 1px solid rgb(255 226 168 / 26%);
+  border-radius: 18px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgb(8 8 22 / 72%), rgb(5 5 16 / 84%));
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 4%), 0 0 70px rgb(255 214 150 / 12%), 0 30px 90px rgb(0 0 0 / 45%);
+  pointer-events: auto;
+  backdrop-filter: blur(6px) saturate(130%);
+  transform: translateX(-50%);
+  animation: sb-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes sb-in { from { opacity: 0; } }
+body[data-view='galaxy'].inside-star .star-browser.full:not([hidden]) { inset: 0; z-index: 6; width: auto; border: 0; border-radius: 0; transform: none; }
+body[data-view='galaxy'].inside-star .star-browser.mini:not([hidden]) {
+  top: auto;
+  right: 18px;
+  bottom: 96px;
+  left: auto;
+  width: 360px;
+  height: 232px;
+  border-radius: 12px;
+  transform: none;
+}
+/* A terminal open beside the corner browser moves over to make room for it. */
+body[data-view='galaxy'].inside-star.browser-mini .pane { left: calc(50% - 190px); width: min(1120px, calc(100% - 430px)); }
+.sb-bar { display: flex; flex: none; align-items: center; gap: 4px; padding: 7px 8px; border-bottom: 1px solid rgb(255 226 168 / 12%); }
+.sb-btn {
+  flex: none;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.sb-btn:hover { border-color: var(--border-strong); background: rgb(255 255 255 / 5%); color: var(--text); }
+.sb-go { display: flex; flex: 1; min-width: 0; }
+.sb-address {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: rgb(0 0 0 / 30%);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.sb-address:focus { border-color: rgb(255 226 168 / 45%); outline: none; }
+.star-browser.loading .sb-address { background: linear-gradient(90deg, rgb(255 226 168 / 10%), rgb(0 0 0 / 30%) 60%) 0 0 / 200% 100%; animation: sb-load 1.2s linear infinite; }
+@keyframes sb-load { to { background-position: -200% 0; } }
+.sb-ports { display: flex; flex: none; gap: 3px; }
+.sb-port {
+  padding: 3px 8px;
+  border: 1px solid rgb(110 231 255 / 25%);
+  border-radius: 7px;
+  background: rgb(110 231 255 / 6%);
+  color: var(--holo-cyan, #6ee7ff);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.sb-port:hover { background: rgb(110 231 255 / 14%); }
+.sb-title { display: none; flex: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.sb-note { flex: none; margin: 0; padding: 6px 14px; border-bottom: 1px solid rgb(255 181 71 / 18%); background: rgb(255 181 71 / 7%); color: #ffcf8a; font-size: 12px; }
+.sb-view { position: relative; flex: 1; min-height: 0; }
+.sb-view > iframe, .sb-view > webview { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.star-browser.blank .sb-view > iframe, .star-browser.blank .sb-view > webview { display: none; }
+.sb-start { position: absolute; inset: 0; overflow: auto; padding: 8% 10%; color: var(--muted); }
+.sb-start h3 { margin: 0 0 6px; color: #ffe9c2; font-family: var(--display-ko); font-size: 22px; font-weight: 400; }
+.sb-lead { margin: 0 0 14px; }
+.sb-servers, .sb-quick { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.sb-quick:empty { display: none; }
+.sb-server {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border: 1px solid rgb(110 231 255 / 25%);
+  border-radius: 11px;
+  background: rgb(110 231 255 / 6%);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sb-server:hover { background: rgb(110 231 255 / 14%); }
+.sb-server code { color: var(--holo-cyan, #6ee7ff); font-family: var(--mono); }
+.sb-tips { margin: 18px 0 0; padding-left: 18px; color: var(--faint); font-size: 12.5px; line-height: 1.9; }
+/* In the corner only its name and the buttons to bring it back or shut it. */
+.star-browser.mini .sb-bar { padding: 4px 6px; cursor: pointer; }
+.star-browser.mini :is(.sb-go, .sb-ports, [data-part='back'], [data-part='forward'], [data-part='reload'], [data-part='mini']) { display: none; }
+.star-browser.mini .sb-title { display: block; }
+.star-browser.mini .sb-note { display: none; }
+.star-browser.playing.mini { border-color: rgb(255 120 160 / 45%); box-shadow: 0 0 40px rgb(255 120 160 / 18%), 0 18px 50px rgb(0 0 0 / 45%); }
+body.zen .star-browser:not(.mini) { opacity: 0; pointer-events: none; }
 @media (max-width: 720px) {
   body[data-view='galaxy'].inside-star .pane { top: 6%; bottom: 84px; width: calc(100% - 24px); height: auto; }
   .st-star { flex: 0 1 auto; min-width: 0; max-width: 28%; }
   .st-star small { display: none; }
   .st-out { padding: 4px 8px; }
+  body[data-view='galaxy'].inside-star .star-browser:not([hidden]):not(.mini, .full) { bottom: 84px; width: calc(100% - 24px); }
+  body[data-view='galaxy'].inside-star .star-browser.mini:not([hidden]) { right: 12px; width: min(300px, calc(100% - 24px)); height: 190px; }
+  body[data-view='galaxy'].inside-star.browser-mini .pane { left: 50%; width: calc(100% - 24px); }
+  .sb-ports { display: none; }
 }
 /* A pull request merged into the star, on its wall inside: faint until pointed at. */
 .gx-memory { pointer-events: none; }
@@ -1088,6 +1206,7 @@ body.titles-off .gx-labels { visibility: hidden; }
   body[data-view='galaxy'].inside-star .pane,
   body[data-view='galaxy'].inside-star.pane-closed:not(.maximized) .pane { transition: none; }
   body[data-view='galaxy'].inside-star .star-tabs:not([hidden]) { animation: none; }
+  body[data-view='galaxy'].inside-star .star-browser:not([hidden]), .star-browser.loading .sb-address { animation: none; }
 }
 @media (max-width: 720px) {
   body[data-view='galaxy'] .layout { grid-template-columns: minmax(0, 1fr); }

@@ -264,7 +264,7 @@ function serveStatic(pathname, res) {
     if (error) return send(res, 404, 'text/plain', 'Not found')
     const type = MIME[path.extname(file)] || 'application/octet-stream'
     if (path.basename(file) === 'index.html') data = data.toString('utf8').replace('__PORTAL_TOKEN__', token)
-    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' })
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "frame-ancestors 'none'" })
     res.end(data)
   })
 }

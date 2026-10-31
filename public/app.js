@@ -162,7 +162,8 @@ const SHORTCUTS = [
       [['↑', '↓'], '선택지가 떠 있으면 고르기 · Enter로 확정'],
       [['V'], '은하 전체 보기'],
       [['T'], '별·행성 이름 모두 끄기 / 켜기'],
-      [['Z'], '고요 모드: 은하와 소리만 남기기']
+      [['Z'], '고요 모드: 은하와 소리만 남기기'],
+      [['W'], '별 안에서 브라우저: 개발 서버, 유튜브, 웹 페이지']
     ]
   },
   {
@@ -225,6 +226,8 @@ let growth = {} // worktree path -> what has landed on its repo's default branch
 let paneOpen = false
 // The star the viewer went into to work: its terminal is the main window, the galaxy all round.
 let insideApp = null
+// Its browser while open: { app, url, mini, full, playing, frame, ... } (see openBrowser).
+let browser = null
 let windowShown = true // the Mac app's window: false while hidden or minimized
 // The galaxy's short report: one app's terminals, only what needs a decision and how work is going.
 let report = null // { app, handle } — handle is the terminal the report points at, if any
@@ -276,6 +279,9 @@ const gxHud = document.querySelector('.gx-hud')
 const starTabs = Object.assign(document.createElement('nav'), { className: 'star-tabs', hidden: true })
 starTabs.setAttribute('aria-label', '이 별의 행성')
 gxHud.append(starTabs)
+const browserEl = Object.assign(document.createElement('section'), { className: 'star-browser', hidden: true })
+browserEl.setAttribute('aria-label', '별 안 브라우저')
+layoutEl.append(browserEl)
 const gxSignals = document.querySelector('.gx-signals')
 const soundButton = document.querySelector('.sound-btn')
 const settingsButton = document.querySelector('.settings-btn')
@@ -2707,7 +2713,7 @@ function setPaneOpen(open) {
   paneToggle.setAttribute('aria-expanded', String(open))
   paneToggle.title = open ? '세션 패널 닫기 (Esc)' : '세션 패널 열기'
   if (open) setZen(false)
-  galaxy?.setBackdrop(Boolean(insideApp && open))
+  syncBackdrop()
   layoutGalaxy({ animate: true })
 }
 
@@ -2723,11 +2729,13 @@ function setZen(on) {
   if (!on) return
   setPaneOpen(false)
   closeReport()
+  if (browser && !browser.mini) minimizeBrowser()
 }
 
 // Nothing to answer, nobody touching anything, the pane shut: let the galaxy have the screen.
 function checkZen() {
-  if (zen || prefs.view !== 'galaxy' || paneOpen || report || document.hidden || searching()) return
+  // A page open in a star's browser is being read or watched, with no keys or mouse here.
+  if (zen || prefs.view !== 'galaxy' || paneOpen || report || browser || document.hidden || searching()) return
   if (Date.now() - lastInteraction < ZEN_IDLE_MS || attentionHandles().length) return
   setZen(true)
 }
@@ -2950,6 +2958,7 @@ function enterStar(app) {
   if (!starHandles(app).length) return
   const voice = galaxy?.enterStar(app)
   if (!voice) return
+  if (browser?.app !== app) closeBrowser()
   insideApp = app
   // Keys and the window act on the focused terminal: one of this star's, never one left
   // behind in another.
@@ -2971,12 +2980,13 @@ function leaveStar({ fly = true } = {}) {
   if (!insideApp) return
   const app = insideApp
   insideApp = null
+  closeBrowser()
   document.body.classList.remove('inside-star')
   starTabs.hidden = true
   starTabs.replaceChildren()
   delete starTabs.dataset.key
   sound.setInside(null)
-  galaxy?.setBackdrop(false)
+  syncBackdrop()
   if (fly) galaxy?.leaveStar()
   setPaneOpen(false)
   layoutGalaxy({ animate: true })
@@ -2991,6 +3001,7 @@ function openStarWindow(handle, { toggle = true } = {}) {
   const pick = own(handle) ? handle : own(focusedHandle) ? focusedHandle : starHandles(insideApp)[0]
   if (!pick) return
   if (paneOpen && pick === focusedHandle) return toggle ? closeStarWindow() : undefined
+  if (browser && !browser.mini) minimizeBrowser()
   setFocus(pick, { stay: true })
   setPaneOpen(true)
   layoutGalaxy()
@@ -3014,7 +3025,9 @@ function renderStarTabs() {
   // The star's last terminal closed: nothing left inside.
   if (!handles.length) return leaveStar()
   const open = paneOpen && handles.includes(focusedHandle) ? focusedHandle : null
-  const key = JSON.stringify([insideApp, open, handles.map((h) => [h, statusOf(h), sessions.get(h).title, sessions.get(h).name, sessions.get(h).branch])])
+  renderBrowserPorts()
+  const web = browser ? (browser.mini ? 'mini' : 'open') : ''
+  const key = JSON.stringify([insideApp, open, web, handles.map((h) => [h, statusOf(h), sessions.get(h).title, sessions.get(h).name, sessions.get(h).branch])])
   if (key === starTabs.dataset.key) return
   starTabs.dataset.key = key
   const look = galaxy?.lookOf(insideApp)
@@ -3033,14 +3046,386 @@ function renderStarTabs() {
     ? el('button', { type: 'button', className: 'st-out', title: '터미널을 닫고 둘러봐요 (Esc)', textContent: '🔭 둘러보기', dataset: { part: 'toggle' } })
     : el('button', { type: 'button', className: 'st-out', title: '터미널 열기 (Enter)', textContent: '터미널 열기 ↵', dataset: { part: 'toggle' } })
   toggle.addEventListener('click', () => (open ? closeStarWindow() : openStarWindow()))
+  const webButton = el('button', { type: 'button', className: 'st-out st-web', title: web === 'open' ? '브라우저를 구석으로 (W)' : '이 별의 브라우저 (W): 개발 서버, 유튜브, 웹 페이지', textContent: '🌐 브라우저', dataset: { part: 'web' } })
+  webButton.setAttribute('aria-pressed', String(web === 'open'))
+  webButton.addEventListener('click', () => (web === 'open' ? minimizeBrowser() : openBrowser()))
   const out = el('button', { type: 'button', className: 'st-out', title: '별 밖으로 (Esc)', textContent: '별 밖으로', dataset: { part: 'out' } })
   out.addEventListener('click', () => leaveStar())
   // The keyboard stays on the same chip or button through a redraw.
   const was = starTabs.contains(document.activeElement) ? document.activeElement : null
   const again = was?.dataset.handle ? `[data-handle="${CSS.escape(was.dataset.handle)}"]` : was?.dataset.part ? `[data-part="${was.dataset.part}"]` : null
-  starTabs.replaceChildren(name, tabs, toggle, out)
+  starTabs.replaceChildren(name, tabs, webButton, toggle, out)
   if (again) starTabs.querySelector(again)?.focus()
   starTabs.hidden = false
+}
+
+// Inside a star, a browser of its own: the star's dev servers, a YouTube video, any page.
+// The Mac app shows any site, in a <webview> with a session of its own; a browser tab can
+// only frame pages that let themselves be framed (servers on this Mac, YouTube's player),
+// and the rest go to a tab of their own. A terminal opening, or Esc, tucks the browser
+// into a corner, still playing; ✕ shuts it. Each star remembers the page it showed last.
+const BROWSER_KEY = 'orrery-browser'
+const WEBVIEW = Boolean(desktop?.webview)
+const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/i
+
+function openBrowser(text = null) {
+  if (!insideApp) return
+  if (browser && browser.app !== insideApp) closeBrowser()
+  if (!browser) browser = buildBrowser(insideApp)
+  if (paneOpen) closeStarWindow()
+  browser.mini = false
+  if (text) browse(text)
+  else if (!browser.url) {
+    const last = savedPages()[insideApp]
+    if (last) browse(last)
+  }
+  syncBrowser()
+  if (!browser.url) browser.input.focus()
+}
+
+function closeBrowser() {
+  if (!browser) return
+  browser = null
+  // The page goes with its frame, and its sound with it.
+  browserEl.replaceChildren()
+  browserEl.hidden = true
+  browserEl.className = 'star-browser'
+  document.body.classList.remove('browser-mini')
+  sound.hush(false)
+  syncBackdrop()
+  renderStarTabs()
+}
+
+// Into the corner, still playing; with nothing open there is nothing to keep.
+function minimizeBrowser() {
+  if (!browser) return
+  if (!browser.url) return closeBrowser()
+  browser.mini = true
+  browser.full = false
+  document.activeElement?.blur()
+  syncBrowser()
+}
+
+function setBrowserFull(full) {
+  if (!browser || browser.mini) return
+  browser.full = full
+  syncBrowser()
+}
+
+function syncBrowser() {
+  if (!browser) return
+  browserEl.hidden = false
+  browserEl.classList.toggle('mini', browser.mini)
+  browserEl.classList.toggle('full', browser.full)
+  browserEl.classList.toggle('blank', !browser.url)
+  document.body.classList.toggle('browser-mini', browser.mini)
+  browser.start.hidden = Boolean(browser.url)
+  renderBrowserStart()
+  syncBackdrop()
+  renderStarTabs()
+}
+
+// The galaxy dims behind whatever window is open in the middle of a star.
+function syncBackdrop() {
+  galaxy?.setBackdrop(Boolean(insideApp && (paneOpen || (browser && !browser.mini))))
+}
+
+function buildBrowser(app) {
+  const b = { app, url: null, mini: false, full: false, playing: false, frame: null }
+  const button = (text, title, part, run) => {
+    const node = el('button', { type: 'button', className: 'sb-btn', title, textContent: text, dataset: { part } })
+    node.addEventListener('click', (e) => {
+      e.stopPropagation()
+      run()
+    })
+    return node
+  }
+  const nav = WEBVIEW
+    ? [button('‹', '뒤로', 'back', () => b.frame?.canGoBack() && b.frame.goBack()), button('›', '앞으로', 'forward', () => b.frame?.canGoForward() && b.frame.goForward())]
+    : []
+  const reload = button('↻', '새로고침', 'reload', () => {
+    if (!b.frame || !b.url) return
+    if (WEBVIEW) b.frame.reload()
+    else b.frame.src = b.frame.src
+  })
+  b.input = el('input', { type: 'text', className: 'sb-address', placeholder: WEBVIEW ? '주소, :포트, 검색어' : '주소, :포트, 유튜브 링크', spellcheck: false, autocomplete: 'off' })
+  b.input.setAttribute('aria-label', '주소')
+  b.input.addEventListener('focus', () => b.input.select())
+  const form = el('form', { className: 'sb-go' })
+  form.append(b.input)
+  form.addEventListener('submit', (e) => {
+    e.preventDefault()
+    if (!b.input.value.trim()) return
+    browse(b.input.value)
+    b.input.blur()
+  })
+  b.ports = el('div', { className: 'sb-ports' })
+  b.title = el('span', { className: 'sb-title' })
+  const outside = button('↗', '바깥 브라우저로 열기', 'outside', () => b.url && window.open(b.url, '_blank', 'noopener'))
+  const full = button('⤢', '창 가득 (F)', 'full', () => (b.mini ? openBrowser() : setBrowserFull(!b.full)))
+  const mini = button('▁', '구석으로 (Esc)', 'mini', minimizeBrowser)
+  const close = button('✕', '닫기', 'close', closeBrowser)
+  const bar = el('header', { className: 'sb-bar' })
+  bar.append(...nav, reload, form, b.title, b.ports, outside, full, mini, close)
+  // In the corner, a click on its bar brings it back.
+  bar.addEventListener('click', () => b.mini && openBrowser())
+  b.note = el('p', { className: 'sb-note', hidden: true })
+  b.view = el('div', { className: 'sb-view' })
+  b.start = el('div', { className: 'sb-start' })
+  b.view.append(b.start)
+  browserEl.replaceChildren(bar, b.note, b.view)
+  return b
+}
+
+// Goes where the address box says: a port (":5173"), an address, a YouTube link, or
+// words to search for.
+function browse(text) {
+  const b = browser
+  const page = pageAddress(text)
+  if (!b || !page) return toast('열 수 없는 주소예요')
+  if (isOrrery(page.url)) return toast('오러리 자신은 여기서 열 수 없어요')
+  if (page.search && !WEBVIEW) {
+    window.open(page.url, '_blank', 'noopener')
+    return toast('검색은 브라우저 탭에서 열었어요 · Mac 앱에서는 여기서 찾아요')
+  }
+  if (!b.frame) {
+    b.frame = makeFrame(b)
+    b.view.append(b.frame)
+  }
+  b.url = page.url
+  setPlaying(b, false)
+  b.frame.src = WEBVIEW ? page.url : youtubeEmbed(page.url) || page.url
+  b.input.value = page.url
+  b.title.textContent = pageLabel(page.url)
+  setNote(b, WEBVIEW || framable(page.url) ? '' : '이 사이트는 다른 페이지 안에 뜨는 걸 막아 두었을 수 있어요. 안 보이면 ↗로 바깥에서 열어요. Mac 앱에서는 어떤 사이트든 열려요.')
+  savePage(b.app, page.url)
+  syncBrowser()
+}
+
+function makeFrame(b) {
+  if (WEBVIEW) {
+    const view = document.createElement('webview')
+    view.setAttribute('partition', 'persist:orrery-browser')
+    view.setAttribute('allowpopups', '')
+    const went = (url) => {
+      if (browser !== b) return
+      b.url = url
+      if (document.activeElement !== b.input) b.input.value = url
+      savePage(b.app, url)
+    }
+    view.addEventListener('did-navigate', (e) => went(e.url))
+    view.addEventListener('did-navigate-in-page', (e) => e.isMainFrame && went(e.url))
+    view.addEventListener('page-title-updated', (e) => (b.title.textContent = e.title))
+    view.addEventListener('did-start-loading', () => browserEl.classList.add('loading'))
+    view.addEventListener('did-stop-loading', () => browserEl.classList.remove('loading'))
+    view.addEventListener('media-started-playing', () => setPlaying(b, true))
+    view.addEventListener('media-paused', () => setPlaying(b, false))
+    return view
+  }
+  const frame = el('iframe', { className: 'sb-frame', allow: 'autoplay; fullscreen; picture-in-picture; encrypted-media; clipboard-write' })
+  // YouTube's player won't play without knowing the page it's on; only the origin goes.
+  frame.referrerPolicy = 'strict-origin-when-cross-origin'
+  frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-presentation')
+  frame.addEventListener('load', () => listenToPlayer(b))
+  return frame
+}
+
+// YouTube's player tells when it plays or stops once asked (its IFrame API, by message).
+function listenToPlayer(b) {
+  if (!b.frame.src.startsWith('https://www.youtube.com/embed/')) return
+  for (const wait of [0, 500, 1500, 3000]) {
+    setTimeout(() => {
+      if (browser === b) b.frame.contentWindow?.postMessage(JSON.stringify({ event: 'listening', id: 'orrery', channel: 'widget' }), 'https://www.youtube.com')
+    }, wait)
+  }
+}
+
+addEventListener('message', (e) => {
+  if (e.origin !== 'https://www.youtube.com' || !browser?.frame || e.source !== browser.frame.contentWindow) return
+  let data = null
+  try {
+    data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data
+  } catch {
+    return
+  }
+  // Some videos are kept to youtube.com by whoever put them up (101, 150).
+  if (data?.event === 'onError') return setNote(browser, [101, 150, 152].includes(data.info) ? '이 영상은 올린 쪽에서 다른 곳에 띄우지 못하게 막아 두었어요. ↗로 유튜브에서 보거나, Mac 앱에서는 여기서 볼 수 있어요.' : '이 영상을 틀 수 없어요. ↗로 유튜브에서 열어 봐요.')
+  // 1 playing, 3 buffering (no change), anything else stopped.
+  const state = data?.event === 'onStateChange' ? data.info : data?.event === 'infoDelivery' ? data.info?.playerState : undefined
+  if (typeof state === 'number' && state !== 3) setPlaying(browser, state === 1)
+})
+
+function setNote(b, text) {
+  b.note.textContent = text
+  b.note.hidden = !text
+}
+
+// A video playing: the galaxy's sounds step back until it stops.
+function setPlaying(b, on) {
+  if (browser !== b || b.playing === on) return
+  b.playing = on
+  browserEl.classList.toggle('playing', on)
+  sound.hush(on)
+}
+
+// What a star's browser shows before anything is open: the star's servers to open, and
+// what the address box takes.
+function renderBrowserStart() {
+  const b = browser
+  if (!b || b.url) return
+  const ports = starPorts(b.app)
+  const key = JSON.stringify(ports)
+  if (b.start.dataset.key === key) return
+  b.start.dataset.key = key
+  const list = el('div', { className: 'sb-servers' })
+  for (const [port, name] of ports) {
+    const go = el('button', { type: 'button', className: 'sb-server', title: `localhost:${port}` })
+    go.append(el('i', { textContent: '📡' }), el('b', { textContent: name }), el('code', { textContent: `:${port}` }))
+    go.addEventListener('click', () => browse(`:${port}`))
+    list.append(go)
+  }
+  const tips = el('ul', { className: 'sb-tips' })
+  for (const tip of [
+    '주소창에 :5173처럼 포트만 써도 이 Mac의 서버가 열려요',
+    '유튜브 링크를 붙여 넣으면 여기서 바로 봐요. 영상이 나오는 동안 은하 소리는 작아져요',
+    WEBVIEW ? '아무 주소나, 찾을 말을 써도 돼요' : '다른 사이트는 막혀 있으면 ↗로 바깥에서 열어요. Mac 앱에서는 어떤 사이트든 열려요',
+    '터미널을 열거나 Esc를 누르면 구석으로 작게 비켜서 계속 재생돼요'
+  ]) tips.append(el('li', { textContent: tip }))
+  const quick = el('div', { className: 'sb-quick' })
+  if (WEBVIEW) {
+    const youtube = el('button', { type: 'button', className: 'sb-server', textContent: '▶ YouTube' })
+    youtube.addEventListener('click', () => browse('https://www.youtube.com/'))
+    quick.append(youtube)
+  }
+  b.start.replaceChildren(
+    el('h3', { textContent: `🌐 ${b.app}의 브라우저` }),
+    el('p', { className: 'sb-lead', textContent: ports.length ? '이 별에서 돌고 있는 서버' : '이 별에서 돌고 있는 서버가 아직 없어요. 개발 서버를 켜면 여기에 나와요.' }),
+    list,
+    quick,
+    tips
+  )
+}
+
+// The star's server ports along the address bar, kept up as servers come and go.
+function renderBrowserPorts() {
+  const b = browser
+  if (!b) return
+  const ports = starPorts(b.app)
+  const key = JSON.stringify(ports)
+  if (b.ports.dataset.key === key) return
+  b.ports.dataset.key = key
+  b.ports.replaceChildren(
+    ...ports.map(([port, name]) => {
+      const chip = el('button', { type: 'button', className: 'sb-port', title: `${name} · localhost:${port}`, textContent: `:${port}` })
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation()
+        browse(`:${port}`)
+      })
+      return chip
+    })
+  )
+  renderBrowserStart()
+}
+
+// The ports this star's servers listen on, each once, [port, server name]; never Orrery's.
+function starPorts(app) {
+  const ports = new Map()
+  for (const handle of starHandles(app)) {
+    for (const server of servers[sessions.get(handle)?.path] || []) {
+      for (const port of server.ports) if (String(port) !== location.port && !ports.has(port)) ports.set(port, server.name)
+    }
+  }
+  return [...ports].slice(0, 6)
+}
+
+// What was typed, as { url, search }: ":5173" or "5173" is a server on this Mac,
+// "localhost:3000/x" and "example.com" are addresses, anything else is searched for.
+function pageAddress(text) {
+  const typed = String(text || '').trim()
+  if (!typed) return null
+  const port = /^:?(\d{2,5})(\/.*)?$/.exec(typed)
+  let url = port
+    ? `http://localhost:${port[1]}${port[2] || '/'}`
+    : /^https?:\/\//i.test(typed)
+      ? typed
+      : /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(typed)
+        ? `http://${typed}`
+        : !/\s/.test(typed) && /^[\w-]+(\.[\w-]+)+(:\d+)?([/?#].*)?$/.test(typed)
+          ? `https://${typed}`
+          : null
+  if (!url) return { url: `https://www.google.com/search?q=${encodeURIComponent(typed)}`, search: true }
+  try {
+    url = new URL(url)
+  } catch {
+    return null
+  }
+  return /^https?:$/.test(url.protocol) ? { url: url.href, search: false } : null
+}
+
+function isOrrery(url) {
+  const u = new URL(url)
+  return LOCAL_HOST.test(u.hostname) && (u.port || '80') === (location.port || '80')
+}
+
+// What a browser tab can show in a frame: servers on this Mac, and YouTube's player.
+function framable(url) {
+  const u = new URL(url)
+  return LOCAL_HOST.test(u.hostname) || u.hostname.endsWith('.localhost') || Boolean(youtubeEmbed(url))
+}
+
+// A YouTube video or playlist as its embeddable player (which a page may frame, where
+// youtube.com itself may not), from where it was in the link; null for anything else.
+function youtubeEmbed(url) {
+  let u = null
+  try {
+    u = new URL(url)
+  } catch {
+    return null
+  }
+  const host = u.hostname.replace(/^(www|m|music)\./, '')
+  let id = null
+  if (host === 'youtu.be') id = u.pathname.split('/')[1]
+  else if (host === 'youtube.com' || host === 'youtube-nocookie.com') id = u.pathname === '/watch' ? u.searchParams.get('v') : /^\/(?:embed|shorts|live|v)\/([\w-]+)/.exec(u.pathname)?.[1]
+  else return null
+  if (id === 'videoseries') id = null
+  const list = u.searchParams.get('list')
+  if (!(id && /^[\w-]{6,}$/.test(id)) && !list) return null
+  const query = new URLSearchParams({ autoplay: '1', enablejsapi: '1', playsinline: '1', rel: '0', origin: location.origin })
+  const start = seconds(u.searchParams.get('t') || u.searchParams.get('start'))
+  if (start) query.set('start', String(start))
+  if (list) query.set('list', list)
+  return `https://www.youtube.com/embed/${id && /^[\w-]{6,}$/.test(id) ? id : 'videoseries'}?${query}`
+}
+
+// "90", "90s", "1m30s", "1h2m3s" → seconds.
+function seconds(text) {
+  const parts = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/.exec(text || '')
+  return parts ? Number(parts[1] || 0) * 3600 + Number(parts[2] || 0) * 60 + Number(parts[3] || 0) : 0
+}
+
+// A page in a few words, for the corner: its host, or which server on this Mac.
+function pageLabel(url) {
+  const u = new URL(url)
+  if (youtubeEmbed(url)) return '▶ YouTube'
+  return LOCAL_HOST.test(u.hostname) ? `localhost:${u.port || 80}` : u.hostname.replace(/^www\./, '')
+}
+
+function savedPages() {
+  try {
+    return JSON.parse(localStorage.getItem(BROWSER_KEY) || '{}') || {}
+  } catch {
+    return {}
+  }
+}
+
+function savePage(app, url) {
+  try {
+    const pages = savedPages()
+    delete pages[app]
+    // The latest thirty stars' pages, the newest last.
+    const kept = Object.entries({ ...pages, [app]: url }).slice(-30)
+    localStorage.setItem(BROWSER_KEY, JSON.stringify(Object.fromEntries(kept)))
+  } catch {}
 }
 
 // Each app's star is sized and coloured by the agent work in all of its worktrees.
@@ -3437,6 +3822,7 @@ function onShortcut(e) {
   if (e.key === 'Escape' && !typing) return onEscape()
   if (e.key === 'Escape' && e.target === search) return search.blur()
   if (e.key === 'Escape' && e.target.closest('.gx-birth')) return toggleBirth(false)
+  if (e.key === 'Escape' && e.target.closest('.star-browser')) return e.target.blur()
   if ((e.metaKey || e.ctrlKey) && e.code === 'KeyK') {
     e.preventDefault()
     return openPalette()
@@ -3487,7 +3873,12 @@ function onShortcut(e) {
     KeyB: goBack,
     KeyR: () => enterReply(handle),
     KeyO: () => handle && focusInOrca(handle),
-    KeyF: toggleMaximize,
+    KeyF: () => (browser && !browser.mini && !paneOpen ? setBrowserFull(!browser.full) : toggleMaximize()),
+    KeyW: () => {
+      if (!insideApp) return toast(prefs.view === 'galaxy' ? '브라우저는 별 안에서 열어요 · 별 보고서의 🌟 별 안으로' : '브라우저는 은하 보기의 별 안에서 열어요')
+      if (browser && !browser.mini) minimizeBrowser()
+      else openBrowser()
+    },
     KeyG: () => {
       const views = Object.keys(VIEWS)
       setView(views[(views.indexOf(prefs.view) + 1) % views.length])
@@ -3547,6 +3938,8 @@ function onEscape() {
   else if (!guideEl.hidden && !insideApp) toggleGuide(false)
   else if (document.activeElement?.matches('textarea, input, select')) document.activeElement.blur()
   else if (report && !paneOpen) closeReport()
+  else if (browser?.full) setBrowserFull(false)
+  else if (browser && !browser.mini) minimizeBrowser()
   else if (insideApp && paneOpen) closeStarWindow()
   else if (insideApp) leaveStar()
   else if (prefs.view === 'galaxy' && paneOpen) {

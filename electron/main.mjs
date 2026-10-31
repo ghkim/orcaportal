@@ -3,7 +3,7 @@
 //   npm run app                              run from the source
 //   ORRERY_PORT=4899 npm run app             another port
 //   ORRERY_SMOKE=/tmp/shot.png npm run app   open quietly, save a picture of the window, quit
-import { app, BrowserWindow, Menu, Notification, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, Menu, Notification, ipcMain, session, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +12,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.ORRERY_PORT || 4870)
 const SMOKE = process.env.ORRERY_SMOKE
 const SMOKE_MS = 7000
+// A star's browser keeps its sign-ins and cookies here, apart from Orrery's own page.
+const BROWSER_PARTITION = 'persist:orrery-browser'
 
 let win = null
 let pageUrl = null
@@ -23,6 +25,7 @@ else {
   app.on('second-instance', show)
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]))
+    browserSession()
     pageUrl = await serverUrl()
     open()
   })
@@ -56,8 +59,9 @@ function open() {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 18 },
     show: false,
-    // The sea and the bells keep playing while the window is behind others.
-    webPreferences: { preload: path.join(HERE, 'preload.cjs'), backgroundThrottling: false }
+    // The sea and the bells keep playing while the window is behind others. A star's
+    // browser is a <webview>, kept to web pages (see below).
+    webPreferences: { preload: path.join(HERE, 'preload.cjs'), backgroundThrottling: false, webviewTag: true }
   })
   win.once('ready-to-show', () => (SMOKE ? win.showInactive() : win.show()))
   win.on('closed', () => (win = null))
@@ -74,8 +78,34 @@ function open() {
     event.preventDefault()
     openOutside(url)
   })
+  // A star's browser gets no bridge and no Node, a session of its own, and web pages only.
+  win.webContents.on('will-attach-webview', (event, prefs, params) => {
+    delete prefs.preload
+    Object.assign(prefs, { nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true, webSecurity: true })
+    params.partition = BROWSER_PARTITION
+    if (params.src && !/^https?:\/\//.test(params.src)) event.preventDefault()
+  })
   if (SMOKE) smoke()
   win.loadURL(pageUrl)
+}
+
+// A star's browser asks for nothing it doesn't need to show a page: a video may go full
+// screen and a page may copy, but the camera, the microphone, where the Mac is and the
+// rest are refused. It says it is Chrome, which it is, so sites don't turn it away. A
+// link that opens a new window opens in the same browser instead.
+function browserSession() {
+  const browsing = session.fromPartition(BROWSER_PARTITION)
+  const allowed = new Set(['fullscreen', 'clipboard-sanitized-write'])
+  browsing.setPermissionRequestHandler((_contents, permission, done) => done(allowed.has(permission)))
+  browsing.setPermissionCheckHandler((_contents, permission) => allowed.has(permission))
+  browsing.setUserAgent(browsing.getUserAgent().replace(/ (Electron|orrery)\/\S+/gi, ''))
+  app.on('web-contents-created', (_event, contents) => {
+    if (contents.getType() !== 'webview') return
+    contents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//.test(url)) contents.loadURL(url)
+      return { action: 'deny' }
+    })
+  })
 }
 
 function show() {
