@@ -3137,7 +3137,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   // second dress, a ring across the first, a third dress, and at the last a little spiral
   // galaxy of its own. Each of its latest releases is a shell of light round it, coloured
   // by the release's name. Reaching a stage, or a new release, is celebrated once the
-  // page has settled; the music hears the stage too (voiceOf).
+  // page has settled (not when the count only moved from the tags to GitHub's releases or
+  // back); the music hears the stage too (voiceOf).
   function setGrowth(system, growth) {
     const stage = growth ? GROWTH_STAGES.filter((n) => growth.landings >= n).length : 0
     const before = system.growth
@@ -3149,7 +3150,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       if (stage > before.stage) {
         celebrate(system)
         onGrowth?.(system.app, { stage })
-      } else if (growth.releases > before.releases) {
+      } else if (growth.releases > before.releases && growth.source === before.source) {
         flashAt(system, system.dress.colors[1])
         onSound?.('release')
         onGrowth?.(system.app, { release: growth.latest?.[0]?.name || null })
@@ -3939,7 +3940,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       if (!system) return null
       const { name, time, bornAt, kind } = system.dress
       const g = system.growth
-      const growth = g && { stage: g.stage, landings: g.landings, commits: g.commits, releases: g.releases, base: g.base, next: GROWTH_STAGES[g.stage] ?? null, latest: g.latest?.[0]?.name || null }
+      const growth = g && { stage: g.stage, landings: g.landings, commits: g.commits, releases: g.releases, source: g.source, base: g.base, next: GROWTH_STAGES[g.stage] ?? null, latest: g.latest?.[0]?.name || null }
       return { name, time, bornAt, kind, inside: INTERIORS[kind], growth }
     },
     overview,

@@ -41,7 +41,8 @@ const servers = new Servers({ paths: () => portal.sessions.map((s) => s.path) })
 const disk = new Disk({ paths: () => portal.sessions.map((s) => s.path) })
 portal.on('state', () => disk.pathsChanged())
 // What has landed on each repo's default branch, and its releases: stars grow by them.
-const growth = new Growth({ paths: () => portal.sessions.map((s) => s.path) })
+// ORRERY_GITHUB=0 counts the tags alone, without asking GitHub.
+const growth = new Growth({ paths: () => portal.sessions.map((s) => s.path), releases: process.env.ORRERY_GITHUB === '0' ? null : undefined })
 portal.on('state', () => growth.pathsChanged())
 // With Orrery open in more than one place, only the page touched last plays sound.
 const speaker = new Speaker()

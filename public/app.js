@@ -2859,9 +2859,9 @@ function mergeNote(session) {
 // What each stage of a star's growth adds (see the galaxy's buildGrowth).
 const GROWTH_NAMES = ['씨앗', '빛고리', '두 번째 옷', '엇갈린 고리', '세 번째 옷', '작은 은하']
 
-function growthLine({ stage, landings, commits, releases, base, next }) {
+function growthLine({ stage, landings, commits, releases, source, base, next }) {
   const parts = [`🌱 ${stage}단계 ${GROWTH_NAMES[stage]}`, `${base}에 머지 ${landings.toLocaleString()}`, `커밋 ${commits.toLocaleString()}`]
-  if (releases) parts.push(`릴리즈 ${releases}`)
+  if (releases) parts.push(`${source === 'github' ? 'GitHub ' : ''}릴리즈 ${releases.toLocaleString()}`)
   parts.push(next ? `다음 단계까지 ${(next - landings).toLocaleString()}` : '마지막 단계')
   return parts.join(' · ')
 }
