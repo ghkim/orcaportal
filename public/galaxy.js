@@ -269,6 +269,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   let active = false
   let lastFrame = 0
   let lastInput = 0
+  let backdrop = false // a terminal open over the view inside a star: the slow pace will do
   let dragging = false
   let releasedAt = 0
   let time = 0
@@ -412,7 +413,11 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     }
     for (const [app, system] of systems) {
       if (byApp.has(app)) continue
-      if (inside?.system === system) leaveStar()
+      // Inside it as it goes: out to watch it go, not left in the middle of the nova.
+      if (inside?.system === system) {
+        leaveStar()
+        if (fading.has(system)) flyToSystem(system)
+      }
       systems.delete(app)
       if (fading.has(system)) {
         dying.push({ kind: 'star', system, start: now, duration: NOVA_MS })
@@ -2605,8 +2610,6 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     if (inside?.system === system) return voiceOf(system)
     if (inside) leaveStar({ quiet: true })
     inside = { system, view: interior(system) }
-    controls.minDistance = 0.12 * system.size
-    controls.maxDistance = 0.95 * system.size
     flight = {
       from: camera.position.clone(),
       fromTarget: controls.target.clone(),
@@ -2639,8 +2642,6 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     const { system, view } = inside
     inside = null
     leftViews.push(view)
-    controls.minDistance = 4
-    controls.maxDistance = 2200
     showStarBody(system)
     if (!quiet) onInside?.(null)
     if (fly) flyToSystem(system)
@@ -2666,6 +2667,28 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     hideStarBody(system)
   }
 
+  // A wall for each kind of inside, kept when its star is left: going back in, or into
+  // another star of that kind, doesn't build its shader again.
+  const walls = new Map()
+  function takeWall(look, a, b, light) {
+    const material = walls.get(look.kind)
+    if (!material) return interiorMaterial(look, a, b, light, pointUniforms.uTime)
+    walls.delete(look.kind)
+    const u = material.uniforms
+    u.uA.value.copy(a)
+    u.uB.value.copy(b)
+    u.uLight.value.copy(light)
+    u.uSeed.value = look.seed
+    u.uPetals.value = look.petals
+    u.uLevel.value = 0
+    u.uPulse.value = 0
+    return material
+  }
+  function giveWall(kind, material) {
+    if (walls.has(kind)) material.dispose()
+    else walls.set(kind, material)
+  }
+
   // A star's inside, in units of its radius, turned with its planets' plane. The walls
   // are its light all round (interiorMaterial), kept faint enough for the galaxy to show
   // through and clear towards the galactic core. In the middle its heart, a little sun of
@@ -2677,7 +2700,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     const [a, b] = look.colors.map((c) => new THREE.Color(c))
     const light = system.color.clone().lerp(WHITE, 0.25)
     const group = new THREE.Group()
-    const wall = new THREE.Mesh(sphere, interiorMaterial(look, a, b, light, pointUniforms.uTime))
+    const wall = new THREE.Mesh(sphere, takeWall(look, a, b, light))
     wall.frustumCulled = false
     const heart = new THREE.Mesh(sphere, starMaterial(look.seed, pointUniforms.uTime))
     heart.material.uniforms.color.value.copy(light)
@@ -2748,6 +2771,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       level: 0,
       step(dt) {
         const level = smooth(0, 1, view.level)
+        // Not yet lit, or faded out: nothing to draw.
+        group.visible = level > 0.002
+        if (!group.visible) return
         const t = time + (system.seed % 100)
         group.scale.setScalar(1.25 * system.size)
         ahead.set(0, 0, 0)
@@ -2769,6 +2795,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
           const k = (beat + 1 - i * 0.2) % 1
           ring.scale.setScalar(r * (3 + 40 * Math.sqrt(k)))
           ring.material.opacity = level * Math.pow(1 - k, 2) * 0.35
+          ring.visible = ring.material.opacity > 0.01
         })
         motes.step(dt, t, level, pulse, 1.25 * system.size)
         const merged = system.planets.filter((p) => p.inside >= 0.99).slice(-MEMORIES).map((p) => ({ handle: p.handle, text: p.item.mergeNote || p.item.planet || '합쳐진 작업' }))
@@ -2790,7 +2817,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       dispose() {
         clearMemories()
         group.removeFromParent()
-        wall.material.dispose()
+        giveWall(look.kind, wall.material)
         heart.material.dispose()
         halo.material.dispose()
         for (const ring of beats) ring.material.dispose()
@@ -2862,8 +2889,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   // moves on to one it hasn't seen lately. Every few legs it pulls back to show the whole
   // galaxy from a low angle. The music follows the star in view. Anything touched stops it
   // where it is.
+  // Inside a star the camera stays: a tour would take it to another star still inside out.
   function setCruise(on) {
-    on = on && !reduceMotion
+    on = on && !reduceMotion && !inside
     if (on === Boolean(cruising)) return
     cruising = on ? { legs: 0, recent: [], leg: null } : null
     if (!on && flight?.cruise) flight = null
@@ -3323,9 +3351,10 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     requestAnimationFrame(frame)
     stepArea()
     const busy =
-      flight || dying.length || births.length || comets.length || meteors.length || thrown.length || bursts.length || aim || grab || hole.group.visible || areaGoal || now - lastInput < 2500
-    // 60 fps while something moves on purpose, 30 fps for the ambient drift.
-    if (now - lastFrame < (busy ? 0 : 32)) return
+      flight || aim || grab || now - lastInput < 2500 || (!backdrop && (dying.length || births.length || comets.length || meteors.length || thrown.length || bursts.length || hole.group.visible || areaGoal))
+    // 60 fps while something moves on purpose (not more on a 120 Hz screen), 30 fps for the
+    // ambient drift, and for the view behind a terminal's window inside a star.
+    if (now - lastFrame < (busy ? 15 : 32)) return
     const dt = Math.min(0.1, (now - (lastFrame || now)) / 1000)
     if (lastFrame) watchSpeed(now - lastFrame, Boolean(busy), now)
     lastFrame = now
@@ -3473,6 +3502,11 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       orbitSph.phi += (goal - orbitSph.phi) * Math.min(1, dt * 0.15)
       camera.position.copy(controls.target).add(offset.setFromSpherical(orbitSph))
     } else idle = 0
+    // The zoom keeps the camera inside the star, or out of every star, but only once it
+    // lands: OrbitControls clamps each frame, and a flight held to it would jump.
+    const s = inside?.system.size
+    controls.minDistance = flying ? 0 : inside ? 0.12 * s : 4
+    controls.maxDistance = flying ? Infinity : inside ? 0.95 * s : 2200
     controls.update(dt)
     updateLabels()
     if (pointerDirty && !aim && !grab) hoverAt(pointer)
@@ -3858,13 +3892,18 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       const at = holeSpot()
       return { x: box.left + at.x, y: box.top + at.y, radius: HOLE_PX }
     },
-    setActive(on) {
+    // Inside a star with a terminal open over it, the view is only a backdrop.
+    setBackdrop(on) {
+      backdrop = on
+    },
+    // Back on screen with `keep` (a window shown again), the camera stays where it was.
+    setActive(on, { keep = false } = {}) {
       if (on === active) return
       active = on
       if (!on) return cancelPlay()
       resize()
       lastFrame = 0
-      if (!follow && !flight) overview()
+      if (!follow && !flight && !keep) overview()
       requestAnimationFrame(frame)
     }
   }
@@ -4691,7 +4730,17 @@ function interiorMaterial(look, a, b, light, uTime) {
       uniform float uTime; uniform vec3 uA; uniform vec3 uB; uniform vec3 uLight; uniform float uLevel;
       uniform vec3 uAhead; uniform float uSeed; uniform float uPetals; uniform float uPulse;
       varying vec3 vDir;
-      float hash(vec3 p) { return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+      // Hashes of arithmetic only (no sin): cheaper, and the same on every GPU.
+      float hash(vec3 p) {
+        p = fract(p * 0.1031);
+        p += dot(p, p.zyx + 31.32);
+        return fract((p.x + p.y) * p.z);
+      }
+      vec3 hash3(vec3 p) {
+        p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+        p += dot(p, p.yxz + 33.33);
+        return fract((p.xxy + p.yxx) * p.zyx);
+      }
       float noise(vec3 p) {
         vec3 i = floor(p);
         vec3 f = fract(p);
@@ -4702,7 +4751,7 @@ function interiorMaterial(look, a, b, light, uTime) {
       float fbm(vec3 p) { return 0.62 * noise(p) + 0.38 * noise(p * 2.03 + 7.1); }
       void main() {
         vec3 d = normalize(vDir);
-        vec3 A = normalize(uAhead);
+        vec3 A = uAhead; // already a unit vector
         float t = uTime;
         // Longitude round the planets' axis. atan(0, 0) is NaN on some GPUs.
         float lon = abs(d.x) + abs(d.z) < 1e-5 ? 0.0 : atan(d.z, d.x);
@@ -4715,7 +4764,7 @@ function interiorMaterial(look, a, b, light, uTime) {
           // and here and there a loop of it thrown up and falling back.
           float cells = noise(d * 15.0 + vec3(0.0, t * 0.05, uSeed));
           float lanes = 1.0 - smoothstep(0.0, 0.16, abs(cells - 0.5));
-          float big = fbm(d * 2.6 + vec3(t * 0.015, uSeed, 0.0));
+          float big = g;
           col += mix(uA, uLight, big) * (0.035 + 0.15 * lanes * big);
           float arc = 1.0 - smoothstep(0.0, 0.025, abs(noise(d * 2.2 + vec3(uSeed)) - 0.5));
           col += uB * arc * 0.2 * smoothstep(0.45, 0.7, noise(d * 4.0 - vec3(t * 0.03)));
@@ -4736,8 +4785,7 @@ function interiorMaterial(look, a, b, light, uTime) {
           float lobe = (1.0 - smoothstep(width * 0.6, width, abs(y))) * smoothstep(0.1, 0.45, x);
           float rim = 0.35 + 0.65 * smoothstep(width * 0.25, width * 0.9, abs(y));
           float vein = 0.75 + 0.25 * sin(atan(y, x + 1e-4) * 14.0);
-          float n = fbm(d * 4.0 + vec3(uSeed, t * 0.02, 0.0));
-          col += mix(uA, uB, smoothstep(0.2, 0.95, x)) * lobe * rim * vein * (0.2 + 0.5 * n);
+          col += mix(uA, uB, smoothstep(0.2, 0.95, x)) * lobe * rim * vein * (0.2 + 0.5 * g);
         #endif
         #ifdef KIND_ROSE
           // Petals round the way out, two rings of them turning slowly against each other.
@@ -4750,8 +4798,7 @@ function interiorMaterial(look, a, b, light, uTime) {
           float p2 = pow(abs(cos((phi - turn * 0.7) * uPetals * 0.5 + 0.8)), 3.0);
           float ring1 = smoothstep(0.35, 0.75, off) * (1.0 - smoothstep(0.9 + 0.35 * p1, 1.5 + 0.35 * p1, off));
           float ring2 = smoothstep(0.9, 1.3, off) * (1.0 - smoothstep(1.6 + 0.4 * p2, 2.3 + 0.4 * p2, off));
-          float n = fbm(d * 5.0 + vec3(uSeed, t * 0.02, 0.0));
-          col += uA * ring1 * p1 * (0.1 + 0.2 * n) + uB * ring2 * p2 * (0.07 + 0.16 * n);
+          col += uA * ring1 * p1 * (0.1 + 0.2 * g) + uB * ring2 * p2 * (0.07 + 0.16 * g);
         #endif
         #ifdef KIND_AURORA
           // Curtains hanging overhead, folding and swaying, one colour at the hem, the other above.
@@ -4772,15 +4819,13 @@ function interiorMaterial(look, a, b, light, uTime) {
           float th = acos(clamp(abs(d.y), 0.0, 1.0));
           float arms = pow(0.5 + 0.5 * cos(2.0 * lon - 5.0 * log(th + 0.05) - t * 0.15), 4.0);
           float span = smoothstep(0.04, 0.35, th) * (1.0 - 0.6 * smoothstep(1.2, 1.57, th));
-          float n = fbm(d * 5.0 + vec3(uSeed, -t * 0.03, 0.0));
-          col += mix(uA, uB, smoothstep(0.2, 1.3, th)) * arms * span * (0.16 + 0.4 * n) + uLight * (1.0 - smoothstep(0.0, 0.25, th)) * 0.1;
+          col += mix(uA, uB, smoothstep(0.2, 1.3, th)) * arms * span * (0.16 + 0.4 * g) + uLight * (1.0 - smoothstep(0.0, 0.25, th)) * 0.1;
         #endif
         #ifdef KIND_PULSAR
           // Its beam sweeping round like a lighthouse's, and the gas flaring on each beat.
           float m = abs(sin(lon - t * 1.4 - uSeed));
           float beam = exp(-pow(m / 0.05, 2.0)) * (0.35 + 0.65 * cos(lat));
-          float n = fbm(d * 4.0 + vec3(uSeed, t * 0.02, 0.0));
-          col += uA * beam * 0.3 + mix(uA, uB, n) * (0.03 + 0.12 * uPulse) * n;
+          col += uA * beam * 0.3 + mix(uA, uB, g) * (0.03 + 0.12 * uPulse) * g;
         #endif
         #ifdef KIND_PRISM
           // Walls of cut crystal: facets, each its own colour of the rainbow, now and then
@@ -4793,7 +4838,7 @@ function interiorMaterial(look, a, b, light, uTime) {
           vec3 cell = vec3(0.0);
           for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
             vec3 o = vec3(float(x), float(y), float(z));
-            vec3 h = fract(sin(vec3(dot(i + o, vec3(127.1, 311.7, 74.7)), dot(i + o, vec3(269.5, 183.3, 246.1)), dot(i + o, vec3(113.5, 271.9, 124.6)))) * 43758.5453);
+            vec3 h = hash3(i + o);
             vec3 c = o + h - f;
             float dd = dot(c, c);
             if (dd < d1) { d2 = d1; d1 = dd; cell = i + o; } else if (dd < d2) d2 = dd;
@@ -4831,8 +4876,10 @@ function interiorMotes(look, a, b, light, uniforms) {
   const motes = Array.from({ length: MOTES }, () => ({ p: new THREE.Vector3(), v: new THREE.Vector3(), age: 0, life: 1, size: 1, phase: 0, rate: 1, radius: 0, angle: 0, height: 0 }))
   const c = new THREE.Color()
   const dir = new THREE.Vector3()
+  let respawned = false
 
   function spawn(m, i, first) {
+    respawned = true
     m.age = first ? rand() * 8 : 0
     m.phase = rand() * 100
     m.rate = 0.6 + rand() * 1.2
@@ -4896,6 +4943,8 @@ function interiorMotes(look, a, b, light, uniforms) {
         gl_PointSize = clamp(size * uUnit * uScale / d, 0.0, 44.0 * uPixel);
         // Nothing flares up right in front of the eye.
         vAlpha = alpha * smoothstep(0.03 * uUnit, 0.12 * uUnit, d);
+        // An unlit mote costs nothing to draw.
+        if (vAlpha < 0.002) gl_PointSize = 0.0;
         vTint = tint;
         vSpin = spin;
       }`,
@@ -4925,6 +4974,9 @@ function interiorMotes(look, a, b, light, uniforms) {
   return {
     points,
     step(dt, t, level, pulse, unit) {
+      // Unseen, they wait where they are.
+      points.visible = level > 0.002
+      if (!points.visible) return
       material.uniforms.uUnit.value = unit
       motes.forEach((m, i) => {
         m.age += dt
@@ -4977,7 +5029,10 @@ function interiorMotes(look, a, b, light, uniforms) {
         size[i] = m.size * (motion === 'glint' ? 0.4 + shine : 1)
         alpha[i] = level * shine
       })
-      for (const key of ['position', 'size', 'alpha', 'spin']) geometry.attributes[key].needsUpdate = true
+      for (const key of ['position', 'size', 'alpha']) geometry.attributes[key].needsUpdate = true
+      if (motion === 'fall' || motion === 'glint') geometry.attributes.spin.needsUpdate = true
+      if (respawned) geometry.attributes.tint.needsUpdate = true
+      respawned = false
     },
     dispose() {
       geometry.dispose()

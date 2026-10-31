@@ -207,6 +207,7 @@ let growth = {} // worktree path -> what has landed on its repo's default branch
 let paneOpen = false
 // The star the viewer went into to work: its terminal is the main window, the galaxy all round.
 let insideApp = null
+let windowShown = true // the Mac app's window: false while hidden or minimized
 // The galaxy's short report: one app's terminals, only what needs a decision and how work is going.
 let report = null // { app, handle } — handle is the terminal the report points at, if any
 const quickDrafts = new Map() // handle -> half-written quick reply, kept across redraws
@@ -1270,12 +1271,18 @@ function setExpandButton(card, active) {
   button.title = title
 }
 
+// The galaxy draws while it's the view, not covered by a maximized terminal, and its window
+// is on screen.
+function galaxyRuns() {
+  return prefs.view === 'galaxy' && !maximized && windowShown
+}
+
 function setMaximized(on) {
   if (on && !isDocked()) return
   if (on && prefs.view === 'galaxy') setPaneOpen(true)
   maximized = on
   document.body.classList.toggle('maximized', on)
-  galaxy?.setActive(prefs.view === 'galaxy' && !on)
+  galaxy?.setActive(galaxyRuns())
   for (const card of cards.values()) setExpandButton(card, on)
   const card = cards.get(focusedHandle)
   if (card) {
@@ -1392,6 +1399,12 @@ function setupControls() {
   if (desktop) {
     document.body.classList.add('in-app')
     desktop.onPick((handle) => sessions.has(handle) && pick(handle))
+    // The app keeps running behind other windows (for the sound), so it says when its
+    // window is hidden or minimized: nothing to draw then.
+    desktop.onShown?.((shown) => {
+      windowShown = shown
+      galaxy?.setActive(galaxyRuns(), { keep: true })
+    })
   }
   birthEl.addEventListener('input', onBirthInput)
   birthEl.addEventListener('submit', onBirthSubmit)
@@ -2568,7 +2581,7 @@ function ensureGalaxy() {
       galaxy = createGalaxy(cosmos, {
         universe,
         // Inside a star, one of its own planets opens its window there.
-        onPick: (handle) => (insideApp && sessions.get(handle)?.project === insideApp ? openStarWindow(handle) : pick(handle)),
+        onPick: (handle) => (insideApp && sessions.get(handle)?.project === insideApp ? openStarWindow(handle, { toggle: false }) : pick(handle)),
         onPickSystem: (app) => {
           if (app === insideApp) return
           if ([...testItems.values()].some((i) => i.app === app)) testFocus = app
@@ -2601,7 +2614,7 @@ function ensureGalaxy() {
       galaxy.setLook(lookOf(prefs.look))
       galaxy.setDecor(decorFlags())
       galaxy.setRemnants(remnants)
-      galaxy.setActive(prefs.view === 'galaxy' && !maximized)
+      galaxy.setActive(galaxyRuns())
       renderAll()
       for (const job of forming.values()) showForming(job)
       // Only a session the user chose; the opening view is the whole galaxy.
@@ -2640,6 +2653,7 @@ function setPaneOpen(open) {
   paneToggle.setAttribute('aria-expanded', String(open))
   paneToggle.title = open ? '세션 패널 닫기 (Esc)' : '세션 패널 열기'
   if (open) setZen(false)
+  galaxy?.setBackdrop(Boolean(insideApp && open))
   layoutGalaxy({ animate: true })
 }
 
@@ -2649,8 +2663,9 @@ function setZen(on) {
   zenMoved = 0
   document.body.classList.toggle('zen', on)
   // With the cruise on, the camera tours the galaxy while it's quiet, and stops where it
-  // is the moment anything is touched. Without it, quiet mode only clears the screen.
-  galaxy?.cruise(on && prefs.cruise)
+  // is the moment anything is touched. Without it, or inside a star, quiet mode only
+  // clears the screen.
+  galaxy?.cruise(on && prefs.cruise && !insideApp)
   if (!on) return
   setPaneOpen(false)
   closeReport()
@@ -2882,6 +2897,9 @@ function enterStar(app) {
   const voice = galaxy?.enterStar(app)
   if (!voice) return
   insideApp = app
+  // Keys and the window act on the focused terminal: one of this star's, never one left
+  // behind in another.
+  if (sessions.get(focusedHandle)?.project !== app) setFocus(starHandles(app)[0], { stay: true })
   document.body.classList.add('inside-star')
   setZen(false)
   closeReport()
@@ -2904,6 +2922,7 @@ function leaveStar({ fly = true } = {}) {
   starTabs.replaceChildren()
   delete starTabs.dataset.key
   sound.setInside(null)
+  galaxy?.setBackdrop(false)
   if (fly) galaxy?.leaveStar()
   setPaneOpen(false)
   layoutGalaxy({ animate: true })
@@ -2911,13 +2930,13 @@ function leaveStar({ fly = true } = {}) {
 }
 
 // Inside a star, a planet's terminal opens over the view; the same chip, or Esc, shuts it
-// again to go on looking.
-function openStarWindow(handle) {
+// again to go on looking. A planet itself only opens, so a double click doesn't shut it.
+function openStarWindow(handle, { toggle = true } = {}) {
   if (!insideApp) return
-  const own = starHandles(insideApp)
-  const pick = own.includes(handle) ? handle : own.includes(focusedHandle) ? focusedHandle : own[0]
+  const own = (h) => sessions.get(h)?.project === insideApp
+  const pick = own(handle) ? handle : own(focusedHandle) ? focusedHandle : starHandles(insideApp)[0]
   if (!pick) return
-  if (paneOpen && pick === focusedHandle) return closeStarWindow()
+  if (paneOpen && pick === focusedHandle) return toggle ? closeStarWindow() : undefined
   setFocus(pick, { stay: true })
   setPaneOpen(true)
   layoutGalaxy()
@@ -2950,19 +2969,23 @@ function renderStarTabs() {
   const tabs = el('div', { className: 'st-tabs', role: 'tablist' })
   for (const handle of handles) {
     const session = sessions.get(handle)
-    const tab = el('button', { type: 'button', className: 'st-tab', role: 'tab', dataset: { status: statusOf(handle) }, title: [session.title, session.branch, session.path, handle === open ? '다시 누르면 닫혀요' : '눌러서 터미널 열기'].filter(Boolean).join('\n') })
+    const tab = el('button', { type: 'button', className: 'st-tab', role: 'tab', dataset: { status: statusOf(handle), handle }, title: [session.title, session.branch, session.path, handle === open ? '다시 누르면 닫혀요' : '눌러서 터미널 열기'].filter(Boolean).join('\n') })
     tab.setAttribute('aria-selected', String(handle === open))
     tab.append(el('i', { className: 'dot' }), el('span', { textContent: session.title || session.name || '터미널' }), ...(session.branch ? [el('small', { textContent: session.branch })] : []))
     tab.addEventListener('click', () => openStarWindow(handle))
     tabs.append(tab)
   }
   const toggle = open
-    ? el('button', { type: 'button', className: 'st-out', title: '터미널을 닫고 둘러봐요 (Esc)', textContent: '🔭 둘러보기' })
-    : el('button', { type: 'button', className: 'st-out', title: '터미널 열기 (Enter)', textContent: '터미널 열기 ↵' })
+    ? el('button', { type: 'button', className: 'st-out', title: '터미널을 닫고 둘러봐요 (Esc)', textContent: '🔭 둘러보기', dataset: { part: 'toggle' } })
+    : el('button', { type: 'button', className: 'st-out', title: '터미널 열기 (Enter)', textContent: '터미널 열기 ↵', dataset: { part: 'toggle' } })
   toggle.addEventListener('click', () => (open ? closeStarWindow() : openStarWindow()))
-  const out = el('button', { type: 'button', className: 'st-out', title: '별 밖으로 (Esc)', textContent: '별 밖으로' })
+  const out = el('button', { type: 'button', className: 'st-out', title: '별 밖으로 (Esc)', textContent: '별 밖으로', dataset: { part: 'out' } })
   out.addEventListener('click', () => leaveStar())
+  // The keyboard stays on the same chip or button through a redraw.
+  const was = starTabs.contains(document.activeElement) ? document.activeElement : null
+  const again = was?.dataset.handle ? `[data-handle="${CSS.escape(was.dataset.handle)}"]` : was?.dataset.part ? `[data-part="${was.dataset.part}"]` : null
   starTabs.replaceChildren(name, tabs, toggle, out)
+  if (again) starTabs.querySelector(again)?.focus()
   starTabs.hidden = false
 }
 
@@ -3371,6 +3394,15 @@ function onShortcut(e) {
     fn()
   }
   const digit = /^(?:Digit|Numpad)([1-9])$/.exec(e.code)?.[1]
+  // Inside a star with its window shut, no menu is in sight to answer: a number waits,
+  // and R opens the window to reply in.
+  if (insideApp && !paneOpen && ((digit && !e.shiftKey) || e.code === 'KeyR')) {
+    if (e.code === 'KeyR') run(() => {
+      openStarWindow()
+      enterReply(focusedHandle)
+    })
+    return
+  }
   if (digit && !e.shiftKey) {
     if (handle && !e.repeat) run(() => chooseByNumber(handle, Number(digit)))
     return
@@ -3427,6 +3459,7 @@ function onShortcut(e) {
     },
     KeyI: () => {
       if (prefs.view !== 'galaxy') return toast('보는 법은 은하 보기에서 봐요')
+      if (insideApp) return toast('보는 법은 별 밖에서 봐요')
       toggleGuide()
     },
     KeyZ: () => {
@@ -3455,9 +3488,9 @@ function onEscape() {
   else if (zen) setZen(false)
   else if (maximized) setMaximized(false)
   else if (expandedHandle) collapse()
-  else if (!paneNotice.hidden) hideNotice()
+  else if (!paneNotice.hidden && (paneOpen || prefs.view !== 'galaxy')) hideNotice()
   else if (!logEl.hidden) toggleLog(false)
-  else if (!guideEl.hidden) toggleGuide(false)
+  else if (!guideEl.hidden && !insideApp) toggleGuide(false)
   else if (document.activeElement?.matches('textarea, input, select')) document.activeElement.blur()
   else if (report && !paneOpen) closeReport()
   else if (insideApp && paneOpen) closeStarWindow()
@@ -3587,7 +3620,7 @@ function setView(view) {
   setZen(false)
   closeReport()
   if (view === 'galaxy') setPaneOpen(false)
-  galaxy?.setActive(view === 'galaxy')
+  galaxy?.setActive(galaxyRuns())
   if (view === 'galaxy') ensureGalaxy()
   syncAmbient()
   renderAll()

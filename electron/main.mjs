@@ -61,6 +61,9 @@ function open() {
   })
   win.once('ready-to-show', () => (SMOKE ? win.showInactive() : win.show()))
   win.on('closed', () => (win = null))
+  // Still running behind other windows, but hidden or in the Dock there is nothing to
+  // draw: the page stops the galaxy until the window is back.
+  for (const [event, shown] of [['hide', false], ['minimize', false], ['show', true], ['restore', true]]) win.on(event, () => win?.webContents.send('shown', shown))
   // Links (a PR, a dev server) open in the browser; the window only ever shows Orrery.
   win.webContents.setWindowOpenHandler(({ url }) => {
     openOutside(url)

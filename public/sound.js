@@ -238,6 +238,7 @@ export function createSound() {
         fade(bus.music, 0, 1.5)
         fade(bus.gather, 0, 1.5)
         if (grove) fade(grove.level, 0, 1.5)
+        syncHum()
       }
       stopTimers()
       return
@@ -1192,6 +1193,7 @@ function startHum(ctx, out, freq, stage = 0) {
     level,
     stop() {
       for (const osc of [...voices, breath]) osc.stop()
+      level.disconnect()
     }
   }
 }

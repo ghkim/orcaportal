@@ -734,6 +734,8 @@ body[data-view='galaxy'].inside-star.pane-closed:not(.maximized) .pane {
   transform: translateX(-50%) scale(0.95);
   transition: opacity 0.3s ease, transform 0.35s ease, visibility 0s 0.35s;
 }
+/* Maximized (F), the terminal takes the whole window, as it does outside a star. */
+body[data-view='galaxy'].inside-star.maximized .pane { inset: 0; width: 100%; height: auto; border: 0; border-radius: 0; transform: none; }
 body[data-view='galaxy'].inside-star .pane-toggle { display: none; }
 body[data-view='galaxy'].inside-star .card { background: rgb(6 8 20 / 22%); box-shadow: none; }
 body[data-view='galaxy'].inside-star .card .screen { background: rgb(2 3 10 / 34%); }
@@ -799,8 +801,10 @@ body[data-view='galaxy'].inside-star .star-tabs:not([hidden]) {
 .rp-enter { margin-left: auto; }
 .rp-enter + .rp-new { margin-left: 6px; }
 @media (max-width: 720px) {
-  body[data-view='galaxy'].inside-star .pane { top: 6%; bottom: 84px; width: calc(100% - 24px); }
+  body[data-view='galaxy'].inside-star .pane { top: 6%; bottom: 84px; width: calc(100% - 24px); height: auto; }
+  .st-star { flex: 0 1 auto; min-width: 0; max-width: 28%; }
   .st-star small { display: none; }
+  .st-out { padding: 4px 8px; }
 }
 /* A pull request merged into the star, on its wall inside: faint until pointed at. */
 .gx-memory { pointer-events: none; }
@@ -1081,6 +1085,9 @@ body.titles-off .gx-labels { visibility: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .card.warp, .gx-planet .ret, .gx-star.born, .gx-planet.born span { animation: none; }
   body[data-view='galaxy'] .pane, body[data-view='galaxy'] .pane-toggle { transition: none; }
+  body[data-view='galaxy'].inside-star .pane,
+  body[data-view='galaxy'].inside-star.pane-closed:not(.maximized) .pane { transition: none; }
+  body[data-view='galaxy'].inside-star .star-tabs:not([hidden]) { animation: none; }
 }
 @media (max-width: 720px) {
   body[data-view='galaxy'] .layout { grid-template-columns: minmax(0, 1fr); }
