@@ -17,6 +17,7 @@ import { Disk } from './src/disk.mjs'
 import { Speaker } from './src/speaker.mjs'
 import { Projects, projectName, gitUrl, AGENTS } from './src/projects.mjs'
 import { Worktrees } from './src/worktrees.mjs'
+import { universeOf } from './src/universe.mjs'
 import { keyBytes } from './public/keys.js'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -43,6 +44,8 @@ const speaker = new Speaker()
 // New projects made from the page: a folder, a repo, added to Orca, an agent started in it.
 const projects = new Projects(client)
 const worktrees = new Worktrees(client)
+// Read once: the Mac's name and when Orca first ran on it, for the galaxy's shape.
+const universe = universeOf()
 // The moment a new project's terminal could be there, look for it.
 projects.on('birth', (job) => (job.done || job.step === 'agent') && portal.refreshSoon())
 let port = 0 // set by start()
@@ -93,6 +96,7 @@ function openEventStream(req, res, page, visible) {
   for (const job of projects.jobs.values()) write('birth', job)
   if (page) speaker.join(page, { visible })
   write('speaker', { id: speaker.current })
+  universe.then((u) => res.writable && write('universe', u))
 
   const onState = (data) => write('state', data)
   const onScreen = (data) => write('screen', data)

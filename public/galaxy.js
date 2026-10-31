@@ -9,14 +9,16 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js'
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js'
 
 const GALAXY_RADIUS = 320
-const ARMS = 3
-const SPIN = 0.0145 // arm twist, radians per unit of radius
-const WARP = 30 // how far the rim of the disc bends up on one side and down on the other
+// The shape of this galaxy, grown from its universe (see galaxyShape()) and set by
+// createGalaxy before anything is built. These are the galaxy Orrery always had.
+let ARMS = 3
+let SPIN = 0.0145 // arm twist, radians per unit of radius; negative winds the other way
+let WARP = 30 // how far the rim of the disc bends up on one side and down on the other
 const SPOT_CHOICES = 16 // a new star looks at this many spots of its own and takes the emptiest
 const MILESTONES = [1e7, 5e7, 1e8, 5e8, 1e9] // an app's tokens: each one passed is celebrated
 const CROWN_GLINTS = [0, 3, 5, 7, 9, 12] // glints in a star's crown, by milestones passed
 const WARMUP_MS = 60_000 // tokens still being counted after the page opens: no celebrations yet
-const DISC_SPIN = 0.012 // galaxy rotation, radians per second (about 9 minutes a turn)
+let DISC_SPIN = 0.012 // galaxy rotation, radians per second (about 9 minutes a turn), the way its arms trail
 const UP = new THREE.Vector3(0, 1, 0)
 const OVERVIEW_DIR = new THREE.Vector3(0, 0.6, 0.8).normalize()
 const PIXEL_BUDGET = 3.7e6 // about 2560×1440 drawn pixels
@@ -126,7 +128,14 @@ const UNKNOWN_STAR = new THREE.Color('#f4f2ff') // until a star's colour is know
 // onPlay hears about play (a meteor caught, a comet swallowed) for the page's log.
 // onClean is asked when a planet is dropped into the black hole; the page confirms
 // with the user, closes the terminal and then calls swallow(), or cancelClean().
-export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSound, onOverview, onPlay, onClean, onRemnant, spots: knownSpots = {}, onSpot, onGlide, onMilestone, onInside }) {
+export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSound, onOverview, onPlay, onClean, onRemnant, spots: knownSpots = {}, onSpot, onGlide, onMilestone, onInside, universe = null }) {
+  // This universe's galaxy: everything below is built to its shape.
+  const shape = galaxyShape(universe)
+  ARMS = shape.arms
+  SPIN = shape.spin
+  WARP = shape.warp
+  DISC_SPIN = 0.012 * Math.sign(shape.spin)
+  ARM_RADII = armRadii()
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5))
@@ -204,6 +213,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   // Supernova remnants turn with the disc; the others sit in the sky around it.
   const jets = coreJets(tex.glow)
   const decor = { magellan: magellanicClouds(tex, pointUniforms), remnants: new THREE.Group(), jets: jets.group }
+  // The Magellanic Clouds stand somewhere else round each universe's galaxy.
+  if (shape.name) decor.magellan.rotation.y = (shape.seed % 6283) / 1000
   scene.add(decor.magellan, decor.jets)
   disc.add(decor.remnants)
   let jetLevel = 0
@@ -213,9 +224,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   const DECOR_KEYS = ['magellan', 'disks', 'remnants', 'jets', 'crowns']
   const DECOR_SECONDS = 1.6
   const auroraRing = aurora()
-  const core = galaxyCore(tex.glow)
+  const core = galaxyCore(tex.glow, shape)
   let breathAt = 0 // where the core is in its breathing, in radians
-  disc.add(...galaxyDisc(pointUniforms), ...core, clouds, globularClusters(pointUniforms), auroraRing)
+  disc.add(...galaxyDisc(pointUniforms, shape), ...core, clouds, globularClusters(pointUniforms), auroraRing)
   const hole = blackHole(tex.thinRing)
   camera.add(hole.group)
   let nextMeteor = 8 + Math.random() * 12
@@ -3608,6 +3619,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     unform,
     // Quiet mode's slow tour of the galaxy, on or off.
     cruise: setCruise,
+    // How this galaxy was made, for the codex.
+    shapeOf: () => ({ kind: galaxyKind(shape), arms: shape.arms, bar: shape.bar, palette: shape.palette.name, turn: shape.spin > 0 ? 1 : -1, name: shape.name, bornAt: shape.bornAt }),
     // How a star was made: its dress, and the hour and moment it was born.
     lookOf: (app) => {
       const system = systems.get(app)
@@ -4278,6 +4291,53 @@ export function dressOf(app, bornAt = null) {
   return { kind: pick[0], name: pick[1], time: time && { label: time.label, icon: time.icon }, bornAt, colors, seed: rand() * 100, angle: rand() * Math.PI, petals: 5 + Math.floor(rand() * 3), rand }
 }
 
+// The colours a galaxy's stars run through: its core, its arms from the inner to the
+// outer reaches, the young stars far out, and the bright knots where stars are born.
+const GALAXY_PALETTES = [
+  { name: '푸른빛', inner: '#ffcf8f', outer: '#4a7bff', young: ['#3fd8ff', '#a66bff'], knots: ['#ff4f9a', '#3fd8ff'], core: ['#8a5cff', '#ff9d55', '#ffcf94'] },
+  { name: '장밋빛', inner: '#ffd2a6', outer: '#a24dff', young: ['#ff6fb5', '#ff9a6b'], knots: ['#ffd36e', '#ff4f9a'], core: ['#ff5fa8', '#ff9d6b', '#ffd6b0'] },
+  { name: '청록빛', inner: '#fff0c4', outer: '#19b5c9', young: ['#5fffd0', '#6f8bff'], knots: ['#ff6f9a', '#5fffd0'], core: ['#2fd3c8', '#ffc36b', '#fff0c4'] },
+  { name: '얼음빛', inner: '#eef4ff', outer: '#5f9dff', young: ['#a6ffea', '#c39bff'], knots: ['#ff8fb8', '#a6ffea'], core: ['#7fb2ff', '#cfe0ff', '#f2f6ff'] },
+  { name: '황금빛', inner: '#ffc46b', outer: '#6f5cff', young: ['#ffd36e', '#ff7a59'], knots: ['#5fe8ff', '#ffd36e'], core: ['#ff8a3d', '#ffb35c', '#ffe0a3'] }
+]
+// The galaxy Orrery always had, for a universe whose name isn't known.
+const CLASSIC = { seed: 42, arms: 3, bar: false, spin: 0.0145, warp: 30, thick: 1, bulge: 34, spread: 1, palette: GALAXY_PALETTES[0], name: null, bornAt: null }
+
+// The rule a galaxy is made by, as a star's is (see dressOf()): its seed is a hash of the
+// Mac's name and the minute Orca first ran on it, so every Mac grows its own. The seed
+// picks how many arms and how tightly they wind, which way the disc turns, whether a bar
+// crosses the middle, how far the rim warps, how thick the disc and how big the bulge,
+// and the colours its stars run through.
+export function galaxyShape(universe = null) {
+  if (!universe?.name) return { ...CLASSIC }
+  const minute = universe.bornAt ? Math.floor(universe.bornAt / 60_000) : ''
+  const seed = hash(`${universe.name}|${minute}`)
+  const rand = mulberry32(seed ^ 0x9e3779b9)
+  const arms = [2, 2, 3, 3, 3, 4, 4, 5][Math.floor(rand() * 8)]
+  // Only two or four arms can start from the ends of a bar.
+  const bar = arms % 2 === 0 && rand() < 0.6
+  const turn = rand() < 0.5 ? 1 : -1
+  return {
+    seed,
+    arms,
+    bar,
+    spin: turn * (0.0105 + rand() * 0.009),
+    warp: (rand() < 0.5 ? -1 : 1) * (10 + rand() * 30),
+    thick: 0.75 + rand() * 0.6,
+    bulge: 26 + rand() * 18,
+    spread: 0.75 + rand() * 0.6,
+    palette: GALAXY_PALETTES[Math.floor(rand() * GALAXY_PALETTES.length)],
+    name: universe.name,
+    bornAt: universe.bornAt || null
+  }
+}
+
+// What the codex says about a galaxy.
+export function galaxyKind(shape) {
+  const wind = Math.abs(shape.spin)
+  return shape.bar ? '막대나선 은하' : wind > 0.0168 ? '단단히 감긴 나선 은하' : wind < 0.0125 ? '느슨한 나선 은하' : '나선 은하'
+}
+
 const NOISE_GLSL = `
   float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
   float noise(vec2 p) {
@@ -4904,34 +4964,45 @@ function driftingComet(glow) {
   }
 }
 
-function galaxyDisc(uniforms) {
-  const rand = mulberry32(42)
+function galaxyDisc(uniforms, shape) {
+  const rand = mulberry32(shape.seed)
   const count = 150000
   const position = new Float32Array(count * 3)
   const tint = new Float32Array(count * 3)
   const size = new Float32Array(count)
-  const inner = new THREE.Color('#ffcf8f')
-  const outer = new THREE.Color('#4a7bff')
-  const pink = new THREE.Color('#ff4f9a')
-  const cyan = new THREE.Color('#3fd8ff')
-  const violet = new THREE.Color('#a66bff')
+  const { palette } = shape
+  const inner = new THREE.Color(palette.inner)
+  const outer = new THREE.Color(palette.outer)
+  const pink = new THREE.Color(palette.knots[0])
+  const cyan = new THREE.Color(palette.knots[1])
+  const young = palette.young.map((c) => new THREE.Color(c))
   const white = new THREE.Color('#e9efff')
   const c = new THREE.Color()
   const R = GALAXY_RADIUS
   for (let i = 0; i < count; i++) {
     let x, y, z, r, b
     const kind = rand()
-    if (kind < 0.12) {
+    if (shape.bar && kind < 0.07) {
+      // A bar through the middle, the arms starting from its ends.
+      const along = Math.max(-1, Math.min(1, gauss(rand) * 0.45)) * ARM_INNER * 0.95
+      r = Math.abs(along)
+      x = along
+      z = gauss(rand) * (6 + 6 * (1 - r / ARM_INNER))
+      y = gauss(rand) * 3.5 * shape.thick
+      c.copy(inner).lerp(white, rand() * 0.3)
+      b = 0.06 + 0.07 * Math.max(0, 1 - r / ARM_INNER)
+      size[i] = 0.8 + rand() * 1.2
+    } else if (kind < 0.12) {
       // Bulge: a dense, warm, nearly round swell around the core, so from the side the
       // middle stands up out of the disc.
-      r = Math.abs(gauss(rand)) * 34
+      r = Math.abs(gauss(rand)) * shape.bulge
       const th = rand() * Math.PI * 2
       const ph = Math.acos(2 * rand() - 1)
       x = r * Math.sin(ph) * Math.cos(th)
       y = r * Math.cos(ph) * 0.78
       z = r * Math.sin(ph) * Math.sin(th)
       c.copy(inner).lerp(white, rand() * 0.25)
-      b = 0.045 + 0.08 * Math.max(0, 1 - r / 45)
+      b = 0.045 + 0.08 * Math.max(0, 1 - r / (shape.bulge * 1.3))
       size[i] = 0.9 + rand() * 1.4
     } else if (kind < 0.22) {
       // Thin field between the arms.
@@ -4949,7 +5020,7 @@ function galaxyDisc(uniforms) {
       const a = rand() * Math.PI * 2
       x = Math.cos(a) * r
       z = Math.sin(a) * r
-      y = gauss(rand) * (7 + 18 * (r / R)) + warpAt(x, z)
+      y = gauss(rand) * (7 + 18 * (r / R)) * shape.thick + warpAt(x, z)
       c.copy(inner).lerp(white, 0.35)
       b = 0.045 + rand() * 0.04
       size[i] = 0.6 + rand() * 0.8
@@ -4957,14 +5028,14 @@ function galaxyDisc(uniforms) {
       r = Math.pow(rand(), 1.25) * R
       const arm = Math.floor(rand() * ARMS)
       const angle = (arm / ARMS) * Math.PI * 2 + r * SPIN
-      const spread = 6 + r * (0.1 + 0.16 * (r / R))
+      const spread = (6 + r * (0.1 + 0.16 * (r / R))) * shape.spread
       const off = () => Math.pow(rand(), 2.6) * (rand() < 0.5 ? -1 : 1) * spread
       x = Math.cos(angle) * r + off()
       z = Math.sin(angle) * r + off()
-      y = gauss(rand) * (2 + 5 * (1 - r / R)) + warpAt(x, z)
+      y = gauss(rand) * (2 + 5 * (1 - r / R)) * shape.thick + warpAt(x, z)
       c.copy(inner).lerp(outer, Math.min(1, r / (R * 0.55)))
-      // Young arms: the outer reaches run cyan and violet.
-      if (r > R * 0.35) c.lerp(rand() < 0.5 ? cyan : violet, rand() * 0.45)
+      // Young arms: the outer reaches run to the young stars' two colours.
+      if (r > R * 0.35) c.lerp(young[rand() < 0.5 ? 0 : 1], rand() * 0.45)
       b = 0.15 + rand() * 0.22
       size[i] = 0.55 + rand() * 1
       const roll = rand()
@@ -5006,7 +5077,7 @@ function galaxyDisc(uniforms) {
   for (let i = 0; i < dustCount; i++) {
     let pickAt = rand() * total
     const cloud = clouds.find((c) => (pickAt -= c.weight) <= 0) || clouds[clouds.length - 1]
-    const start = (cloud.arm / ARMS) * Math.PI * 2 - 0.16
+    const start = (cloud.arm / ARMS) * Math.PI * 2 - 0.16 * Math.sign(SPIN)
     let r, angle, spread
     if (cloud.feather) {
       // Leaves the lane at a steeper pitch than the arm, thinning as it goes.
@@ -5049,13 +5120,14 @@ function galaxyDisc(uniforms) {
   return [stars, dust, halo]
 }
 
-function galaxyCore(glow) {
+function galaxyCore(glow, shape) {
+  const [haloColor, bigColor, midColor] = shape.palette.core
   const halo = sprite(glow, 300, 0.05)
-  halo.material.color.set('#8a5cff')
+  halo.material.color.set(haloColor)
   const big = sprite(glow, 120, 0.1)
-  big.material.color.set('#ff9d55')
+  big.material.color.set(bigColor)
   const mid = sprite(glow, 30, 0.16)
-  mid.material.color.set('#ffcf94')
+  mid.material.color.set(midColor)
   const hot = sprite(glow, 5, 0.9)
   hot.material.color.setRGB(1.5, 1.3, 1.05)
   // How each layer breathes: how far behind the heart, how much it swells and brightens.
@@ -5617,7 +5689,8 @@ const ARM_INNER = 78
 const ARM_OUTER = GALAXY_RADIUS - 22
 // Radius a given share of the way along an arm, by length. An arm's length out to radius
 // r is ∫ √(1 + (r·SPIN)²) dr; it is tabulated once and read back by interpolation.
-const ARM_RADII = (() => {
+let ARM_RADII = armRadii()
+function armRadii() {
   const length = (r) => {
     const u = r * SPIN
     return (u * Math.sqrt(1 + u * u) + Math.asinh(u)) / (2 * SPIN)
@@ -5634,7 +5707,7 @@ const ARM_RADII = (() => {
     }
     return (lo + hi) / 2
   })
-})()
+}
 
 function armRadius(along) {
   const at = Math.min(1, Math.max(0, along)) * 128

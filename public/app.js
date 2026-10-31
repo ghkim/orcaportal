@@ -63,6 +63,7 @@ const SOUNDS = [
 const LOG_KEY = 'orca-portal-log'
 const REMNANT_KEY = 'orrery-remnants'
 const SPOT_KEY = 'orrery-spots'
+const UNIVERSE_KEY = 'orrery-universe'
 const STARDUST_KEY = 'orrery-stardust'
 const DUST_TOKENS = 1e7 // a grain of stardust for every ten million tokens
 const compactFormat = new Intl.NumberFormat('ko', { notation: 'compact', maximumFractionDigits: 1 })
@@ -277,6 +278,10 @@ const birthButton = document.querySelector('.gx-birth-btn')
 const playLog = loadLog()
 let remnants = loadRemnants() // shells of gas where apps' stars died, for three days
 let spots = loadSpots() // app name -> which of its possible spots its star took
+// The Mac's name and when Orca first ran on it, as the server last said: the galaxy's
+// shape grows from them. Kept, so the galaxy opens without waiting for the server.
+let universe = loadUniverse()
+let universeWait = null // the galaxy waiting to hear it, the first time
 const stardust = loadStardust() // tokens counted since this browser started, and what they bought
 // Admin test mode: fake stars and planets, and the galaxy's rare events on demand, to try
 // things out without touching a real terminal. Fake handles start with test_, which the
@@ -307,6 +312,7 @@ function connect() {
   const events = new EventSource(`/events?token=${encodeURIComponent(TOKEN)}&page=${PAGE_ID}&visible=${visible}`)
   events.addEventListener('open', () => setConn('live'))
   events.addEventListener('speaker', (e) => setSpeaker(JSON.parse(e.data).id))
+  events.addEventListener('universe', (e) => onUniverse(JSON.parse(e.data)))
   events.addEventListener('state', (e) => onState(JSON.parse(e.data)))
   events.addEventListener('screen', (e) => onScreen(JSON.parse(e.data)))
   events.addEventListener('usage', (e) => {
@@ -1734,6 +1740,36 @@ function loadSpots() {
 }
 
 // Apps long gone drop out first once there are more than a few hundred.
+function loadUniverse() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(UNIVERSE_KEY) || 'null')
+    return typeof saved?.name === 'string' ? { name: saved.name, bornAt: Number.isFinite(saved.bornAt) ? saved.bornAt : null } : null
+  } catch {
+    return null
+  }
+}
+
+// The first time, the galaxy waits a moment for the server to say which universe this
+// is; after that it opens straight away. A Mac renamed since takes its new shape on the
+// next load.
+function universeKnown() {
+  if (universe) return Promise.resolve()
+  return new Promise((resolve) => {
+    universeWait = resolve
+    setTimeout(resolve, 2500)
+  })
+}
+
+function onUniverse(next) {
+  if (typeof next?.name !== 'string') return
+  universe = { name: next.name, bornAt: Number.isFinite(next.bornAt) ? next.bornAt : null }
+  try {
+    localStorage.setItem(UNIVERSE_KEY, JSON.stringify(universe))
+  } catch {}
+  universeWait?.()
+  universeWait = null
+}
+
 function saveSpot(app, i) {
   spots = Object.fromEntries([...Object.entries(spots).filter(([name]) => name !== app), [app, i]].slice(-300))
   try {
@@ -1981,7 +2017,22 @@ function renderLog() {
   }
   const how = el('p', { className: 'lg-how' })
   how.innerHTML = '지나가는 별똥별은 <b>눌러서</b> 잡아요. 빈 곳을 <kbd class="key">Alt</kbd>+끌기(또는 꾹 눌렀다 끌기)로 당겼다 놓으면 혜성이 날아가요. 별 옆을 지나면 휘어요. 행성을 같은 식으로 끌어 아래 블랙홀에 넣으면 그 터미널을 닫을지 물어봐요.'
-  logEl.replaceChildren(head, dustSection(), stats, badges, how)
+  logEl.replaceChildren(head, ...universeSection(), dustSection(), stats, badges, how)
+}
+
+// What this galaxy is, and what it grew from.
+function universeSection() {
+  const shape = galaxy?.shapeOf()
+  if (!shape) return []
+  const box = el('section', { className: 'lg-universe' })
+  const turn = shape.turn > 0 ? '위에서 보면 시곗바늘 반대로 돌아요' : '위에서 보면 시곗바늘 방향으로 돌아요'
+  box.append(el('b', { textContent: `🌌 내 은하 · ${shape.kind}` }), el('span', { textContent: `팔 ${shape.arms}개 · ${shape.palette} 별빛 · ${turn}` }))
+  if (shape.name) {
+    const d = shape.bornAt && new Date(shape.bornAt)
+    const when = d ? `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}에 ` : ''
+    box.append(el('small', { textContent: `${shape.name}에서 ${when}태어났어요. 맥 이름과 Orca가 처음 켜진 시각으로 모양이 정해져요.` }))
+  }
+  return [box]
 }
 
 // A planet dropped into the black hole: say what closing it means and ask first.
@@ -2507,9 +2558,10 @@ function shortPath(p) {
 
 function ensureGalaxy() {
   if (galaxy || galaxyLoad) return galaxyLoad
-  galaxyLoad = import('./galaxy.js')
-    .then(({ createGalaxy }) => {
+  galaxyLoad = Promise.all([import('./galaxy.js'), universeKnown()])
+    .then(([{ createGalaxy }]) => {
       galaxy = createGalaxy(cosmos, {
+        universe,
         // Inside a star, one of its own planets opens its window there.
         onPick: (handle) => (insideApp && sessions.get(handle)?.project === insideApp ? openStarWindow(handle) : pick(handle)),
         onPickSystem: (app) => {

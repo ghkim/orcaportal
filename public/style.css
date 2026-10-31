@@ -1812,3 +1812,8 @@ body[data-view='galaxy'] .gx-birth:not([hidden]) { max-height: calc(100% - 32px)
 .st-switch:checked { border-color: rgb(185 168 255 / 70%); background: rgb(120 100 230 / 45%); }
 .st-switch:checked::after { transform: translateX(11px); background: #e6deff; box-shadow: 0 0 6px rgb(185 168 255 / 70%); }
 .st-switch:focus-visible { outline: 2px solid rgb(110 231 255 / 60%); outline-offset: 2px; }
+/* The codex's first lines: this Mac's galaxy and what it grew from. */
+.lg-universe { display: grid; gap: 3px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: linear-gradient(90deg, rgb(143 125 255 / 8%), transparent); }
+.lg-universe b { color: #e6dcff; font-family: var(--display-ko); font-size: 13.5px; font-weight: 400; letter-spacing: -0.02em; }
+.lg-universe span { color: var(--muted); font-size: 12px; }
+.lg-universe small { color: var(--faint); font-size: 11px; line-height: 1.5; }
