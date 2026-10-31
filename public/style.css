@@ -2013,9 +2013,11 @@ body[data-view='galaxy'] .gx-reshape:not([hidden]) {
   left: 50%;
   z-index: 5;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  max-width: calc(100% - 32px);
+  /* A set width, so the chips stay put under the pointer as the words above them change. */
+  width: min(760px, calc(100% - 32px));
   padding: 8px 8px 8px 16px;
   border: 1px solid rgb(183 160 255 / 30%);
   border-radius: 14px;
@@ -2027,7 +2029,7 @@ body[data-view='galaxy'] .gx-reshape:not([hidden]) {
   animation: rs-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @keyframes rs-in { from { opacity: 0; transform: translate(-50%, -10px); } }
-.rs-about { display: grid; gap: 2px; min-width: 0; margin-right: 6px; }
+.rs-about { display: grid; flex: 1; gap: 2px; min-width: 0; margin-right: 6px; }
 .rs-about b { color: #e6dcff; font-family: var(--display-ko); font-size: 14px; font-weight: 400; letter-spacing: -0.02em; white-space: nowrap; }
 .rs-about span { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .rs-steps { display: flex; flex: none; align-items: center; gap: 2px; }
@@ -2048,7 +2050,13 @@ body[data-view='galaxy'] .gx-reshape:not([hidden]) {
 .gx-reshape button:disabled { opacity: 0.4; cursor: default; }
 .gx-reshape .rs-keep { border-color: rgb(183 160 255 / 55%); background: rgb(143 125 255 / 18%); color: #efe8ff; }
 .gx-reshape .rs-keep:hover:not(:disabled) { background: rgb(143 125 255 / 28%); box-shadow: 0 0 16px rgb(143 125 255 / 30%); }
+/* The forms to draw from, under the rest; the one on screen has a dot. */
+.rs-forms { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 5px; padding: 8px 0 0; border-top: 1px solid rgb(183 160 255 / 14%); }
+.gx-reshape .rs-form { position: relative; padding: 3px 10px; border-color: rgb(255 255 255 / 10%); border-radius: 999px; font-size: 12px; }
+.gx-reshape .rs-form.now::after { content: ''; position: absolute; top: -2px; right: -1px; width: 6px; height: 6px; border-radius: 50%; background: #d6c8ff; box-shadow: 0 0 6px #b7a0ff; }
+.gx-reshape .rs-form[aria-pressed='true'] { border-color: rgb(183 160 255 / 60%); background: rgb(143 125 255 / 22%); color: #efe8ff; }
 @media (max-width: 720px) {
-  body[data-view='galaxy'] .gx-reshape:not([hidden]) { flex-wrap: wrap; justify-content: center; }
+  body[data-view='galaxy'] .gx-reshape:not([hidden]) { justify-content: center; }
+  .rs-forms { justify-content: center; }
   .rs-about { flex-basis: 100%; margin: 0; text-align: center; }
 }

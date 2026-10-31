@@ -253,6 +253,7 @@ let previousHandle = null
 let maximized = false
 let galaxy = null
 let galaxyLoad = null
+let galaxyForms = [] // the forms a galaxy shaped again may take, from galaxy.js once it loads
 let toastTimer = null
 
 const grid = document.querySelector('.grid')
@@ -324,10 +325,10 @@ let spots = loadSpots() // app name -> which of its possible spots its star took
 // shape grows from them. Kept, so the galaxy opens without waiting for the server.
 let universe = loadUniverse()
 let universeWait = null // the galaxy waiting to hear it, the first time
-let reshaped = loadReshaped() // { seed, at } once the galaxy was shaped again
+let reshaped = loadReshaped() // { seed, form, at } once the galaxy was shaped again
 // While other shapes are tried: each one drawn ({ seed }; null for the one this Mac first
 // grew) and which of them is showing. The galaxy there was comes back unless one is kept.
-let reshaping = null // { tries, at }
+let reshaping = null // { tries: [{ seed, form }], at, want }: want is the form asked for, or null for any
 let rebuilding = null // the galaxy being built again, a promise
 const stardust = loadStardust() // tokens counted since this browser started, and what they bought
 // Admin test mode: fake stars and planets, and the galaxy's rare events on demand, to try
@@ -2125,7 +2126,7 @@ function universeSection() {
   if (!shape) return []
   const box = el('section', { className: 'lg-universe' })
   const turn = shape.turn > 0 ? '위에서 보면 시곗바늘 반대로 돌아요' : '위에서 보면 시곗바늘 방향으로 돌아요'
-  box.append(el('b', { textContent: `🌌 내 은하 · ${shape.kind}` }), el('span', { textContent: `팔 ${shape.arms}개 · ${shape.palette} 별빛 · ${turn}` }))
+  box.append(el('b', { textContent: `🌌 내 은하 · ${shape.kind}` }), el('span', { textContent: `${shape.spiral ? `팔 ${shape.arms}개 · ` : ''}${shape.palette} 별빛 · ${turn}` }))
   const when = (at) => {
     const d = new Date(at)
     return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
@@ -2148,31 +2149,36 @@ function universeSection() {
 
 // ---------- shaping the galaxy again ----------
 
+// A galaxy kept before there were forms has none saved, and stays as its seed alone made
+// it ('plain').
 function loadReshaped() {
   try {
     const saved = JSON.parse(localStorage.getItem(GALAXY_KEY) || 'null')
-    return Number.isInteger(saved?.seed) ? { seed: saved.seed, at: Number(saved.at) || null } : null
+    if (!Number.isInteger(saved?.seed)) return null
+    return { seed: saved.seed, form: typeof saved.form === 'string' ? saved.form : 'plain', at: Number(saved.at) || null }
   } catch {
     return null
   }
 }
 
-// What the galaxy is built from: this Mac's universe, with the seed it was shaped again
-// with, or the one being tried.
+// What the galaxy is built from: this Mac's universe, with the seed and form it was
+// shaped again with, or the ones being tried.
 function galaxyUniverse() {
-  const seed = reshaping ? reshaping.tries[reshaping.at].seed : reshaped?.seed
-  return { ...(universe || {}), reshaped: seed ?? undefined }
+  const shaped = reshaping ? reshaping.tries[reshaping.at] : reshaped
+  return { ...(universe || {}), reshaped: shaped?.seed ?? undefined, form: shaped?.form ?? undefined }
 }
 
 // Draws a new shape and builds it in place of this galaxy, its stars, planets and
 // decorations as they are, where the new arms put them. The bar along the top keeps it,
 // steps back to one seen before, draws again, or brings back the galaxy there was.
-// `first` tries the galaxy this Mac first grew.
-function reshapeGalaxy({ first = false } = {}) {
+// `first` tries the galaxy this Mac first grew; `form` asks for one of the galaxy's
+// forms from now on (null for any), otherwise the one asked for before.
+function reshapeGalaxy({ first = false, form } = {}) {
   if (!galaxy || rebuilding) return
+  if (!reshaping) reshaping = { tries: [], at: -1, want: null }
+  if (form !== undefined) reshaping.want = form
   const seed = first ? null : crypto.getRandomValues(new Uint32Array(1))[0]
-  if (!reshaping) reshaping = { tries: [], at: -1 }
-  reshaping.tries = [...reshaping.tries.slice(0, reshaping.at + 1), { seed }].slice(-12)
+  reshaping.tries = [...reshaping.tries.slice(0, reshaping.at + 1), { seed, form: first ? null : reshaping.want }].slice(-12)
   reshaping.at = reshaping.tries.length - 1
   showShape()
 }
@@ -2193,7 +2199,9 @@ function showShape() {
 function keepShape() {
   if (!reshaping || rebuilding) return
   const { seed } = reshaping.tries[reshaping.at]
-  reshaped = seed === null ? null : { seed, at: Date.now() }
+  // The form it came out as, not the one asked for, so it's the same galaxy next time
+  // even if the odds of each form change.
+  reshaped = seed === null ? null : { seed, form: galaxy?.shapeOf().form || 'spiral', at: Date.now() }
   try {
     if (reshaped) localStorage.setItem(GALAXY_KEY, JSON.stringify(reshaped))
     else localStorage.removeItem(GALAXY_KEY)
@@ -2253,8 +2261,19 @@ function renderReshape() {
   const about = el('div', { className: 'rs-about' })
   about.append(
     el('b', { textContent: seed === null ? '🌌 처음 은하 미리보기' : '🌌 새 은하 미리보기' }),
-    el('span', { textContent: shape ? `${shape.kind} · 팔 ${shape.arms}개 · ${shape.palette} 별빛 · ${shape.turn > 0 ? '반시계' : '시계'} 방향` : '은하를 빚는 중…' })
+    el('span', { textContent: shape ? `${shape.kind} · ${shape.spiral ? `팔 ${shape.arms}개 · ` : ''}${shape.palette} 별빛 · ${shape.turn > 0 ? '반시계' : '시계'} 방향` : '은하를 빚는 중…' })
   )
+  // Which form to draw: one of them, or any. The one on screen has a dot.
+  const forms = el('div', { className: 'rs-forms' })
+  forms.setAttribute('role', 'group')
+  forms.setAttribute('aria-label', '은하 모양')
+  for (const form of [{ id: null, name: '🎲 아무거나' }, ...galaxyForms]) {
+    const chip = button(form.name, form.id ? `${form.name} 은하를 하나 뽑아요` : '어떤 모양이든 하나 뽑아요', () => reshapeGalaxy({ form: form.id }), {
+      className: `rs-form${form.id && form.id === shape?.form ? ' now' : ''}`
+    })
+    chip.setAttribute('aria-pressed', String(reshaping.want === form.id))
+    forms.append(chip)
+  }
   const steps = el('div', { className: 'rs-steps' })
   steps.append(
     button('‹', '앞에 본 모양', () => stepShape(-1), { disabled: reshaping.at === 0 }),
@@ -2264,9 +2283,10 @@ function renderReshape() {
   reshapeEl.replaceChildren(
     about,
     steps,
-    button('🎲 다시 빚기', '새 모양을 하나 더 뽑아요', () => reshapeGalaxy()),
+    button('🎲 다시 빚기', reshaping.want ? '고른 모양으로 하나 더 뽑아요' : '새 모양을 하나 더 뽑아요', () => reshapeGalaxy()),
     button('✓ 이 은하로', '이 모양으로 정해요', keepShape, { className: 'rs-keep' }),
-    button('되돌리기', '시작 전 은하로 돌아가요 (Esc)', cancelReshape)
+    button('되돌리기', '시작 전 은하로 돌아가요 (Esc)', cancelReshape),
+    forms
   )
 }
 
@@ -2794,7 +2814,8 @@ function shortPath(p) {
 function ensureGalaxy() {
   if (galaxy || galaxyLoad) return galaxyLoad
   galaxyLoad = Promise.all([import('./galaxy.js'), universeKnown()])
-    .then(([{ createGalaxy }]) => {
+    .then(([{ createGalaxy, GALAXY_FORMS }]) => {
+      galaxyForms = GALAXY_FORMS
       galaxy = createGalaxy(cosmos, {
         universe: galaxyUniverse(),
         // Inside a star, one of its own planets opens its window there.

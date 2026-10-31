@@ -14,6 +14,9 @@ const GALAXY_RADIUS = 320
 let ARMS = 3
 let SPIN = 0.0145 // arm twist, radians per unit of radius; negative winds the other way
 let WARP = 30 // how far the rim of the disc bends up on one side and down on the other
+// What the galaxy is beyond its arms (see galaxyShape()): a spiral, or for one shaped
+// again maybe a ring, an ellipsoid, a lens or a few clumps, with what each needs.
+let FORM = { kind: 'spiral' }
 const SPOT_CHOICES = 16 // a new star looks at this many spots of its own and takes the emptiest
 const MILESTONES = [1e7, 5e7, 1e8, 5e8, 1e9] // an app's tokens: each one passed is celebrated
 const CROWN_GLINTS = [0, 3, 5, 7, 9, 12] // glints in a star's crown, by milestones passed
@@ -141,6 +144,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   ARMS = shape.arms
   SPIN = shape.spin
   WARP = shape.warp
+  FORM = shape.form
   DISC_SPIN = 0.012 * Math.sign(shape.spin)
   ARM_RADII = armRadii()
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -2554,6 +2558,13 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     // Height off the disc's middle plane, from -1 to 1: most stars near it, a few far.
     const k = hash(`${app}~height`)
     const lift = ((k % 1000) + ((k >>> 12) % 1000)) / 1000 - 1
+    if (FORM.kind !== 'spiral') {
+      // Round the ring, through the body, in a clump: higher off the middle in an
+      // ellipsoid, which has no disc to keep to.
+      const [x, z] = structurePoint(along, ((h >>> 4) % 10007) / 10007, ((h >>> 2) % 1000) / 1000)
+      const out = Math.min(1, Math.max(0, (Math.hypot(x, z) - ARM_INNER) / (ARM_OUTER - ARM_INNER)))
+      return new THREE.Vector3(x, lift * (FORM.kind === 'elliptical' ? 110 - 50 * out : 46 - 28 * out) + warpAt(x, z), z)
+    }
     const angle = ((h % ARMS) / ARMS) * Math.PI * 2 + radius * SPIN + (((h >>> 2) % 1000) / 1000 - 0.5) * 0.2
     const x = Math.cos(angle) * radius
     const z = Math.sin(angle) * radius
@@ -4300,7 +4311,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     // Quiet mode's slow tour of the galaxy, on or off.
     cruise: setCruise,
     // How this galaxy was made, for the codex.
-    shapeOf: () => ({ kind: galaxyKind(shape), arms: shape.arms, bar: shape.bar, palette: shape.palette.name, turn: shape.spin > 0 ? 1 : -1, name: shape.name, bornAt: shape.bornAt, reshaped: shape.reshaped }),
+    shapeOf: () => ({ kind: galaxyKind(shape), form: formOf(shape), spiral: shape.form.kind === 'spiral', arms: shape.arms, bar: shape.bar, palette: shape.palette.name, turn: shape.spin > 0 ? 1 : -1, name: shape.name, bornAt: shape.bornAt, reshaped: shape.reshaped }),
     // How a star was made: its dress, and the hour and moment it was born.
     lookOf: (app) => {
       const system = systems.get(app)
@@ -4718,8 +4729,10 @@ function placeCloud(s, rand, born = 0) {
   const angle = (arm / ARMS) * Math.PI * 2 + r * SPIN + gauss(rand) * 0.06
   s.material.color.set(CLOUD_COLORS[Math.floor(rand() * CLOUD_COLORS.length)])
   s.material.rotation = rand() * Math.PI * 2
-  const x = Math.cos(angle) * r + gauss(rand) * 5
-  const z = Math.sin(angle) * r + gauss(rand) * 5
+  // A galaxy that isn't a spiral has its clouds on its ring, in its clumps, or about it.
+  const [cx, cz] = FORM.kind === 'spiral' ? [Math.cos(angle) * r, Math.sin(angle) * r] : structurePoint(rand(), rand(), rand())
+  const x = cx + gauss(rand) * 5
+  const z = cz + gauss(rand) * 5
   s.position.set(x, gauss(rand) * 2 + warpAt(x, z), z)
   Object.assign(s.userData, {
     size: 22 + rand() * 54,
@@ -4992,7 +5005,7 @@ const GALAXY_PALETTES = [
   { name: '황금빛', inner: '#ffc46b', outer: '#6f5cff', young: ['#ffd36e', '#ff7a59'], knots: ['#5fe8ff', '#ffd36e'], core: ['#ff8a3d', '#ffb35c', '#ffe0a3'] }
 ]
 // The galaxy Orrery always had, for a universe whose name isn't known.
-const CLASSIC = { seed: 42, arms: 3, bar: false, spin: 0.0145, warp: 30, thick: 1, bulge: 34, spread: 1, palette: GALAXY_PALETTES[0], name: null, bornAt: null, reshaped: false }
+const CLASSIC = { seed: 42, arms: 3, bar: false, spin: 0.0145, warp: 30, thick: 1, bulge: 34, spread: 1, palette: GALAXY_PALETTES[0], name: null, bornAt: null, reshaped: false, form: { kind: 'spiral' } }
 
 // The rule a galaxy is made by, as a star's is (see dressOf()): its seed is a hash of the
 // Mac's name and the minute Orca first ran on it, so every Mac grows its own; or, for a
@@ -5010,7 +5023,7 @@ export function galaxyShape(universe = null) {
   // Only two or four arms can start from the ends of a bar.
   const bar = arms % 2 === 0 && rand() < 0.6
   const turn = rand() < 0.5 ? 1 : -1
-  return {
+  const shape = {
     seed,
     arms,
     bar,
@@ -5022,12 +5035,63 @@ export function galaxyShape(universe = null) {
     palette: GALAXY_PALETTES[Math.floor(rand() * GALAXY_PALETTES.length)],
     name: universe.name || null,
     bornAt: universe.bornAt || null,
-    reshaped: reshaped !== null
+    reshaped: reshaped !== null,
+    form: { kind: 'spiral' }
   }
+  // A galaxy shaped again may be any of the forms, the one asked for or one drawn; the
+  // first a Mac grows stays the spiral it always was, and so does one kept before there
+  // were forms ('plain'). Drawn after everything above, so that stays as it was for the
+  // same seed.
+  if (reshaped === null || universe.form === 'plain') return shape
+  const asked = GALAXY_FORMS.find((f) => f.id === universe.form)
+  let pick = rand() * GALAXY_FORMS.reduce((sum, f) => sum + f.weight, 0)
+  const form = asked || GALAXY_FORMS.find((f) => (pick -= f.weight) <= 0) || GALAXY_FORMS[0]
+  return { ...shape, ...formed(form.id, shape, rand) }
+}
+
+// What a galaxy shaped again may be, with how often each comes up when none is asked for.
+export const GALAXY_FORMS = [
+  { id: 'spiral', name: '나선', weight: 3 },
+  { id: 'barred', name: '막대나선', weight: 2 },
+  { id: 'grand', name: '두 팔 나선', weight: 2 },
+  { id: 'flocculent', name: '솜털 나선', weight: 1.5 },
+  { id: 'ring', name: '고리', weight: 2 },
+  { id: 'elliptical', name: '타원', weight: 1.5 },
+  { id: 'lenticular', name: '렌즈형', weight: 1.2 },
+  { id: 'irregular', name: '불규칙', weight: 1.5 }
+]
+
+// How each form changes a spiral's shape.
+function formed(id, shape, rand) {
+  const R = GALAXY_RADIUS
+  if (id === 'spiral') return { bar: false }
+  if (id === 'barred') return { arms: rand() < 0.5 ? 2 : 4, bar: true }
+  // Two strong, crisp arms over a dim disc.
+  if (id === 'grand') return { arms: 2, bar: rand() < 0.3, spread: 0.45 + rand() * 0.15, thick: 0.8, form: { kind: 'spiral', glow: 1.55, field: 0.45 } }
+  // Many short tufts of arm.
+  if (id === 'flocculent') return { arms: 7 + Math.floor(rand() * 4), bar: false, spread: 1.3 + rand() * 0.4, form: { kind: 'spiral', glow: 0.9, patches: Array.from({ length: 12 }, () => rand() * Math.PI * 2) } }
+  if (id === 'ring') return { bar: false, bulge: 34 + rand() * 12, form: { kind: 'ring', radius: R * (0.5 + rand() * 0.18), width: 12 + rand() * 12, outer: rand() < 0.5 } }
+  if (id === 'elliptical') return { bar: false, warp: 0, form: { kind: 'elliptical', axes: [1, 0.42 + rand() * 0.35, 0.72 + rand() * 0.28] } }
+  if (id === 'lenticular') return { bar: false, bulge: 42 + rand() * 12, thick: 0.7, form: { kind: 'lenticular', lane: R * (0.36 + rand() * 0.16) } }
+  const clumps = Array.from({ length: 4 + Math.floor(rand() * 4) }, () => {
+    const a = rand() * Math.PI * 2
+    const d = Math.sqrt(rand()) * R * 0.7
+    return { x: Math.cos(a) * d, z: Math.sin(a) * d, r: 45 + rand() * 65, weight: 0.4 + rand() }
+  })
+  return { bar: false, bulge: 14 + rand() * 10, warp: shape.warp * 0.5, form: { kind: 'irregular', clumps } }
+}
+
+// Which of GALAXY_FORMS a shape is.
+export function formOf(shape) {
+  const form = shape.form || { kind: 'spiral' }
+  if (form.kind !== 'spiral') return form.kind
+  return form.patches ? 'flocculent' : form.glow > 1 ? 'grand' : shape.bar ? 'barred' : 'spiral'
 }
 
 // What the codex says about a galaxy.
 export function galaxyKind(shape) {
+  const named = { ring: '고리 은하', elliptical: '타원 은하', lenticular: '렌즈형 은하', irregular: '불규칙 은하', flocculent: '솜털 나선 은하', grand: shape.bar ? '두 팔 막대나선 은하' : '두 팔 나선 은하' }[formOf(shape)]
+  if (named) return named
   const wind = Math.abs(shape.spin)
   return shape.bar ? '막대나선 은하' : wind > 0.0168 ? '단단히 감긴 나선 은하' : wind < 0.0125 ? '느슨한 나선 은하' : '나선 은하'
 }
@@ -5675,6 +5739,7 @@ function driftingComet(glow) {
 }
 
 function galaxyDisc(uniforms, shape) {
+  if (FORM.kind !== 'spiral') return formDisc(uniforms, shape)
   const rand = mulberry32(shape.seed)
   const count = 150000
   const position = new Float32Array(count * 3)
@@ -5722,7 +5787,7 @@ function galaxyDisc(uniforms, shape) {
       z = Math.sin(a) * r
       y = gauss(rand) * 3 + warpAt(x, z)
       c.copy(inner).lerp(outer, Math.min(1, r / R))
-      b = 0.07
+      b = 0.07 * (FORM.field ?? 1)
       size[i] = 0.6 + rand() * 0.9
     } else if (kind < 0.32) {
       // Thick disc: old, faint stars in a puffier layer that flares towards the rim.
@@ -5746,8 +5811,14 @@ function galaxyDisc(uniforms, shape) {
       c.copy(inner).lerp(outer, Math.min(1, r / (R * 0.55)))
       // Young arms: the outer reaches run to the young stars' two colours.
       if (r > R * 0.35) c.lerp(young[rand() < 0.5 ? 0 : 1], rand() * 0.45)
-      b = 0.15 + rand() * 0.22
+      b = (0.15 + rand() * 0.22) * (FORM.glow ?? 1)
       size[i] = 0.55 + rand() * 1
+      // A flocculent spiral's arms come in short tufts: between them, only a faint haze.
+      if (FORM.patches && Math.sin(r * 0.05 + FORM.patches[arm % FORM.patches.length]) < -0.15) {
+        b *= 0.22
+        x += off() * 1.5
+        z += off() * 1.5
+      }
       const roll = rand()
       if (roll < 0.012 && r > 60) {
         c.copy(roll < 0.006 ? pink : cyan) // star-forming knots and hot young clusters
@@ -5811,8 +5882,15 @@ function galaxyDisc(uniforms, shape) {
   const dust = new THREE.Points(geometryOf(dPos, dTint, dSize), dustMaterial(uniforms))
   dust.renderOrder = 1
 
-  // Halo: a sparse, faint cloud of old stars all round the disc, above and below it too,
-  // thickest near the core. It gives the galaxy depth from the side.
+  return [stars, dust, galaxyHalo(uniforms, rand, inner)]
+}
+
+// Halo: a sparse, faint cloud of old stars all round the disc, above and below it too,
+// thickest near the core. It gives the galaxy depth from the side.
+function galaxyHalo(uniforms, rand, inner) {
+  const R = GALAXY_RADIUS
+  const white = new THREE.Color('#e9efff')
+  const c = new THREE.Color()
   const haloCount = 9000
   const hPos = new Float32Array(haloCount * 3)
   const hTint = new Float32Array(haloCount * 3)
@@ -5826,15 +5904,177 @@ function galaxyDisc(uniforms, shape) {
     hTint.set([c.r, c.g, c.b], i * 3)
     hSize[i] = 0.6 + rand() * 0.9
   }
-  const halo = new THREE.Points(geometryOf(hPos, hTint, hSize), pointsMaterial(uniforms, THREE.AdditiveBlending))
-  return [stars, dust, halo]
+  return new THREE.Points(geometryOf(hPos, hTint, hSize), pointsMaterial(uniforms, THREE.AdditiveBlending))
+}
+
+// The disc of a galaxy that isn't a spiral. A ring: a bright, young, knotted band round a
+// bare gap, the core alone in the middle, sometimes a fainter ring further out. An
+// ellipsoid: old warm stars thick in the middle and thinning out, no disc and no dust. A
+// lens: a big bulge in a smooth disc with no arms and one thin lane of dust. Irregular:
+// a few bright clumps of young stars and the haze between them. The same halo all round.
+function formDisc(uniforms, shape) {
+  const rand = mulberry32(shape.seed)
+  const form = FORM
+  const R = GALAXY_RADIUS
+  const count = 150000
+  const position = new Float32Array(count * 3)
+  const tint = new Float32Array(count * 3)
+  const size = new Float32Array(count)
+  const { palette } = shape
+  const inner = new THREE.Color(palette.inner)
+  const outer = new THREE.Color(palette.outer)
+  const knots = palette.knots.map((k) => new THREE.Color(k))
+  const young = palette.young.map((k) => new THREE.Color(k))
+  const white = new THREE.Color('#e9efff')
+  const c = new THREE.Color()
+  const clumpWeight = (form.clumps || []).reduce((sum, k) => sum + k.weight, 0)
+  for (let i = 0; i < count; i++) {
+    let x, y, z, b
+    let s = 0.6 + rand() * 1
+    const roll = rand()
+    if (form.kind === 'elliptical') {
+      const r = Math.pow(rand(), 2.2) * R * 1.05 + rand() * 3
+      const th = rand() * Math.PI * 2
+      const ph = Math.acos(2 * rand() - 1)
+      x = r * Math.sin(ph) * Math.cos(th) * form.axes[0]
+      y = r * Math.cos(ph) * form.axes[1]
+      z = r * Math.sin(ph) * Math.sin(th) * form.axes[2]
+      c.copy(inner).lerp(white, rand() * 0.3).lerp(outer, Math.max(0, r / R - 0.5) * 0.4)
+      b = 0.05 + 0.22 * Math.max(0, 1 - r / (R * 0.75)) + rand() * 0.04
+      s *= 1.1
+    } else if (roll < (form.kind === 'irregular' ? 0.05 : form.kind === 'lenticular' ? 0.22 : 0.15)) {
+      // The bulge, as a spiral's.
+      const r = Math.abs(gauss(rand)) * shape.bulge
+      const th = rand() * Math.PI * 2
+      const ph = Math.acos(2 * rand() - 1)
+      x = r * Math.sin(ph) * Math.cos(th)
+      y = r * Math.cos(ph) * 0.78
+      z = r * Math.sin(ph) * Math.sin(th)
+      c.copy(inner).lerp(white, rand() * 0.25)
+      b = 0.05 + 0.09 * Math.max(0, 1 - r / (shape.bulge * 1.3))
+      s = 0.9 + rand() * 1.4
+    } else if (form.kind === 'ring' && roll < (form.outer ? 0.62 : 0.72)) {
+      const a = rand() * Math.PI * 2
+      const r = form.radius + gauss(rand) * form.width * 0.55
+      x = Math.cos(a) * r
+      z = Math.sin(a) * r
+      y = gauss(rand) * 2.5 * shape.thick + warpAt(x, z)
+      c.copy(outer).lerp(young[rand() < 0.5 ? 0 : 1], 0.3 + rand() * 0.5)
+      b = 0.2 + rand() * 0.25
+      const knot = rand()
+      if (knot < 0.025) {
+        c.copy(knots[knot < 0.0125 ? 0 : 1])
+        b = 0.7
+        s *= 1.8
+      } else if (knot < 0.05) {
+        c.copy(white)
+        b = 0.5
+      }
+    } else if (form.kind === 'ring' && form.outer && roll < 0.74) {
+      const a = rand() * Math.PI * 2
+      const r = form.radius * 1.42 + gauss(rand) * form.width * 1.2
+      x = Math.cos(a) * r
+      z = Math.sin(a) * r
+      y = gauss(rand) * 3 * shape.thick + warpAt(x, z)
+      c.copy(outer).lerp(young[0], rand() * 0.5)
+      b = 0.08 + rand() * 0.08
+    } else if (form.kind === 'irregular' && roll < 0.8) {
+      let pick = rand() * clumpWeight
+      const clump = form.clumps.find((k) => (pick -= k.weight) <= 0) || form.clumps[0]
+      const d = Math.abs(gauss(rand)) * clump.r * 0.55
+      const a = rand() * Math.PI * 2
+      x = clump.x + Math.cos(a) * d + gauss(rand) * 3
+      z = clump.z + Math.sin(a) * d + gauss(rand) * 3
+      y = gauss(rand) * (4 + d * 0.18) * shape.thick
+      c.copy(young[rand() < 0.5 ? 0 : 1]).lerp(white, rand() * 0.45)
+      b = 0.1 + 0.26 * Math.max(0, 1 - d / clump.r)
+      if (rand() < 0.03) {
+        c.copy(knots[rand() < 0.5 ? 0 : 1])
+        b = 0.7
+        s *= 1.8
+      }
+    } else {
+      // The smooth disc under it all, fainter out to the rim. A ring's gap is nearly bare.
+      let r = (form.kind === 'lenticular' ? Math.pow(rand(), 1.4) : Math.sqrt(rand())) * R
+      if (form.kind === 'irregular') r *= 0.8
+      const a = rand() * Math.PI * 2
+      x = Math.cos(a) * r
+      z = Math.sin(a) * r
+      y = gauss(rand) * (2 + 7 * (r / R)) * shape.thick + warpAt(x, z)
+      c.copy(inner).lerp(outer, Math.min(1, r / (R * 0.8)))
+      const gap = form.kind === 'ring' && r > shape.bulge * 1.4 && r < form.radius - form.width
+      b = form.kind === 'lenticular' ? 0.05 + 0.12 * Math.max(0, 1 - r / R) : gap ? 0.012 : 0.03 + rand() * 0.03
+    }
+    position.set([x, y, z], i * 3)
+    c.multiplyScalar(b)
+    tint.set([c.r, c.g, c.b], i * 3)
+    size[i] = s
+  }
+  const stars = new THREE.Points(geometryOf(position, tint, size), pointsMaterial(uniforms, THREE.AdditiveBlending))
+  // Dust: none in an ellipsoid; a thin lane round a lens, the inner edge of a ring, and
+  // patches over an irregular's clumps.
+  const parts = [stars]
+  if (form.kind !== 'elliptical') {
+    const dustCount = 14000
+    const dPos = new Float32Array(dustCount * 3)
+    const dTint = new Float32Array(dustCount * 3)
+    const dSize = new Float32Array(dustCount)
+    for (let i = 0; i < dustCount; i++) {
+      let x, z
+      if (form.kind === 'irregular') {
+        const clump = form.clumps[i % form.clumps.length]
+        const d = Math.abs(gauss(rand)) * clump.r * 0.7
+        const a = rand() * Math.PI * 2
+        x = clump.x + Math.cos(a) * d
+        z = clump.z + Math.sin(a) * d
+      } else {
+        const lane = form.kind === 'ring' ? form.radius - form.width * 0.9 : form.lane
+        const r = lane + gauss(rand) * (form.kind === 'ring' ? 3 : 5)
+        const a = rand() * Math.PI * 2
+        x = Math.cos(a) * r
+        z = Math.sin(a) * r
+      }
+      dPos.set([x, gauss(rand) * 1.2 + warpAt(x, z), z], i * 3)
+      dTint.set([0.012, 0.01, 0.012], i * 3)
+      dSize[i] = 4 + rand() * 6
+    }
+    const dust = new THREE.Points(geometryOf(dPos, dTint, dSize), dustMaterial(uniforms))
+    dust.renderOrder = 1
+    parts.push(dust)
+  }
+  parts.push(galaxyHalo(uniforms, rand, inner))
+  return parts
+}
+
+// A point on what a galaxy that isn't a spiral is made of, for a star or a cloud to sit
+// on: round its ring, through its body, or in one of its clumps. along (0 to 1) runs from
+// the inside out, pick chooses where round it or which clump, jitter how far off. Spread
+// a little wider than the glow itself, so stars a ring or a clump shares don't sit on
+// one another.
+function structurePoint(along, pick, jitter) {
+  if (FORM.kind === 'ring') {
+    const r = FORM.radius + (along - 0.5) * (FORM.width * 2.2 + 44)
+    const a = pick * Math.PI * 2
+    return [Math.cos(a) * r, Math.sin(a) * r]
+  }
+  if (FORM.kind === 'irregular') {
+    const clump = FORM.clumps[Math.floor(pick * FORM.clumps.length) % FORM.clumps.length]
+    const a = jitter * Math.PI * 14
+    const d = Math.sqrt(along) * (clump.r * 1.1 + 60)
+    return [clump.x + Math.cos(a) * d, clump.z + Math.sin(a) * d]
+  }
+  const r = 40 + along * (ARM_OUTER - 40)
+  const a = pick * Math.PI * 2
+  return [Math.cos(a) * r, Math.sin(a) * r]
 }
 
 function galaxyCore(glow, shape) {
   const [haloColor, bigColor, midColor] = shape.palette.core
-  const halo = sprite(glow, 300, 0.05)
+  // An ellipsoid is nearly all middle.
+  const wide = shape.form?.kind === 'elliptical' ? 1.6 : 1
+  const halo = sprite(glow, 300 * wide, 0.05)
   halo.material.color.set(haloColor)
-  const big = sprite(glow, 120, 0.1)
+  const big = sprite(glow, 120 * wide, 0.1)
   big.material.color.set(bigColor)
   const mid = sprite(glow, 30, 0.16)
   mid.material.color.set(midColor)
