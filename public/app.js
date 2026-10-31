@@ -1,4 +1,4 @@
-import { parseMenu, keysForOption, lineKind, mainColumn } from './screen.js'
+import { parseMenu, keysForOption, lineKind, mainColumn, atWork } from './screen.js'
 import { KEYS } from './keys.js'
 import { createSound, MIX_DEFAULTS } from './sound.js'
 
@@ -468,7 +468,10 @@ function statusOf(handle) {
   if (!session) return 'shell'
   if (menus.has(handle)) return 'choice'
   const state = session.agent?.state
-  if (state === 'waiting') return 'waiting'
+  // Orca's state moves only on some of the agent's events, and an answer typed into its
+  // terminal isn't one: it can stay 'waiting' while the agent works on. The line the
+  // agent draws while it works says otherwise.
+  if (state === 'waiting') return atWork(screens.get(handle)) ? 'working' : 'waiting'
   if (state === 'blocked') return 'blocked'
   // An agent only watching a background task waits, as Orca's sidebar has it.
   if (state === 'working') return session.agent.monitoring ? 'idle' : 'working'

@@ -15,6 +15,11 @@ const MAX_OPTION_GAP = 6
 const DIVIDERS = new Set(['│', '┃', '║'])
 const MIN_PANEL_COLUMN = 30
 
+// The line an agent draws above its prompt while it works: Claude Code's
+// "✽ Forging… (13m 17s · ↓ 67.7k tokens)", Codex's "• Working (12s • esc to interrupt)".
+const AT_WORK = [/^\s*[·✢✳✶✻✽*]\s+\S[^()]*…\s*\((?:\d+[hms]\b|esc to interrupt)/, /^\s*•\s+\S[^()]*\(\d+[hms]\b[^)]*esc to interrupt/]
+const AT_WORK_ROWS = 12
+
 export function isRule(line) {
   return RULE.test(line)
 }
@@ -79,6 +84,16 @@ function cellWidth(ch) {
     (cp >= 0x1f900 && cp <= 0x1faff) ||
     (cp >= 0x20000 && cp <= 0x3fffd)
   return wide ? 2 : 1
+}
+
+// Whether the agent is at work by its own screen, whatever its state says: it is while
+// that line stands among the last rows.
+export function atWork(lines) {
+  if (!lines) return false
+  return lines
+    .filter((line) => line.trim())
+    .slice(-AT_WORK_ROWS)
+    .some((line) => AT_WORK.some((pattern) => pattern.test(line)))
 }
 
 export function parseMenu(lines, { agentWaiting = false } = {}) {

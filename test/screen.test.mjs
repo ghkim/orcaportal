@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseMenu, keysForOption, lineKind, mainColumn } from '../public/screen.js'
+import { parseMenu, keysForOption, lineKind, mainColumn, atWork } from '../public/screen.js'
 import { keyBytes } from '../public/keys.js'
 
 const rule = '─'.repeat(120)
@@ -184,4 +184,19 @@ test('a side panel beside the conversation stays out of the menu', () => {
   assert.equal(menu.hint, 'Enter to select · ↑/↓ to navigate · Esc to cancel')
   // Rows that only line up by chance are left alone.
   assert.deepEqual(mainColumn(['a │ b', 'plain']), ['a │ b', 'plain'])
+})
+
+test('an agent at work by its screen, whatever its state says', () => {
+  const box = ['─'.repeat(60), '❯', '─'.repeat(60), '  ⏵⏵ bypass permissions on (shift+tab to cycle)']
+  assert.equal(atWork(['⏺ Now the first compile check.', '✽ Forging… (13m 17s · ↓ 67.7k tokens)', '  ⎿  Tip: Use /btw to ask a quick side question', '', ...box]), true)
+  assert.equal(atWork(['✻ Thinking… (esc to interrupt)', ...box]), true)
+  assert.equal(atWork(['• Working (12s • esc to interrupt)', '› ']), true)
+  // Waiting at the prompt, a question or a permission: no such line.
+  assert.equal(atWork(['⏺ 다 고쳤어요. 푸시할까요?', '', ...box]), false)
+  assert.equal(atWork(['Do you want to proceed?', '❯ 1. Yes', '  2. No']), false)
+  // One long scrolled off, under a later answer, doesn't count.
+  assert.equal(atWork(['✽ Forging… (2m 3s · ↓ 1k tokens)', ...Array.from({ length: 14 }, (_, i) => `line ${i}`), ...box]), false)
+  // A bullet in the conversation that only looks like it.
+  assert.equal(atWork(['• Working (see notes)', ...box]), false)
+  assert.equal(atWork(null), false)
 })
