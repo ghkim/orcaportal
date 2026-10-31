@@ -253,10 +253,12 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   const fireworks = fireworkSparks(9000, pointUniforms)
   scene.add(fireworks.points)
   const fireworkQueue = [] // what a stardust display does next: { at, run }, in `time`
+  // Enough dolphins and jellyfish for the biggest pod or swarm; each pass takes some.
   const pod = new THREE.Group()
-  for (let i = 0; i < 4; i++) pod.add(dolphin(pointUniforms, mulberry32(900 + i)))
+  for (let i = 0; i < 5; i++) pod.add(dolphin(pointUniforms, mulberry32(900 + i)))
+  for (let i = 0; i < 2; i++) pod.add(dolphin(pointUniforms, mulberry32(950 + i), CALF))
   const jellies = new THREE.Group()
-  for (const [rim, glow, radius] of [['#ff9ad5', '#8ff3ff', 16], ['#c7a6ff', '#9effd8', 11], ['#ffc39a', '#ff8fb3', 13]]) jellies.add(jellyfish(pointUniforms, mulberry32(radius * 31), new THREE.Color(rim), new THREE.Color(glow), radius))
+  for (const [rim, glow, radius] of [['#ff9ad5', '#8ff3ff', 16], ['#c7a6ff', '#9effd8', 11], ['#ffc39a', '#ff8fb3', 13], ['#9fd8ff', '#ffd6f0', 12], ['#a8f5c4', '#c3a8ff', 14]]) jellies.add(jellyfish(pointUniforms, mulberry32(radius * 31), new THREE.Color(rim), new THREE.Color(glow), radius))
   const creatures = {
     unicorn: { object: unicorn(pointUniforms), first: [150, 330], every: [420, 600], move: moveUnicorn, begin: () => ({ duration: 40 + Math.random() * 8, span: 1.5, radius: 1.45, height: -10 + Math.random() * 30, lift: (q) => Math.sin(Math.PI * q) * 45 }) },
     dolphins: {
@@ -264,12 +266,9 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       first: [120, 300],
       every: [360, 540],
       move: moveDolphins,
-      begin: () => {
-        for (const fish of pod.children) delete fish.userData.crest
-        return { duration: 40 + Math.random() * 8, span: 1.2, radius: 1.5, height: Math.random() * 60, lift: () => 0, waves: 2.5 + Math.random() }
-      }
+      begin: () => ({ duration: 44 + Math.random() * 8, span: 1.2, radius: 1.5, height: Math.random() * 60, lift: () => 0, waves: 2.5 + Math.random(), members: podPlan() })
     },
-    jellyfish: { object: jellies, first: [200, 380], every: [420, 600], move: moveJellyfish, begin: () => ({ duration: 110 + Math.random() * 15, span: 0.3, radius: 1.5, height: -20 + Math.random() * 40, lift: () => 0, rise: [0, 0, 0] }) },
+    jellyfish: { object: jellies, first: [200, 380], every: [420, 600], move: moveJellyfish, begin: () => ({ duration: 110 + Math.random() * 15, span: 0.3, radius: 1.5, height: -20 + Math.random() * 40, lift: () => 0, members: swarmPlan() }) },
     phoenix: { object: phoenix(pointUniforms), first: [220, 400], every: [420, 600], move: movePhoenix, begin: () => ({ duration: 34 + Math.random() * 6, span: 1.6, radius: 1.35, height: 130 + Math.random() * 30, lift: (q) => -Math.sin(Math.PI * q) * 100 }) }
   }
   for (const creature of Object.values(creatures)) {
@@ -1618,55 +1617,111 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     })
   }
 
-  // Four dolphins swimming together in a loose diamond, a body length or more apart,
-  // rising and falling on long, easy waves, each nose following its wave as the whale's
-  // does. The ones behind are half a beat behind on the wave and each a little off it, so
-  // they move as one pod without ever crossing. Over the top of each wave a little
-  // glitter comes off a back.
-  const POD = [[0, 0, 0, 0], [18, 40, 0.06, 0.25], [-16, -38, 0.09, 0.4], [-30, 8, 0.15, 0.7]] // further out, higher, how far behind, how far off the wave
+  // Who swims this time: three to five grown dolphins, each its own size, and now and
+  // then a calf or two, each close at its mother's side, a little above her. The grown
+  // ones are spread about the pod a body length or so apart, none near another, a mother
+  // leaving room for her calf.
+  const POD_K = 1.2 * 1.5 * GALAXY_RADIUS // how far along the way a whole dolphin pass goes
+  function podPlan() {
+    for (const fish of pod.children) {
+      fish.visible = false
+      delete fish.userData.crest
+    }
+    const grown = pod.children.filter((fish) => !fish.userData.calf)
+    const calves = pod.children.filter((fish) => fish.userData.calf)
+    const n = 3 + Math.floor(Math.random() * 3)
+    const young = Math.random() < 0.4 ? 0 : Math.random() < 0.6 ? 1 : 2
+    const items = grown.slice(0, n).map((fish, i) => ({ fish, scale: 0.82 + Math.random() * 0.36, mother: i >= n - young }))
+    const placed = spreadOut(
+      items,
+      (item, i) => (i === 0 ? { x: 0, y: 0 } : { x: Math.random() * (60 + 40 * n), y: (Math.random() - 0.5) * 130 }),
+      (item, spot, other) => {
+        const wide = ((item.scale + other.scale) / 2) * DOLPHIN_LENGTH * 1.6
+        const tall = ((item.scale + other.scale) / 2) * 36 + (item.mother || other.mother ? 16 : 0)
+        return Math.hypot((spot.x - other.x) / wide, (spot.y - other.y) / tall)
+      }
+    )
+    // Measured from the middle of the pod, so the ones at the back aren't late on stage.
+    const middle = placed.reduce((sum, { x }) => sum + x, 0) / placed.length
+    const members = placed.map(({ fish, scale, x, y }, i) => {
+      const behind = (x - middle) / POD_K
+      return { fish, scale, out: (Math.random() - 0.5) * 40, up: y, behind, lag: behind * 0.5, own: (Math.random() - 0.5) * 0.5, weave: i * 1.7, beat: 1 }
+    })
+    // Each calf follows its mother's wave exactly, so it stays at her side.
+    members.filter((m, i) => placed[i].mother).forEach((mother, c) => {
+      const behind = mother.behind + (0.15 * DOLPHIN_LENGTH * mother.scale) / POD_K
+      members.push({ fish: calves[c], scale: 0.9 + Math.random() * 0.2, out: mother.out + 5, up: mother.up + 0.3 * DOLPHIN_LENGTH * mother.scale, behind, lag: behind - mother.behind * 0.5, own: mother.own, weave: mother.weave, beat: 1.7 })
+    })
+    for (const m of members) {
+      m.fish.scale.setScalar(m.scale)
+      m.fish.visible = true
+    }
+    return members
+  }
+
+  // The pod rises and falls on long, easy waves, each nose following its wave as the
+  // whale's does. The ones behind are half a beat behind on the wave and each a little
+  // off it, so they move as one pod without ever crossing. Over the top of each wave a
+  // little glitter comes off a back.
   function moveDolphins(pass, k, dt, alpha) {
-    pod.children.forEach((fish, i) => {
-      const [out, up, behind, own] = POD[i]
+    for (const { fish, out, up, behind, lag, own, weave: turn, beat } of pass.members) {
       const q = k - behind
-      const wave = (at) => own + (at + behind * 0.5) * pass.waves * Math.PI * 2
+      const wave = (at) => own + (at + lag) * pass.waves * Math.PI * 2
       const rise = (at) => Math.sin(wave(at)) * 0.45 * DOLPHIN_LENGTH
-      const weave = (at) => Math.sin(wave(at) * 0.5 + i * 1.7) * 6
+      const weave = (at) => Math.sin(wave(at) * 0.5 + turn) * 6
       passPoint(pass, q, fish.position, out + weave(q), up + rise(q))
       fish.lookAt(passPoint(pass, q + 0.004, skyNext, out + weave(q + 0.004), up + rise(q + 0.004)))
       const u = fish.material.uniforms
-      // Its flukes beat harder as it climbs and rest as it glides down.
-      u.uSwim.value += dt * (1.8 + 1.2 * Math.max(0, Math.cos(wave(q))))
+      // Its flukes beat harder as it climbs and rest as it glides down; a calf's beat faster.
+      u.uSwim.value += dt * beat * (1.8 + 1.2 * Math.max(0, Math.cos(wave(q))))
       u.uAlpha.value = q < 0 ? 0 : alpha * smooth(0, 0.05, q)
       const crest = Math.floor((wave(q) - Math.PI / 2) / (Math.PI * 2))
       if (fish.userData.crest !== undefined && crest !== fish.userData.crest && q > 0 && alpha > 0.05) glitter(fish, alpha)
       fish.userData.crest = crest
-    })
+    }
   }
 
   function glitter(fish, alpha) {
     fish.updateMatrixWorld()
     for (let i = 0; i < 14; i++) {
-      skyAt.set((Math.random() - 0.5) * 3, 0.1 * DOLPHIN_LENGTH, (Math.random() - 0.3) * 0.5 * DOLPHIN_LENGTH)
+      skyAt.set((Math.random() - 0.5) * 3, 0.1 * fish.userData.length, (Math.random() - 0.3) * 0.5 * fish.userData.length)
       const a = Math.random() * Math.PI * 2
       sparks.emit(fish.localToWorld(skyAt), SPLASH[i % 3 ? 0 : 1], alpha * 0.4, { now: time, seconds: 2 + Math.random(), grain: 2, move: [Math.cos(a) * 1.5, 1 + Math.random() * 1.5, Math.sin(a) * 1.5], drop: 0.5 })
     }
   }
 
-  // Three jellyfish drifting up side by side, each beating to its own time, a beat lifting
-  // it a little. They keep about two bells' width apart along the way (their pass is
-  // short, so that is a good share of it) and a little apart in height; nearer or further
-  // out doesn't part them on screen.
-  const DRIFT = [[-0.4, 10, -22], [0, -12, 18], [0.42, 0, -4]] // further along, further out, higher
-  function moveJellyfish(pass, k, dt, alpha) {
-    jellies.children.forEach((jelly, i) => {
-      const [along, out, up] = DRIFT[i]
-      const u = jelly.material.uniforms
-      u.uPulse.value += dt * (2 + i * 0.25)
-      pass.rise[i] += dt * (0.3 + 1.6 * Math.pow(0.5 + 0.5 * Math.sin(u.uPulse.value), 3))
-      passPoint(pass, k + along, jelly.position, out, up + pass.rise[i])
-      jelly.rotation.set(Math.sin(time * 0.31 + i) * 0.12, 0, Math.cos(time * 0.27 + i * 2) * 0.12)
-      u.uAlpha.value = alpha
+  // Two to four jellyfish this time, each its own size, drifting up side by side across
+  // the view as it was when they came; along the way they'd bunch up wherever it runs
+  // towards the camera. Their threads hang several bells long, so each keeps clear of the
+  // others' bells, glow and all, and their heights only vary some.
+  function swarmPlan() {
+    for (const jelly of jellies.children) jelly.visible = false
+    const n = 2 + Math.floor(Math.random() * 3)
+    const chosen = jellies.children.map((jelly) => [Math.random(), jelly]).sort((a, b) => a[0] - b[0]).slice(0, n)
+    const placed = spreadOut(
+      chosen.map(([, jelly]) => ({ jelly, scale: 0.8 + Math.random() * 0.45 })),
+      () => ({ x: (Math.random() - 0.5) * (50 + 40 * n), y: (Math.random() - 0.5) * 70 }),
+      (item, spot, other) => Math.abs(spot.x - other.x) / (1.7 * (item.jelly.userData.radius * item.scale + other.jelly.userData.radius * other.scale))
+    )
+    const middle = placed.reduce((sum, { x }) => sum + x, 0) / n
+    const across = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).setY(0).normalize()
+    return placed.map(({ jelly, scale, x, y }) => {
+      jelly.scale.setScalar(scale)
+      jelly.visible = true
+      return { jelly, side: across.clone().multiplyScalar(x - middle), out: (Math.random() - 0.5) * 30, up: y, beat: 1.8 + Math.random() * 0.8, rise: 0, sway: Math.random() * 6 }
     })
+  }
+
+  // Each beats to its own time, a beat lifting it a little.
+  function moveJellyfish(pass, k, dt, alpha) {
+    for (const m of pass.members) {
+      const u = m.jelly.material.uniforms
+      u.uPulse.value += dt * m.beat
+      m.rise += dt * (0.3 + 1.6 * Math.pow(0.5 + 0.5 * Math.sin(u.uPulse.value), 3))
+      passPoint(pass, k, m.jelly.position, m.out, m.up + m.rise).add(m.side)
+      m.jelly.rotation.set(Math.sin(time * 0.31 + m.sway) * 0.12, 0, Math.cos(time * 0.27 + m.sway * 2) * 0.12)
+      u.uAlpha.value = alpha
+    }
   }
 
   // The phoenix swoops down from high up and climbs again, embers falling from its wing
@@ -6613,6 +6668,27 @@ function sphereDirections(n, rand = Math.random) {
 
 // ---------- creatures of the sky ----------
 
+// Places things one by one at spots `pick(item, i)` draws, each where `room(item, spot,
+// other)` is at least 1 for every one already placed, or, if no draw in sixty manages
+// that, at the draw with the most room.
+function spreadOut(items, pick, room) {
+  const placed = []
+  items.forEach((item, i) => {
+    let best = null
+    let most = -Infinity
+    for (let t = 0; t < 60 && most < 1; t++) {
+      const spot = pick(item, i)
+      const least = Math.min(Infinity, ...placed.map((other) => room(item, spot, other)))
+      if (least > most) {
+        best = spot
+        most = least
+      }
+    }
+    placed.push({ ...item, ...best })
+  })
+  return placed
+}
+
 const CREATURE_FRAGMENT = `
   varying vec3 vTint; varying float vAlpha;
   void main() {
@@ -6963,8 +7039,12 @@ function unicorn(uniforms) {
 // brighter light along its back. A wave runs back along it and beats its flukes up and
 // down (uSwim).
 const DOLPHIN_LENGTH = 40
-function dolphin(uniforms, rand) {
-  const L = DOLPHIN_LENGTH
+// A calf: a little over half as long, its points fewer and finer.
+const CALF = 0.55
+function dolphin(uniforms, rand, size = 1) {
+  const L = DOLPHIN_LENGTH * size
+  const many = (n) => Math.round(n * (0.45 + 0.55 * size * size))
+  const fine = 0.75 + 0.25 * size
   const back = new THREE.Color('#8fb8ff')
   const belly = new THREE.Color('#ffd0ec')
   const points = []
@@ -6972,44 +7052,46 @@ function dolphin(uniforms, rand) {
   const girth = (u) => 0.085 * L * Math.pow(Math.sin(Math.PI * Math.min(1, u * 1.05 + 0.04)), 0.8) * (1 - 0.5 * smooth(0.6, 1, u))
   const add = (p, u, bright = false) => {
     const freckle = !bright && p[1] > 0.05 * L && rand() < 0.07
-    points.push({ p, c: belly.clone().lerp(back, smooth(-0.04 * L, 0.05 * L, p[1])).multiplyScalar(bright ? 1.3 : freckle ? 1.1 : 0.3 + rand() * 0.22), s: bright ? 2.6 : freckle ? 2.4 + rand() : 1.5 + rand() * 1.6, along: u })
+    points.push({ p, c: belly.clone().lerp(back, smooth(-0.04 * L, 0.05 * L, p[1])).multiplyScalar(bright ? 1.3 : freckle ? 1.1 : 0.3 + rand() * 0.22), s: (bright ? 2.6 : freckle ? 2.4 + rand() : 1.5 + rand() * 1.6) * fine, along: u })
   }
-  for (let i = 0; i < 520; i++) {
+  for (let i = 0; i < many(520); i++) {
     const u = 0.08 + rand() * 0.88
     const r = girth(u) * (rand() < 0.75 ? 1 : Math.sqrt(rand()))
     const a = rand() * Math.PI * 2
     add([Math.cos(a) * r * 0.9, Math.sin(a) * r, (0.5 - u) * L], u)
   }
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < many(60); i++) {
     const t = rand()
     add(onTube(rand, [0, -0.01 * L, 0.42 * L], [0, -0.015 * L, 0.56 * L], 0.025 * L, 0.012 * L, t), 0.08 * (1 - t))
   }
-  for (let i = 0; i < 60; i++) add(onEllipsoid(rand, [0, 0.025 * L, 0.38 * L], [0.05 * L, 0.05 * L, 0.06 * L]), 0.12)
+  for (let i = 0; i < many(60); i++) add(onEllipsoid(rand, [0, 0.025 * L, 0.38 * L], [0.05 * L, 0.05 * L, 0.06 * L]), 0.12)
   // The fin on its back sweeps back as it rises.
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < many(120); i++) {
     const t = rand()
     const w = rand()
     const u = 0.4 + 0.15 * w * (1 - t) + 0.12 * t
     add([(rand() - 0.5) * 0.008 * L, girth(0.45) * 0.95 + t * 0.11 * L, (0.5 - u) * L], u)
   }
   for (const side of [1, -1]) {
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < many(50); i++) {
       const t = rand()
       add(onTube(rand, [side * girth(0.25) * 0.8, -0.03 * L, 0.25 * L], [side * 0.15 * L, -0.07 * L, 0.17 * L], 0.02 * L, 0.004 * L, t), 0.25 + 0.08 * t)
     }
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < many(60); i++) {
       const t = rand()
       add([side * 0.14 * L * t, gauss(rand) * 0.004 * L, -0.5 * L - 0.03 * L - t * t * 0.05 * L + (rand() - 0.5) * 0.03 * L * (1 - t)], 1)
     }
     add([side * 0.042 * L, 0.012 * L, 0.36 * L], 0.12, true)
   }
-  return creaturePoints(points, {
+  const mesh = creaturePoints(points, {
     uniforms,
     attributes: { along: 1 },
     own: { uSwim: 0 },
     // The whole body flexes, a little at the head and most at the flukes.
     move: `p.y += sin(uSwim - along * 3.2) * (0.08 + along * along) * ${(0.075 * L).toFixed(2)};`
   })
+  mesh.userData = { length: L, calf: size < 1 }
+  return mesh
 }
 
 // A jellyfish of light, its bell `radius` across, hanging along -y: a ribbed dome with a
@@ -7060,7 +7142,7 @@ function jellyfish(uniforms, rand, rim, glow, radius) {
       points.push({ p: [Math.cos(ph) * r, lip - s * length, Math.sin(ph) * r], c: rim.clone().multiplyScalar(0.5 - 0.35 * s), s: 1.2 + (1 - s) * 0.8, part: 3, hang: s, ang: ph })
     }
   }
-  return creaturePoints(points, {
+  const mesh = creaturePoints(points, {
     uniforms,
     attributes: { part: 1, hang: 1, ang: 1 },
     own: { uPulse: 0 },
@@ -7077,6 +7159,8 @@ function jellyfish(uniforms, rand, rim, glow, radius) {
         p.y += lag * hang * ${(R * 0.25).toFixed(2)};
       }`
   })
+  mesh.userData = { radius: R }
+  return mesh
 }
 
 // A phoenix of light, wings about 95 units across, head towards +z: a white-gold body, a

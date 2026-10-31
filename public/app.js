@@ -115,8 +115,8 @@ const DECOR = [
   ['whale', '우주 고래', '몇 분마다 은하 바깥을 헤엄치며 노래하는 빛 고래'],
   ['fireflies', '반딧불', '2단계 넘게 자란 별 둘레에서 깜빡이는 빛'],
   ['unicorn', '유니콘', '무지개를 남기며 은하 바깥을 달리는 빛 유니콘'],
-  ['dolphins', '돌고래 떼', '긴 물결을 타고 함께 헤엄치는 빛 돌고래 넷'],
-  ['jellyfish', '해파리', '갓을 오므렸다 펴며 천천히 떠오르는 해파리 셋'],
+  ['dolphins', '돌고래 떼', '긴 물결을 타고 함께 헤엄치는 빛 돌고래 3~5마리, 가끔 애기 돌고래도'],
+  ['jellyfish', '해파리', '갓을 오므렸다 펴며 천천히 떠오르는 크고 작은 해파리들'],
   ['phoenix', '불사조', '날갯짓하며 불티를 흩뿌리는 불사조']
 ]
 // A new universe starts plain, and decorations open up as it is used: by tokens the agents
