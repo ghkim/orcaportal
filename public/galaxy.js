@@ -4215,15 +4215,12 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     },
     { capture: true }
   )
-  window.addEventListener(
-    'keydown',
-    (event) => {
-      if (event.key !== 'Escape' || !(aim || grab)) return
-      event.stopImmediatePropagation()
-      cancelPlay()
-    },
-    { capture: true }
-  )
+  const onEscapeKey = (event) => {
+    if (event.key !== 'Escape' || !(aim || grab)) return
+    event.stopImmediatePropagation()
+    cancelPlay()
+  }
+  window.addEventListener('keydown', onEscapeKey, { capture: true })
   canvas.addEventListener('pointermove', (event) => {
     if (hold && Math.hypot(event.clientX - hold.clientX, event.clientY - hold.clientY) > 6) cancelHold()
     pointer = { clientX: event.clientX, clientY: event.clientY }
@@ -4269,10 +4266,26 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     dragging = false
     releasedAt = performance.now()
   })
-  new ResizeObserver(() => resize()).observe(host)
+  const resizing = new ResizeObserver(() => resize())
+  resizing.observe(host)
 
   return {
     update,
+    // Gone for good, for a galaxy of another shape to take its place: the frame loop
+    // stops, what it listened to is let go, and the GPU has its memory back with the
+    // context.
+    dispose() {
+      active = false
+      cancelPlay()
+      if (hold) cancelHold()
+      window.removeEventListener('keydown', onEscapeKey, { capture: true })
+      resizing.disconnect()
+      controls.dispose()
+      composer.dispose()
+      renderer.dispose()
+      renderer.forceContextLoss()
+      for (const node of [renderer.domElement, labelRenderer.domElement, tip, warpHud, ghost]) node.remove()
+    },
     flyTo,
     // Into a star to work there, and back out. The page hears if something else (a pick
     // elsewhere, the overview) takes the camera out.
@@ -4287,7 +4300,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     // Quiet mode's slow tour of the galaxy, on or off.
     cruise: setCruise,
     // How this galaxy was made, for the codex.
-    shapeOf: () => ({ kind: galaxyKind(shape), arms: shape.arms, bar: shape.bar, palette: shape.palette.name, turn: shape.spin > 0 ? 1 : -1, name: shape.name, bornAt: shape.bornAt }),
+    shapeOf: () => ({ kind: galaxyKind(shape), arms: shape.arms, bar: shape.bar, palette: shape.palette.name, turn: shape.spin > 0 ? 1 : -1, name: shape.name, bornAt: shape.bornAt, reshaped: shape.reshaped }),
     // How a star was made: its dress, and the hour and moment it was born.
     lookOf: (app) => {
       const system = systems.get(app)
@@ -4979,17 +4992,19 @@ const GALAXY_PALETTES = [
   { name: '황금빛', inner: '#ffc46b', outer: '#6f5cff', young: ['#ffd36e', '#ff7a59'], knots: ['#5fe8ff', '#ffd36e'], core: ['#ff8a3d', '#ffb35c', '#ffe0a3'] }
 ]
 // The galaxy Orrery always had, for a universe whose name isn't known.
-const CLASSIC = { seed: 42, arms: 3, bar: false, spin: 0.0145, warp: 30, thick: 1, bulge: 34, spread: 1, palette: GALAXY_PALETTES[0], name: null, bornAt: null }
+const CLASSIC = { seed: 42, arms: 3, bar: false, spin: 0.0145, warp: 30, thick: 1, bulge: 34, spread: 1, palette: GALAXY_PALETTES[0], name: null, bornAt: null, reshaped: false }
 
 // The rule a galaxy is made by, as a star's is (see dressOf()): its seed is a hash of the
-// Mac's name and the minute Orca first ran on it, so every Mac grows its own. The seed
+// Mac's name and the minute Orca first ran on it, so every Mac grows its own; or, for a
+// galaxy the user shaped again (`reshaped`), the seed that was drawn then. The seed
 // picks how many arms and how tightly they wind, which way the disc turns, whether a bar
 // crosses the middle, how far the rim warps, how thick the disc and how big the bulge,
 // and the colours its stars run through.
 export function galaxyShape(universe = null) {
-  if (!universe?.name) return { ...CLASSIC }
+  const reshaped = Number.isInteger(universe?.reshaped) ? universe.reshaped >>> 0 : null
+  if (!universe?.name && reshaped === null) return { ...CLASSIC }
   const minute = universe.bornAt ? Math.floor(universe.bornAt / 60_000) : ''
-  const seed = hash(`${universe.name}|${minute}`)
+  const seed = reshaped ?? hash(`${universe.name}|${minute}`)
   const rand = mulberry32(seed ^ 0x9e3779b9)
   const arms = [2, 2, 3, 3, 3, 4, 4, 5][Math.floor(rand() * 8)]
   // Only two or four arms can start from the ends of a bar.
@@ -5005,8 +5020,9 @@ export function galaxyShape(universe = null) {
     bulge: 26 + rand() * 18,
     spread: 0.75 + rand() * 0.6,
     palette: GALAXY_PALETTES[Math.floor(rand() * GALAXY_PALETTES.length)],
-    name: universe.name,
-    bornAt: universe.bornAt || null
+    name: universe.name || null,
+    bornAt: universe.bornAt || null,
+    reshaped: reshaped !== null
   }
 }
 

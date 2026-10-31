@@ -913,7 +913,7 @@ body[data-view='galaxy'].inside-star.browser-mini .pane { left: calc(50% - 190px
 .star-browser.mini .sb-title { display: block; }
 .star-browser.mini .sb-note { display: none; }
 .star-browser.playing.mini { border-color: rgb(255 120 160 / 45%); box-shadow: 0 0 40px rgb(255 120 160 / 18%), 0 18px 50px rgb(0 0 0 / 45%); }
-body.zen .star-browser:not(.mini) { opacity: 0; pointer-events: none; }
+body.zen :is(.star-browser:not(.mini), .gx-reshape) { opacity: 0; pointer-events: none; }
 @media (max-width: 720px) {
   body[data-view='galaxy'].inside-star .pane { top: 6%; bottom: 84px; width: calc(100% - 24px); height: auto; }
   .st-star { flex: 0 1 auto; min-width: 0; max-width: 28%; }
@@ -1207,6 +1207,7 @@ body.titles-off .gx-labels { visibility: hidden; }
   body[data-view='galaxy'].inside-star.pane-closed:not(.maximized) .pane { transition: none; }
   body[data-view='galaxy'].inside-star .star-tabs:not([hidden]) { animation: none; }
   body[data-view='galaxy'].inside-star .star-browser:not([hidden]), .star-browser.loading .sb-address { animation: none; }
+  body[data-view='galaxy'] .cosmos :is(.gx-canvas, .gx-labels), body[data-view='galaxy'] .gx-reshape:not([hidden]) { transition: none; animation: none; }
 }
 @media (max-width: 720px) {
   body[data-view='galaxy'] .layout { grid-template-columns: minmax(0, 1fr); }
@@ -1943,3 +1944,65 @@ body[data-view='galaxy'] .gx-birth:not([hidden]) { max-height: calc(100% - 32px)
 .lg-universe b { color: #e6dcff; font-family: var(--display-ko); font-size: 13.5px; font-weight: 400; letter-spacing: -0.02em; }
 .lg-universe span { color: var(--muted); font-size: 12px; }
 .lg-universe small { color: var(--faint); font-size: 11px; line-height: 1.5; }
+.lg-reshape { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.lg-reshape button {
+  padding: 5px 11px;
+  border: 1px solid rgb(183 160 255 / 35%);
+  border-radius: 9px;
+  background: rgb(143 125 255 / 9%);
+  color: #e6dcff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.lg-reshape button:hover { border-color: rgb(183 160 255 / 70%); background: rgb(143 125 255 / 16%); box-shadow: 0 0 14px rgb(143 125 255 / 22%); }
+/* Shaping the galaxy again: the old one fades out, the new one fades in, and a bar along
+   the top says what is showing and keeps it, draws again or goes back. */
+body[data-view='galaxy'] .cosmos :is(.gx-canvas, .gx-labels) { transition: opacity 0.5s ease; }
+body[data-view='galaxy'] .cosmos.reshaping :is(.gx-canvas, .gx-labels) { opacity: 0; }
+.gx-reshape { display: none; }
+body[data-view='galaxy'] .gx-reshape:not([hidden]) {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  padding: 8px 8px 8px 16px;
+  border: 1px solid rgb(183 160 255 / 30%);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgb(14 10 34 / 72%), rgb(8 6 22 / 82%));
+  box-shadow: 0 0 50px rgb(143 125 255 / 16%), 0 18px 50px rgb(0 0 0 / 40%);
+  pointer-events: auto;
+  backdrop-filter: blur(10px) saturate(130%);
+  transform: translateX(-50%);
+  animation: rs-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes rs-in { from { opacity: 0; transform: translate(-50%, -10px); } }
+.rs-about { display: grid; gap: 2px; min-width: 0; margin-right: 6px; }
+.rs-about b { color: #e6dcff; font-family: var(--display-ko); font-size: 14px; font-weight: 400; letter-spacing: -0.02em; white-space: nowrap; }
+.rs-about span { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.rs-steps { display: flex; flex: none; align-items: center; gap: 2px; }
+.rs-steps small { min-width: 38px; color: var(--faint); font-family: var(--mono); font-size: 11px; text-align: center; }
+.gx-reshape button {
+  flex: none;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 4%);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.rs-steps button { padding: 4px 9px; }
+.gx-reshape button:hover:not(:disabled) { color: var(--text); background: rgb(255 255 255 / 8%); }
+.gx-reshape button:disabled { opacity: 0.4; cursor: default; }
+.gx-reshape .rs-keep { border-color: rgb(183 160 255 / 55%); background: rgb(143 125 255 / 18%); color: #efe8ff; }
+.gx-reshape .rs-keep:hover:not(:disabled) { background: rgb(143 125 255 / 28%); box-shadow: 0 0 16px rgb(143 125 255 / 30%); }
+@media (max-width: 720px) {
+  body[data-view='galaxy'] .gx-reshape:not([hidden]) { flex-wrap: wrap; justify-content: center; }
+  .rs-about { flex-basis: 100%; margin: 0; text-align: center; }
+}

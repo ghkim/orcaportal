@@ -64,6 +64,7 @@ const LOG_KEY = 'orca-portal-log'
 const REMNANT_KEY = 'orrery-remnants'
 const SPOT_KEY = 'orrery-spots'
 const UNIVERSE_KEY = 'orrery-universe'
+const GALAXY_KEY = 'orrery-galaxy' // the seed a galaxy was shaped again with, and when
 const STARDUST_KEY = 'orrery-stardust'
 const DUST_TOKENS = 1e7 // a grain of stardust for every ten million tokens
 const compactFormat = new Intl.NumberFormat('ko', { notation: 'compact', maximumFractionDigits: 1 })
@@ -282,6 +283,11 @@ gxHud.append(starTabs)
 const browserEl = Object.assign(document.createElement('section'), { className: 'star-browser', hidden: true })
 browserEl.setAttribute('aria-label', '별 안 브라우저')
 layoutEl.append(browserEl)
+// Along the top while other shapes of the galaxy are tried.
+const reshapeEl = Object.assign(document.createElement('section'), { className: 'gx-reshape', hidden: true })
+reshapeEl.setAttribute('aria-label', '은하 다시 빚기')
+layoutEl.append(reshapeEl)
+let hudObserved = false
 const gxSignals = document.querySelector('.gx-signals')
 const soundButton = document.querySelector('.sound-btn')
 const settingsButton = document.querySelector('.settings-btn')
@@ -308,6 +314,11 @@ let spots = loadSpots() // app name -> which of its possible spots its star took
 // shape grows from them. Kept, so the galaxy opens without waiting for the server.
 let universe = loadUniverse()
 let universeWait = null // the galaxy waiting to hear it, the first time
+let reshaped = loadReshaped() // { seed, at } once the galaxy was shaped again
+// While other shapes are tried: each one drawn ({ seed }; null for the one this Mac first
+// grew) and which of them is showing. The galaxy there was comes back unless one is kept.
+let reshaping = null // { tries, at }
+let rebuilding = null // the galaxy being built again, a promise
 const stardust = loadStardust() // tokens counted since this browser started, and what they bought
 // Admin test mode: fake stars and planets, and the galaxy's rare events on demand, to try
 // things out without touching a real terminal. Fake handles start with test_, which the
@@ -2102,12 +2113,148 @@ function universeSection() {
   const box = el('section', { className: 'lg-universe' })
   const turn = shape.turn > 0 ? '위에서 보면 시곗바늘 반대로 돌아요' : '위에서 보면 시곗바늘 방향으로 돌아요'
   box.append(el('b', { textContent: `🌌 내 은하 · ${shape.kind}` }), el('span', { textContent: `팔 ${shape.arms}개 · ${shape.palette} 별빛 · ${turn}` }))
-  if (shape.name) {
-    const d = shape.bornAt && new Date(shape.bornAt)
-    const when = d ? `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}에 ` : ''
-    box.append(el('small', { textContent: `${shape.name}에서 ${when}태어났어요. 맥 이름과 Orca가 처음 켜진 시각으로 모양이 정해져요.` }))
+  const when = (at) => {
+    const d = new Date(at)
+    return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
   }
+  if (reshaping) box.append(el('small', { textContent: '미리 보는 중이에요. 위쪽 막대에서 이 은하로 정하거나 되돌려요.' }))
+  else if (shape.reshaped) box.append(el('small', { textContent: `${reshaped?.at ? `${when(reshaped.at)}에 ` : ''}다시 빚은 은하예요. 처음 은하는 맥 이름과 Orca가 처음 켜진 시각으로 정해졌어요.` }))
+  else if (shape.name) box.append(el('small', { textContent: `${shape.name}에서 ${shape.bornAt ? `${when(shape.bornAt)}에 ` : ''}태어났어요. 맥 이름과 Orca가 처음 켜진 시각으로 모양이 정해져요.` }))
+  const actions = el('div', { className: 'lg-reshape' })
+  const again = el('button', { type: 'button', textContent: '🎲 은하 다시 빚기', title: '새 모양을 뽑아 지금 은하 자리에 미리 보여줘요. 정하기 전까지는 지금 은하 그대로예요' })
+  again.addEventListener('click', () => reshapeGalaxy())
+  actions.append(again)
+  if (reshaped) {
+    const first = el('button', { type: 'button', textContent: '처음 은하 보기', title: '이 맥에서 처음 자란 은하를 미리 보고, 마음에 들면 되돌려요' })
+    first.addEventListener('click', () => reshapeGalaxy({ first: true }))
+    actions.append(first)
+  }
+  box.append(actions)
   return [box]
+}
+
+// ---------- shaping the galaxy again ----------
+
+function loadReshaped() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(GALAXY_KEY) || 'null')
+    return Number.isInteger(saved?.seed) ? { seed: saved.seed, at: Number(saved.at) || null } : null
+  } catch {
+    return null
+  }
+}
+
+// What the galaxy is built from: this Mac's universe, with the seed it was shaped again
+// with, or the one being tried.
+function galaxyUniverse() {
+  const seed = reshaping ? reshaping.tries[reshaping.at].seed : reshaped?.seed
+  return { ...(universe || {}), reshaped: seed ?? undefined }
+}
+
+// Draws a new shape and builds it in place of this galaxy, its stars, planets and
+// decorations as they are, where the new arms put them. The bar along the top keeps it,
+// steps back to one seen before, draws again, or brings back the galaxy there was.
+// `first` tries the galaxy this Mac first grew.
+function reshapeGalaxy({ first = false } = {}) {
+  if (!galaxy || rebuilding) return
+  const seed = first ? null : crypto.getRandomValues(new Uint32Array(1))[0]
+  if (!reshaping) reshaping = { tries: [], at: -1 }
+  reshaping.tries = [...reshaping.tries.slice(0, reshaping.at + 1), { seed }].slice(-12)
+  reshaping.at = reshaping.tries.length - 1
+  showShape()
+}
+
+function stepShape(step) {
+  const at = (reshaping?.at ?? -1) + step
+  if (!reshaping || rebuilding || at < 0 || at >= reshaping.tries.length) return
+  reshaping.at = at
+  showShape()
+}
+
+function showShape() {
+  toggleLog(false)
+  renderReshape()
+  return rebuildGalaxy().then(renderReshape)
+}
+
+function keepShape() {
+  if (!reshaping || rebuilding) return
+  const { seed } = reshaping.tries[reshaping.at]
+  reshaped = seed === null ? null : { seed, at: Date.now() }
+  try {
+    if (reshaped) localStorage.setItem(GALAXY_KEY, JSON.stringify(reshaped))
+    else localStorage.removeItem(GALAXY_KEY)
+  } catch {}
+  reshaping = null
+  renderReshape()
+  sound.chime('unlock')
+  toast(seed === null ? '🌌 처음 은하로 돌아왔어요' : '🌌 이 은하로 정했어요 · 도감(L)에서 언제든 다시 빚어요', 4500)
+}
+
+// Back to the galaxy there was before any was tried.
+function cancelReshape() {
+  if (!reshaping || rebuilding) return
+  reshaping = null
+  renderReshape()
+  rebuildGalaxy().then(() => toast('지금 은하 그대로예요'))
+}
+
+// The galaxy built again to the shape galaxyUniverse() gives: the old one fades out and
+// is let go, and the new one forms, then the camera stands back to show it whole.
+function rebuildGalaxy() {
+  if (!galaxy) return Promise.resolve()
+  if (insideApp) leaveStar({ fly: false })
+  closeReport()
+  cosmos.classList.add('reshaping')
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches
+  rebuilding = new Promise((resolve) => setTimeout(resolve, still ? 0 : 500))
+    .then(() => {
+      galaxy?.dispose()
+      galaxy = null
+      galaxyLoad = null
+      return ensureGalaxy()
+    })
+    .then(() => {
+      galaxy?.overview()
+      sound.chime('enter')
+    })
+    .finally(() => {
+      rebuilding = null
+      // A frame later, so the new canvas has been drawn dark once and fades in.
+      requestAnimationFrame(() => cosmos.classList.remove('reshaping'))
+    })
+  renderReshape()
+  return rebuilding
+}
+
+function renderReshape() {
+  reshapeEl.hidden = !reshaping
+  if (!reshaping) return reshapeEl.replaceChildren()
+  const shape = rebuilding ? null : galaxy?.shapeOf()
+  const { seed } = reshaping.tries[reshaping.at]
+  const button = (text, title, run, { disabled = false, className = '' } = {}) => {
+    const node = el('button', { type: 'button', className, textContent: text, title, disabled: disabled || Boolean(rebuilding) })
+    node.addEventListener('click', run)
+    return node
+  }
+  const about = el('div', { className: 'rs-about' })
+  about.append(
+    el('b', { textContent: seed === null ? '🌌 처음 은하 미리보기' : '🌌 새 은하 미리보기' }),
+    el('span', { textContent: shape ? `${shape.kind} · 팔 ${shape.arms}개 · ${shape.palette} 별빛 · ${shape.turn > 0 ? '반시계' : '시계'} 방향` : '은하를 빚는 중…' })
+  )
+  const steps = el('div', { className: 'rs-steps' })
+  steps.append(
+    button('‹', '앞에 본 모양', () => stepShape(-1), { disabled: reshaping.at === 0 }),
+    el('small', { textContent: `${reshaping.at + 1} / ${reshaping.tries.length}` }),
+    button('›', '뒤에 본 모양', () => stepShape(1), { disabled: reshaping.at === reshaping.tries.length - 1 })
+  )
+  reshapeEl.replaceChildren(
+    about,
+    steps,
+    button('🎲 다시 빚기', '새 모양을 하나 더 뽑아요', () => reshapeGalaxy()),
+    button('✓ 이 은하로', '이 모양으로 정해요', keepShape, { className: 'rs-keep' }),
+    button('되돌리기', '시작 전 은하로 돌아가요 (Esc)', cancelReshape)
+  )
 }
 
 // A planet dropped into the black hole: say what closing it means and ask first.
@@ -2636,7 +2783,7 @@ function ensureGalaxy() {
   galaxyLoad = Promise.all([import('./galaxy.js'), universeKnown()])
     .then(([{ createGalaxy }]) => {
       galaxy = createGalaxy(cosmos, {
-        universe,
+        universe: galaxyUniverse(),
         // Inside a star, one of its own planets opens its window there.
         onPick: (handle) => (insideApp && sessions.get(handle)?.project === insideApp ? openStarWindow(handle, { toggle: false }) : pick(handle)),
         onPickSystem: (app) => {
@@ -2669,7 +2816,8 @@ function ensureGalaxy() {
           closeReport()
         }
       })
-      new ResizeObserver(layoutGalaxy).observe(gxHud)
+      if (!hudObserved) new ResizeObserver(layoutGalaxy).observe(gxHud)
+      hudObserved = true
       layoutGalaxy()
       galaxy.setLook(lookOf(prefs.look))
       galaxy.setDecor(decorFlags())
@@ -2678,7 +2826,7 @@ function ensureGalaxy() {
       renderAll()
       for (const job of forming.values()) showForming(job)
       // Only a session the user chose; the opening view is the whole galaxy.
-      if (focusedHandle && prefs.view === 'galaxy' && userPicked) galaxy.flyTo(focusedHandle)
+      if (focusedHandle && prefs.view === 'galaxy' && userPicked && !rebuilding) galaxy.flyTo(focusedHandle)
       checkUnlocks()
     })
     .catch((error) => {
@@ -2735,7 +2883,7 @@ function setZen(on) {
 // Nothing to answer, nobody touching anything, the pane shut: let the galaxy have the screen.
 function checkZen() {
   // A page open in a star's browser is being read or watched, with no keys or mouse here.
-  if (zen || prefs.view !== 'galaxy' || paneOpen || report || browser || document.hidden || searching()) return
+  if (zen || prefs.view !== 'galaxy' || paneOpen || report || browser || reshaping || document.hidden || searching()) return
   if (Date.now() - lastInteraction < ZEN_IDLE_MS || attentionHandles().length) return
   setZen(true)
 }
@@ -3930,6 +4078,7 @@ function onEscape() {
   if (cleanAsk) cancelClean()
   else if (!birthEl.hidden) toggleBirth(false)
   else if (!settingsEl.hidden) toggleSettings(false)
+  else if (reshaping) cancelReshape()
   else if (zen) setZen(false)
   else if (maximized) setMaximized(false)
   else if (expandedHandle) collapse()
