@@ -1134,7 +1134,9 @@ body[data-view='galaxy'] .gx-hud { display: flex; flex-direction: column; justif
   text-shadow: 0 0 6px rgb(0 0 0 / 95%), 0 1px 2px #000;
 }
 .gx-star.pinned span::before { content: '★ '; color: #ffc25e; }
-.gx-star:is([data-status='choice'], [data-status='waiting'], [data-status='blocked']) span { color: #ffd08a; }
+.gx-star[data-status='blocked'] span { color: #ffd08a; }
+/* A question calls in its star's own colour (galaxy.js sets --call). */
+.gx-star:is([data-status='choice'], [data-status='waiting']) span { color: color-mix(in srgb, var(--call, #ffb340) 45%, #fff); }
 .gx-star.dim { opacity: 0.3; }
 .gx-planet { padding-top: 10px; opacity: 0; transition: opacity 0.25s; }
 .gx-planet.on, .gx-planet.selected { opacity: 1; }
@@ -1175,7 +1177,8 @@ body.titles-off .gx-labels { visibility: hidden; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.gx-planet:is([data-status='choice'], [data-status='waiting'], [data-status='blocked']) span { border-color: rgb(255 179 64 / 45%); color: #ffd08a; }
+.gx-planet[data-status='blocked'] span { border-color: rgb(255 179 64 / 45%); color: #ffd08a; }
+.gx-planet:is([data-status='choice'], [data-status='waiting']) span { border-color: color-mix(in srgb, var(--call, #ffb340) 45%, transparent); color: color-mix(in srgb, var(--call, #ffb340) 45%, #fff); }
 .gx-planet[data-status='working'] span { color: #a6dcff; }
 .gx-planet.selected span { border-color: rgb(170 160 255 / 75%); background: rgb(80 64 190 / 45%); color: #ffffff; }
 .gx-planet .ret {
@@ -1435,7 +1438,8 @@ body[data-view='galaxy'] .toggle input { accent-color: var(--holo-cyan); }
   text-shadow: 0 0 2px #000, 0 1px 3px #000, 0 0 10px rgb(120 180 255 / 55%);
 }
 .gx-star.pinned span::before { text-shadow: 0 0 8px rgb(255 194 94 / 80%); }
-.gx-star:is([data-status='choice'], [data-status='waiting'], [data-status='blocked']) span { text-shadow: 0 0 2px #000, 0 1px 3px #000, 0 0 12px rgb(255 179 64 / 70%); }
+.gx-star[data-status='blocked'] span { text-shadow: 0 0 2px #000, 0 1px 3px #000, 0 0 12px rgb(255 179 64 / 70%); }
+.gx-star:is([data-status='choice'], [data-status='waiting']) span { text-shadow: 0 0 2px #000, 0 1px 3px #000, 0 0 12px color-mix(in srgb, var(--call, #ffb340) 70%, transparent); }
 .gx-planet span {
   max-width: 200px;
   border-color: rgb(120 200 255 / 16%);

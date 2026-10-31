@@ -116,10 +116,10 @@ const TONE = {
 const RIM = { choice: 2.2, waiting: 2.2, blocked: 2.2, working: 1.3, new: 1.4, done: 0.5, idle: 0.35, shell: 0.25 }
 const RANK = { choice: 0, waiting: 0, blocked: 1, working: 2, new: 3, done: 4, idle: 5, shell: 6 }
 const ALERT = new Set(['choice', 'waiting', 'blocked'])
+const CALLING = new Set(['choice', 'waiting']) // a question for the user, called in its star's colour
 const RED_GIANT = new THREE.Color(1.1, 0.4, 0.16)
 const RED_GLOW = new THREE.Color('#ff5a2e')
 const WHITE_DWARF = new THREE.Color(0.85, 1, 1.3)
-const AMBER = new THREE.Color(TONE.choice)
 const WHITE = new THREE.Color('#ffffff')
 const SPOT = new THREE.Color('#fff0b8') // the warm light a search lights planets with
 // A star's colour is the project's age, as with real stars: new projects burn blue, old ones
@@ -347,6 +347,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
   const tmp3 = new THREE.Vector3()
   const tmp4 = new THREE.Vector3()
   const tmpColor = new THREE.Color()
+  const hsl = { h: 0, s: 0, l: 0 }
   const ndc = new THREE.Vector2()
   const turn = new THREE.Quaternion()
   const partTurn = new THREE.Quaternion()
@@ -2718,9 +2719,8 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       s.material.color.set(rand() < 0.5 ? '#bfe3ff' : '#ffffff')
       return { sprite: s, phase: rand() * 10, rate: 0.9 + rand() * 1.8, size: 3 + rand() * 4 }
     })
-    // A star with a terminal waiting on the user sends out slow amber rings.
+    // A star with a terminal waiting on the user sends out slow rings in its own colour.
     const beacons = [sprite(tex.thinRing, 1, 0), sprite(tex.thinRing, 1, 0)]
-    for (const beacon of beacons) beacon.material.color.copy(AMBER)
     // A crown of glints over the star, one more for each token milestone the app has passed.
     const crown = new THREE.Group()
     crown.rotation.set((rand() - 0.5) * 0.4, 0, (rand() - 0.5) * 0.4)
@@ -4045,6 +4045,17 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
       planet.hit.scale.setScalar(2.6 * Math.max(0.8, planet.size))
       if (planet.satellite) planet.satellite.craft.position.x = 2.2 * planet.size
       const alert = ALERT.has(planet.item.status) && planet.item.show
+      // A question or a choice calls in its star's colour; a planet that's stuck stays red.
+      const call = CALLING.has(planet.item.status) && planet.system.call
+      if (call) {
+        planet.mesh.material.uniforms.rim.value.copy(call)
+        planet.orbit.material.color.copy(call)
+        for (const beacon of planet.beacons) beacon.material.color.copy(call)
+        if (planet.callHex !== planet.system.callHex) {
+          planet.callHex = planet.system.callHex
+          planet.label.element.style.setProperty('--call', planet.callHex)
+        }
+      }
       planet.beacons.forEach((beacon, i) => {
         beacon.visible = alert
         if (!alert) return
@@ -4122,6 +4133,25 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     labelRenderer.render(scene, camera)
   }
 
+  // The colour a star calls the user in: its own, tinged with its dress, and deepened so it
+  // reads as a colour rather than just light; a grey-white star calls in white. Its label,
+  // and its planets' labels, are told the colour too.
+  function callColor(system) {
+    const call = (system.call ??= new THREE.Color())
+    call.copy(system.color)
+    if (system.dress.tint) call.lerp(system.dress.tint, 0.3)
+    if (Math.max(call.r, call.g, call.b) - Math.min(call.r, call.g, call.b) > 0.04) {
+      call.getHSL(hsl, THREE.SRGBColorSpace)
+      call.setHSL(hsl.h, Math.max(hsl.s, 0.75), Math.min(0.7, Math.max(0.58, hsl.l)), THREE.SRGBColorSpace)
+    }
+    const hex = `#${call.getHexString()}`
+    if (system.callHex !== hex) {
+      system.callHex = hex
+      system.label.element.style.setProperty('--call', hex)
+    }
+    return call
+  }
+
   // Busy stars flicker and throw off glints; quiet ones just glow.
   function twinkle(system, pulse, dt) {
     const busy = system.busy
@@ -4135,13 +4165,14 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     const size = system.size * system.grow * (1 + 0.2 * gulp)
     const flicker = busy ? 1 + busy * 0.35 * (0.5 + 0.5 * Math.sin(t * 7.1)) * (0.5 + 0.5 * Math.sin(t * 2.3 + 1)) : 1
     const alert = ALERT.has(system.tone) && system.anyShown
+    const call = callColor(system)
     system.core.material.uniforms.color.value.copy(system.color)
     system.core.scale.setScalar(Math.max(0.001, 1.25 * size))
     system.core.rotation.y += system.look.spin * dt
     system.glow.material.color.copy(system.color)
     // A dressed star's glow takes a little of its dress's colour, so stars differ from afar.
     if (system.dress.tint) system.glow.material.color.lerp(system.dress.tint, 0.22)
-    if (alert) system.glow.material.color.lerp(AMBER, 0.3)
+    if (alert) system.glow.material.color.lerp(call, 0.3)
     system.dress.update(size, system.anyShown ? 1 + busy * 0.3 : 0.12, t, dt)
     if (system.grown) for (const step of system.grown.steps) step(size, system.anyShown ? 1 + busy * 0.3 : 0.12, t, dt)
     // From far away a star keeps a minimum glow, so its colour still reads in the overview.
@@ -4163,6 +4194,7 @@ export function createGalaxy(host, { onPick, onPickSystem, onWarp, onWatch, onSo
     system.beacons.forEach((beacon, i) => {
       beacon.visible = alert
       if (!alert) return
+      beacon.material.color.copy(call)
       const phase = (time * 0.35 + i * 0.5) % 1
       beacon.scale.setScalar(size * (5 + phase * 24))
       beacon.material.opacity = (1 - phase) * 0.7
