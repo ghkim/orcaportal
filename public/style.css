@@ -825,18 +825,66 @@ body[data-view='galaxy'].inside-star .star-browser:not([hidden]) {
 }
 @keyframes sb-in { from { opacity: 0; } }
 body[data-view='galaxy'].inside-star .star-browser.full:not([hidden]) { inset: 0; z-index: 6; width: auto; border: 0; border-radius: 0; transform: none; }
-body[data-view='galaxy'].inside-star .star-browser.mini:not([hidden]) {
-  top: auto;
-  right: 18px;
-  bottom: 96px;
-  left: auto;
-  width: 360px;
-  height: 232px;
+/* A star's two windows together. Side by side, the divider between them moves; floating
+   (picture in picture), one sits small over the other, moved by its bar and grown from
+   the corner towards the middle. Changes of layout glide, drags follow the pointer. */
+body[data-view='galaxy'].inside-star:not(.star-dragging) :is(.pane, .star-browser) { transition: opacity 0.35s ease, transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1), left 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), top 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), width 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), height 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s; }
+body[data-view='galaxy'].inside-star.star-split:not(.maximized) .pane,
+body[data-view='galaxy'].inside-star.star-split .star-browser:not([hidden]):not(.full) { top: 6%; right: auto; bottom: 92px; height: auto; transform: none; }
+body[data-view='galaxy'].inside-star.star-split:not(.split-browser-left):not(.maximized) .pane,
+body[data-view='galaxy'].inside-star.star-split.split-browser-left .star-browser:not([hidden]):not(.full) {
+  left: calc((100% - min(1680px, 100% - 32px)) / 2);
+  width: calc(min(1680px, 100% - 32px) * var(--split, 0.5) - 6px);
+}
+body[data-view='galaxy'].inside-star.star-split.split-browser-left:not(.maximized) .pane,
+body[data-view='galaxy'].inside-star.star-split:not(.split-browser-left) .star-browser:not([hidden]):not(.full) {
+  left: calc((100% - min(1680px, 100% - 32px)) / 2 + min(1680px, 100% - 32px) * var(--split, 0.5) + 6px);
+  width: calc(min(1680px, 100% - 32px) * (1 - var(--split, 0.5)) - 6px);
+}
+.star-split-bar, .pip-grip { display: none; }
+body[data-view='galaxy'].inside-star.star-split:not(.maximized) .star-split-bar:not([hidden]) {
+  position: absolute;
+  top: 6%;
+  bottom: 92px;
+  left: calc((100% - min(1680px, 100% - 32px)) / 2 + min(1680px, 100% - 32px) * var(--split, 0.5) - 6px);
+  z-index: 5;
+  display: block;
+  width: 12px;
+  cursor: col-resize;
+  pointer-events: auto;
+}
+.star-split-bar::after { position: absolute; top: 50%; left: 50%; width: 4px; height: 46px; border-radius: 2px; background: rgb(255 226 168 / 28%); content: ''; transform: translate(-50%, -50%); transition: background 0.2s, height 0.2s; }
+.star-split-bar:hover::after, body.star-dragging .star-split-bar::after { height: 90px; background: rgb(255 226 168 / 65%); }
+body[data-view='galaxy'].inside-star.pip-browser .star-browser:not([hidden]):not(.full),
+body[data-view='galaxy'].inside-star.pip-terminal:not(.maximized) .pane {
+  top: var(--pip-y);
+  right: auto;
+  bottom: auto;
+  left: var(--pip-x);
+  z-index: 7;
+  width: var(--pip-w);
+  height: var(--pip-h);
   border-radius: 12px;
   transform: none;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 6%), 0 0 40px rgb(255 214 150 / 14%), 0 22px 60px rgb(0 0 0 / 55%);
 }
-/* A terminal open beside the corner browser moves over to make room for it. */
-body[data-view='galaxy'].inside-star.browser-mini .pane { left: calc(50% - 190px); width: min(1120px, calc(100% - 430px)); }
+body[data-view='galaxy'].inside-star.pip-terminal:not(.maximized) .pane { background: linear-gradient(180deg, rgb(8 8 22 / 80%), rgb(5 5 16 / 90%)); }
+body.pip-terminal .pane .card-head, body.pip-browser .star-browser .sb-bar { cursor: move; }
+body[data-view='galaxy'].inside-star:is(.pip-browser, .pip-terminal) .pip-grip:not([hidden]) { position: absolute; z-index: 8; display: block; width: 22px; height: 22px; pointer-events: auto; }
+.pip-grip[data-corner='nw'] { top: calc(var(--pip-y) - 7px); left: calc(var(--pip-x) - 7px); cursor: nwse-resize; }
+.pip-grip[data-corner='ne'] { top: calc(var(--pip-y) - 7px); left: calc(var(--pip-x) + var(--pip-w) - 15px); cursor: nesw-resize; }
+.pip-grip[data-corner='sw'] { top: calc(var(--pip-y) + var(--pip-h) - 15px); left: calc(var(--pip-x) - 7px); cursor: nesw-resize; }
+.pip-grip[data-corner='se'] { top: calc(var(--pip-y) + var(--pip-h) - 15px); left: calc(var(--pip-x) + var(--pip-w) - 15px); cursor: nwse-resize; }
+.pip-grip::after { position: absolute; inset: 5px; border: 2px solid rgb(255 226 168 / 55%); content: ''; }
+.pip-grip[data-corner='nw']::after { border-right: 0; border-bottom: 0; border-top-left-radius: 6px; }
+.pip-grip[data-corner='ne']::after { border-bottom: 0; border-left: 0; border-top-right-radius: 6px; }
+.pip-grip[data-corner='sw']::after { border-top: 0; border-right: 0; border-bottom-left-radius: 6px; }
+.pip-grip[data-corner='se']::after { border-top: 0; border-left: 0; border-bottom-right-radius: 6px; }
+body.star-dragging :is(iframe, webview) { pointer-events: none; }
+body.star-dragging { user-select: none; }
+.st-arrange { display: flex; flex: none; gap: 3px; }
+.st-arrange[hidden] { display: none; }
+.st-arrange .st-out[aria-pressed='true'] { border-color: rgb(255 226 168 / 35%); background: rgb(255 226 168 / 10%); color: #ffe9c2; }
 .sb-bar { display: flex; flex: none; align-items: center; gap: 4px; padding: 7px 8px; border-bottom: 1px solid rgb(255 226 168 / 12%); }
 .sb-btn {
   flex: none;
@@ -908,7 +956,7 @@ body[data-view='galaxy'].inside-star.browser-mini .pane { left: calc(50% - 190px
 .sb-server code { color: var(--holo-cyan, #6ee7ff); font-family: var(--mono); }
 .sb-tips { margin: 18px 0 0; padding-left: 18px; color: var(--faint); font-size: 12.5px; line-height: 1.9; }
 /* In the corner only its name and the buttons to bring it back or shut it. */
-.star-browser.mini .sb-bar { padding: 4px 6px; cursor: pointer; }
+.star-browser.mini .sb-bar { padding: 4px 6px; }
 .star-browser.mini :is(.sb-go, .sb-ports, [data-part='back'], [data-part='forward'], [data-part='reload'], [data-part='mini']) { display: none; }
 .star-browser.mini .sb-title { display: block; }
 .star-browser.mini .sb-note { display: none; }
@@ -920,8 +968,6 @@ body.zen :is(.star-browser:not(.mini), .gx-reshape) { opacity: 0; pointer-events
   .st-star small { display: none; }
   .st-out { padding: 4px 8px; }
   body[data-view='galaxy'].inside-star .star-browser:not([hidden]):not(.mini, .full) { bottom: 84px; width: calc(100% - 24px); }
-  body[data-view='galaxy'].inside-star .star-browser.mini:not([hidden]) { right: 12px; width: min(300px, calc(100% - 24px)); height: 190px; }
-  body[data-view='galaxy'].inside-star.browser-mini .pane { left: 50%; width: calc(100% - 24px); }
   .sb-ports { display: none; }
 }
 /* A pull request merged into the star, on its wall inside: faint until pointed at. */

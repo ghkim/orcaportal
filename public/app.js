@@ -283,6 +283,16 @@ gxHud.append(starTabs)
 const browserEl = Object.assign(document.createElement('section'), { className: 'star-browser', hidden: true })
 browserEl.setAttribute('aria-label', '별 안 브라우저')
 layoutEl.append(browserEl)
+// A star's windows together: the divider between two side by side, and the corner a
+// floating one grows from (see applyStarLayout).
+const PIP_SIZE = { browser: [400, 258], terminal: [480, 330] } // a floating window at first
+const SPLIT_MAX = 1680 // px across both windows side by side (the stylesheet says the same)
+const SPLIT_MIN = 720 // narrower than this, side by side becomes floating
+const splitBar = Object.assign(document.createElement('div'), { className: 'star-split-bar', hidden: true, title: '끌어서 나누는 자리 옮기기' })
+const pipGrip = Object.assign(document.createElement('div'), { className: 'pip-grip', hidden: true, title: '끌어서 크기 바꾸기' })
+layoutEl.append(splitBar, pipGrip)
+layoutEl.addEventListener('pointerdown', startStarDrag)
+addEventListener('resize', () => insideApp && applyStarLayout())
 // Along the top while other shapes of the galaxy are tried.
 const reshapeEl = Object.assign(document.createElement('section'), { className: 'gx-reshape', hidden: true })
 reshapeEl.setAttribute('aria-label', '은하 다시 빚기')
@@ -2861,6 +2871,7 @@ function setPaneOpen(open) {
   paneToggle.setAttribute('aria-expanded', String(open))
   paneToggle.title = open ? '세션 패널 닫기 (Esc)' : '세션 패널 열기'
   if (open) setZen(false)
+  applyStarLayout()
   syncBackdrop()
   layoutGalaxy({ animate: true })
 }
@@ -3149,7 +3160,6 @@ function openStarWindow(handle, { toggle = true } = {}) {
   const pick = own(handle) ? handle : own(focusedHandle) ? focusedHandle : starHandles(insideApp)[0]
   if (!pick) return
   if (paneOpen && pick === focusedHandle) return toggle ? closeStarWindow() : undefined
-  if (browser && !browser.mini) minimizeBrowser()
   setFocus(pick, { stay: true })
   setPaneOpen(true)
   layoutGalaxy()
@@ -3175,7 +3185,9 @@ function renderStarTabs() {
   const open = paneOpen && handles.includes(focusedHandle) ? focusedHandle : null
   renderBrowserPorts()
   const web = browser ? (browser.mini ? 'mini' : 'open') : ''
-  const key = JSON.stringify([insideApp, open, web, handles.map((h) => [h, statusOf(h), sessions.get(h).title, sessions.get(h).name, sessions.get(h).branch])])
+  const both = Boolean(open && browser)
+  const arrange = both ? `${prefs.starLayout.mode}:${prefs.starLayout.float}` : ''
+  const key = JSON.stringify([insideApp, open, web, arrange, handles.map((h) => [h, statusOf(h), sessions.get(h).title, sessions.get(h).name, sessions.get(h).branch])])
   if (key === starTabs.dataset.key) return
   starTabs.dataset.key = key
   const look = galaxy?.lookOf(insideApp)
@@ -3202,7 +3214,23 @@ function renderStarTabs() {
   // The keyboard stays on the same chip or button through a redraw.
   const was = starTabs.contains(document.activeElement) ? document.activeElement : null
   const again = was?.dataset.handle ? `[data-handle="${CSS.escape(was.dataset.handle)}"]` : was?.dataset.part ? `[data-part="${was.dataset.part}"]` : null
-  starTabs.replaceChildren(name, tabs, webButton, toggle, out)
+  // Both windows open: side by side or one floating, and which way round.
+  const arrangeBox = el('div', { className: 'st-arrange', role: 'group' })
+  arrangeBox.setAttribute('aria-label', '창 배치')
+  for (const [mode, text, title] of [
+    ['split', '◫ 나란히', '터미널과 브라우저를 나란히 (화면 분할)'],
+    ['pip', '⧉ PIP', '하나를 작게 띄워 다른 하나 위에 (끌어서 옮기고, 모서리로 크기 바꾸기)']
+  ]) {
+    const button = el('button', { type: 'button', className: 'st-out', textContent: text, title, dataset: { part: `arrange-${mode}` } })
+    button.setAttribute('aria-pressed', String(prefs.starLayout.mode === mode))
+    button.addEventListener('click', () => setStarLayout(mode))
+    arrangeBox.append(button)
+  }
+  const swap = el('button', { type: 'button', className: 'st-out', textContent: '⇄', title: prefs.starLayout.mode === 'split' ? '좌우 바꾸기' : '띄울 창 바꾸기', dataset: { part: 'arrange-swap' } })
+  swap.addEventListener('click', swapStarWindows)
+  arrangeBox.append(swap)
+  arrangeBox.hidden = !both
+  starTabs.replaceChildren(name, tabs, webButton, arrangeBox, toggle, out)
   if (again) starTabs.querySelector(again)?.focus()
   starTabs.hidden = false
 }
@@ -3216,11 +3244,13 @@ const BROWSER_KEY = 'orrery-browser'
 const WEBVIEW = Boolean(desktop?.webview)
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/i
 
+// Opens the browser beside the terminal if that's open (see applyStarLayout), else in the
+// middle; one already floating comes back out.
 function openBrowser(text = null) {
   if (!insideApp) return
   if (browser && browser.app !== insideApp) closeBrowser()
   if (!browser) browser = buildBrowser(insideApp)
-  if (paneOpen) closeStarWindow()
+  if (paneOpen && browser.mini && prefs.starLayout.mode === 'pip' && prefs.starLayout.float === 'browser') setStarLayout('split')
   browser.mini = false
   if (text) browse(text)
   else if (!browser.url) {
@@ -3238,19 +3268,30 @@ function closeBrowser() {
   browserEl.replaceChildren()
   browserEl.hidden = true
   browserEl.className = 'star-browser'
-  document.body.classList.remove('browser-mini')
   sound.hush(false)
+  applyStarLayout()
   syncBackdrop()
   renderStarTabs()
 }
 
-// Into the corner, still playing; with nothing open there is nothing to keep.
+// Small and floating (picture in picture), still playing, over the terminal or the
+// galaxy; with nothing open there is nothing to keep.
 function minimizeBrowser() {
   if (!browser) return
   if (!browser.url) return closeBrowser()
-  browser.mini = true
   browser.full = false
   document.activeElement?.blur()
+  if (paneOpen) return setStarLayout('pip', 'browser')
+  browser.mini = true
+  syncBrowser()
+}
+
+// The floating browser made the big one: with the terminal open, the terminal floats
+// instead.
+function growBrowser() {
+  if (!browser) return
+  if (paneOpen) return setStarLayout('pip', 'terminal')
+  browser.mini = false
   syncBrowser()
 }
 
@@ -3263,10 +3304,9 @@ function setBrowserFull(full) {
 function syncBrowser() {
   if (!browser) return
   browserEl.hidden = false
-  browserEl.classList.toggle('mini', browser.mini)
+  applyStarLayout()
   browserEl.classList.toggle('full', browser.full)
   browserEl.classList.toggle('blank', !browser.url)
-  document.body.classList.toggle('browser-mini', browser.mini)
   browser.start.hidden = Boolean(browser.url)
   renderBrowserStart()
   syncBackdrop()
@@ -3276,6 +3316,129 @@ function syncBrowser() {
 // The galaxy dims behind whatever window is open in the middle of a star.
 function syncBackdrop() {
   galaxy?.setBackdrop(Boolean(insideApp && (paneOpen || (browser && !browser.mini))))
+}
+
+// ---------- a star's windows together ----------
+
+// How a star's terminal and browser share the screen when both are open: side by side
+// ('split'), the divider between them where it was left and the browser on the side
+// chosen, or one small and floating over the other ('pip', picture in picture), wherever
+// it was dragged and as big as it was made. Alone, a window has the middle; the browser
+// may float alone too (Esc), still playing.
+function setStarLayout(mode, float = prefs.starLayout.float) {
+  prefs.starLayout = { ...prefs.starLayout, mode, float }
+  savePrefs()
+  if (browser) browser.mini = false
+  if (browser) syncBrowser()
+  else applyStarLayout()
+  layoutGalaxy()
+}
+
+// Side by side: the browser goes to the other side. Floating: the other one floats.
+function swapStarWindows() {
+  const layout = prefs.starLayout
+  if (layout.mode === 'split') {
+    prefs.starLayout = { ...layout, browserLeft: !layout.browserLeft, ratio: 1 - layout.ratio }
+    savePrefs()
+    applyStarLayout()
+  } else setStarLayout('pip', layout.float === 'browser' ? 'terminal' : 'browser')
+}
+
+function applyStarLayout() {
+  const layout = prefs.starLayout
+  const both = Boolean(insideApp && paneOpen && browser)
+  const narrow = layoutEl.clientWidth < SPLIT_MIN
+  const mode = both && (layout.mode === 'pip' || narrow) ? 'pip' : both ? 'split' : null
+  if (mode === 'split') browser.mini = false
+  if (mode === 'pip') browser.mini = layout.float === 'browser'
+  const floating = !insideApp ? null : mode === 'pip' && layout.float === 'terminal' ? 'terminal' : browser?.mini ? 'browser' : null
+  const body = document.body.classList
+  body.toggle('star-split', mode === 'split')
+  body.toggle('split-browser-left', mode === 'split' && layout.browserLeft)
+  body.toggle('pip-terminal', floating === 'terminal')
+  body.toggle('pip-browser', floating === 'browser')
+  browserEl.classList.toggle('mini', Boolean(browser?.mini))
+  layoutEl.style.setProperty('--split', String(layout.ratio))
+  if (floating) {
+    const rect = pipRect(floating)
+    for (const key of ['x', 'y', 'w', 'h']) layoutEl.style.setProperty(`--pip-${key}`, `${Math.round(rect[key])}px`)
+    // The corner to resize from is the one towards the middle of the screen.
+    pipGrip.dataset.corner = `${rect.y + rect.h / 2 > layoutEl.clientHeight / 2 ? 'n' : 's'}${rect.x + rect.w / 2 > layoutEl.clientWidth / 2 ? 'w' : 'e'}`
+  }
+  pipGrip.hidden = !floating
+  splitBar.hidden = mode !== 'split'
+}
+
+// Where a floating window is: as it was left, kept on screen; at first, the bottom right.
+function pipRect(who) {
+  const W = layoutEl.clientWidth
+  const H = layoutEl.clientHeight
+  const saved = prefs.starLayout.pips?.[who]
+  const [dw, dh] = PIP_SIZE[who]
+  const w = clamp(saved?.w ?? dw, 240, Math.max(240, W * 0.8))
+  const h = clamp(saved?.h ?? dh, 150, Math.max(150, H * 0.8))
+  return { w, h, x: clamp(saved?.x ?? W - w - 18, 8, W - w - 8), y: clamp(saved?.y ?? H - h - 96, 8, H - h - 8) }
+}
+
+function clamp(value, low, high) {
+  return Math.max(low, Math.min(high, value))
+}
+
+// A floating window moves by its bar and grows from its corner; the divider between two
+// side by side moves along. While anything is dragged the pages under the pointer are
+// left out of it, so the drag doesn't get lost in them.
+function startStarDrag(event) {
+  if (!insideApp || event.button !== 0 || event.target.closest('button, input, textarea, select, a')) return
+  const divider = event.target.closest('.star-split-bar')
+  const grip = event.target.closest('.pip-grip')
+  const bar = event.target.closest('body.pip-browser .star-browser .sb-bar, body.pip-terminal .pane .card-head')
+  if (!divider && !grip && !bar) return
+  event.preventDefault()
+  const who = document.body.classList.contains('pip-terminal') ? 'terminal' : 'browser'
+  const box = layoutEl.getBoundingClientRect()
+  const from = { x: event.clientX, y: event.clientY, rect: pipRect(who) }
+  const corner = pipGrip.dataset.corner || 'nw'
+  const handle = event.target
+  handle.setPointerCapture?.(event.pointerId)
+  document.body.classList.add('star-dragging')
+  const move = (e) => {
+    const dx = e.clientX - from.x
+    const dy = e.clientY - from.y
+    if (divider) {
+      const span = Math.min(SPLIT_MAX, box.width - 32)
+      prefs.starLayout.ratio = clamp((e.clientX - box.left - (box.width - span) / 2) / span, 0.25, 0.75)
+    } else {
+      const r = { ...from.rect }
+      if (bar) {
+        r.x += dx
+        r.y += dy
+      } else {
+        // Grown from one corner, the opposite one stays put.
+        if (corner.includes('w')) {
+          r.w = from.rect.w - dx
+          r.x = from.rect.x + from.rect.w - clamp(r.w, 240, box.width * 0.8)
+        } else r.w = from.rect.w + dx
+        if (corner.includes('n')) {
+          r.h = from.rect.h - dy
+          r.y = from.rect.y + from.rect.h - clamp(r.h, 150, box.height * 0.8)
+        } else r.h = from.rect.h + dy
+      }
+      prefs.starLayout.pips = { ...prefs.starLayout.pips, [who]: r }
+    }
+    applyStarLayout()
+  }
+  const end = () => {
+    handle.removeEventListener('pointermove', move)
+    handle.removeEventListener('pointerup', end)
+    handle.removeEventListener('pointercancel', end)
+    document.body.classList.remove('star-dragging')
+    // Kept as it is seen, on screen.
+    if (!divider) prefs.starLayout.pips = { ...prefs.starLayout.pips, [who]: pipRect(who) }
+    savePrefs()
+  }
+  handle.addEventListener('pointermove', move)
+  handle.addEventListener('pointerup', end)
+  handle.addEventListener('pointercancel', end)
 }
 
 function buildBrowser(app) {
@@ -3310,13 +3473,13 @@ function buildBrowser(app) {
   b.ports = el('div', { className: 'sb-ports' })
   b.title = el('span', { className: 'sb-title' })
   const outside = button('↗', '바깥 브라우저로 열기', 'outside', () => b.url && window.open(b.url, '_blank', 'noopener'))
-  const full = button('⤢', '창 가득 (F)', 'full', () => (b.mini ? openBrowser() : setBrowserFull(!b.full)))
-  const mini = button('▁', '구석으로 (Esc)', 'mini', minimizeBrowser)
+  const full = button('⤢', '크게 (F)', 'full', () => (b.mini ? growBrowser() : setBrowserFull(!b.full)))
+  const mini = button('⧉', '작게 띄우기, PIP (Esc)', 'mini', minimizeBrowser)
   const close = button('✕', '닫기', 'close', closeBrowser)
   const bar = el('header', { className: 'sb-bar' })
   bar.append(...nav, reload, form, b.title, b.ports, outside, full, mini, close)
-  // In the corner, a click on its bar brings it back.
-  bar.addEventListener('click', () => b.mini && openBrowser())
+  // Floating, a double click on its bar makes it the big one.
+  bar.addEventListener('dblclick', (e) => b.mini && !e.target.closest('button, input') && growBrowser())
   b.note = el('p', { className: 'sb-note', hidden: true })
   b.view = el('div', { className: 'sb-view' })
   b.start = el('div', { className: 'sb-start' })
@@ -4025,6 +4188,7 @@ function onShortcut(e) {
     KeyW: () => {
       if (!insideApp) return toast(prefs.view === 'galaxy' ? '브라우저는 별 안에서 열어요 · 별 보고서의 🌟 별 안으로' : '브라우저는 은하 보기의 별 안에서 열어요')
       if (browser && !browser.mini) minimizeBrowser()
+      else if (browser) growBrowser()
       else openBrowser()
     },
     KeyG: () => {
@@ -4088,8 +4252,8 @@ function onEscape() {
   else if (document.activeElement?.matches('textarea, input, select')) document.activeElement.blur()
   else if (report && !paneOpen) closeReport()
   else if (browser?.full) setBrowserFull(false)
-  else if (browser && !browser.mini) minimizeBrowser()
   else if (insideApp && paneOpen) closeStarWindow()
+  else if (browser && !browser.mini) minimizeBrowser()
   else if (insideApp) leaveStar()
   else if (prefs.view === 'galaxy' && paneOpen) {
     setPaneOpen(false)
@@ -4236,7 +4400,7 @@ function applyPrefs() {
 }
 
 function loadPrefs() {
-  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true, look: LOOK_DEFAULTS, mix: {}, mixOff: {}, decor: {}, musicMood: true, newAgent: 'claude', titles: true, cruise: true }
+  const defaults = { version: 2, filter: 'all', size: 'm', showShells: true, view: 'galaxy', autoFollow: true, collapsed: { done: true, shell: true }, pins: [], sound: true, look: LOOK_DEFAULTS, mix: {}, mixOff: {}, decor: {}, musicMood: true, newAgent: 'claude', titles: true, cruise: true, starLayout: { mode: 'split', float: 'browser', ratio: 0.5, browserLeft: false, pips: {} } }
   try {
     const saved = JSON.parse(localStorage.getItem('orca-portal-prefs') || '{}')
     if (saved.version !== 2) Object.assign(saved, { version: 2, view: 'galaxy' })
@@ -4247,7 +4411,7 @@ function loadPrefs() {
       for (const key of keys) mix[key] ??= mix[old]
       delete mix[old]
     }
-    return { ...defaults, ...saved, collapsed: { ...defaults.collapsed, ...saved.collapsed }, look: { ...LOOK_DEFAULTS, ...saved.look }, mix, mixOff: { ...saved.mixOff }, decor: { ...saved.decor } }
+    return { ...defaults, ...saved, collapsed: { ...defaults.collapsed, ...saved.collapsed }, look: { ...LOOK_DEFAULTS, ...saved.look }, mix, mixOff: { ...saved.mixOff }, decor: { ...saved.decor }, starLayout: { ...defaults.starLayout, ...saved.starLayout } }
   } catch {
     return defaults
   }
