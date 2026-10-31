@@ -5058,9 +5058,12 @@ export const GALAXY_FORMS = [
 function formed(id, shape, rand) {
   const R = GALAXY_RADIUS
   if (id === 'spiral') return { bar: false }
-  if (id === 'barred') return { arms: rand() < 0.5 ? 2 : 4, bar: true }
-  // Two strong, crisp arms over a dim disc.
-  if (id === 'grand') return { arms: 2, bar: rand() < 0.3, spread: 0.45 + rand() * 0.15, thick: 0.8, form: { kind: 'spiral', glow: 1.55, field: 0.45 } }
+  // A long, bright bar straight through a small core, two arms starting from its ends;
+  // `bar` is the way it lies, where the arms begin.
+  if (id === 'barred') return { arms: 2, bar: true, bulge: 22 + rand() * 8, form: { kind: 'spiral', bar: ARM_INNER * shape.spin, glow: 1.3 } }
+  // Grand design: no bar, a round core, and two bright, crisp arms winding most of a
+  // turn over a dim disc.
+  if (id === 'grand') return { arms: 2, bar: false, spin: Math.sign(shape.spin) * (0.0165 + rand() * 0.003), spread: 0.4 + rand() * 0.12, thick: 0.8, bulge: 24 + rand() * 8, form: { kind: 'spiral', glow: 1.8, field: 0.3 } }
   // Many short tufts of arm.
   if (id === 'flocculent') return { arms: 7 + Math.floor(rand() * 4), bar: false, spread: 1.3 + rand() * 0.4, form: { kind: 'spiral', glow: 0.9, patches: Array.from({ length: 12 }, () => rand() * Math.PI * 2) } }
   if (id === 'ring') return { bar: false, bulge: 34 + rand() * 12, form: { kind: 'ring', radius: R * (0.5 + rand() * 0.18), width: 12 + rand() * 12, outer: rand() < 0.5 } }
@@ -5078,12 +5081,12 @@ function formed(id, shape, rand) {
 export function formOf(shape) {
   const form = shape.form || { kind: 'spiral' }
   if (form.kind !== 'spiral') return form.kind
-  return form.patches ? 'flocculent' : form.glow > 1 ? 'grand' : shape.bar ? 'barred' : 'spiral'
+  return form.patches ? 'flocculent' : form.bar !== undefined ? 'barred' : form.glow > 1 ? 'grand' : shape.bar ? 'barred' : 'spiral'
 }
 
 // What the codex says about a galaxy.
 export function galaxyKind(shape) {
-  const named = { ring: '고리 은하', elliptical: '타원 은하', lenticular: '렌즈형 은하', irregular: '불규칙 은하', flocculent: '솜털 나선 은하', grand: shape.bar ? '두 팔 막대나선 은하' : '두 팔 나선 은하' }[formOf(shape)]
+  const named = { ring: '고리 은하', elliptical: '타원 은하', lenticular: '렌즈형 은하', irregular: '불규칙 은하', flocculent: '솜털 나선 은하', grand: '두 팔 나선 은하' }[formOf(shape)]
   if (named) return named
   const wind = Math.abs(shape.spin)
   return shape.bar ? '막대나선 은하' : wind > 0.0168 ? '단단히 감긴 나선 은하' : wind < 0.0125 ? '느슨한 나선 은하' : '나선 은하'
@@ -5750,7 +5753,19 @@ function galaxyDisc(uniforms, shape) {
   for (let i = 0; i < count; i++) {
     let x, y, z, r, b
     const kind = rand()
-    if (shape.bar && kind < 0.07) {
+    if (FORM.bar !== undefined && (kind < 0.07 || kind >= 0.9)) {
+      // A barred spiral's bar: a long, bright band of old stars straight through the
+      // middle, out to where its two arms begin.
+      const along = (rand() < 0.5 ? -1 : 1) * Math.pow(rand(), 0.85) * ARM_INNER
+      const across = gauss(rand) * (4 + 5 * (1 - Math.abs(along) / ARM_INNER))
+      x = Math.cos(FORM.bar) * along - Math.sin(FORM.bar) * across
+      z = Math.sin(FORM.bar) * along + Math.cos(FORM.bar) * across
+      r = Math.abs(along)
+      y = gauss(rand) * 4 * shape.thick
+      c.copy(inner).lerp(white, 0.15 + rand() * 0.3)
+      b = 0.1 + 0.1 * Math.max(0, 1 - r / ARM_INNER) + rand() * 0.05
+      size[i] = 0.8 + rand() * 1.2
+    } else if (shape.bar && FORM.bar === undefined && kind < 0.07) {
       // A bar through the middle, the arms starting from its ends.
       const along = Math.max(-1, Math.min(1, gauss(rand) * 0.45)) * ARM_INNER * 0.95
       r = Math.abs(along)
@@ -5793,7 +5808,8 @@ function galaxyDisc(uniforms, shape) {
       b = 0.045 + rand() * 0.04
       size[i] = 0.6 + rand() * 0.8
     } else {
-      r = Math.pow(rand(), 1.25) * R
+      // A barred spiral's arms start at the ends of its bar.
+      r = FORM.bar !== undefined ? ARM_INNER * 0.92 + Math.pow(rand(), 1.25) * (R - ARM_INNER * 0.92) : Math.pow(rand(), 1.25) * R
       const arm = Math.floor(rand() * ARMS)
       const angle = (arm / ARMS) * Math.PI * 2 + r * SPIN
       const spread = (6 + r * (0.1 + 0.16 * (r / R))) * shape.spread
@@ -5834,7 +5850,7 @@ function galaxyDisc(uniforms, shape) {
   // gap between arms. Thick near the core, broken up towards the rim.
   const clouds = []
   for (let arm = 0; arm < ARMS; arm++) {
-    let r = 32 + rand() * 12
+    let r = (FORM.bar !== undefined ? ARM_INNER * 0.9 : 32) + rand() * 12
     while (r < R - 20) {
       const length = (14 + rand() * 46) * (1.25 - (r / R) * 0.6)
       const weight = length * (0.3 + rand() * 0.9) * (1.4 - r / R)
